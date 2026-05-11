@@ -58,12 +58,34 @@ function getBleDeviceName(c: MicrobitBluetoothConnection): string | undefined {
   const dev = getRawBleDevice(c);
   return dev?.name ?? dev?.deviceId;
 }
-function getBleDevice(c: MicrobitBluetoothConnection): BluetoothDevice | undefined {
+/**
+ * Locate the real `BluetoothDevice` upstream is using. Upstream stores a
+ * Capacitor `BleDevice` (a plain `{deviceId, name}` wrapper) on the
+ * connection, not the underlying `BluetoothDevice` — the real one lives
+ * inside Capacitor's plugin's internal `deviceMap`. We look it up via
+ * `navigator.bluetooth.getDevices()`, which lists every already-permitted
+ * `BluetoothDevice` for this origin, then match by id.
+ */
+async function getBleDevice(
+  c: MicrobitBluetoothConnection,
+): Promise<BluetoothDevice | undefined> {
   const dev = getRawBleDevice(c);
-  // On the web the underlying object is a BluetoothDevice with a `.gatt`
-  // property. On Capacitor native it's a BleDevice (no .gatt) — we won't
-  // hit this code path there.
-  return dev && 'gatt' in dev ? (dev as BluetoothDevice) : undefined;
+  if (!dev) return undefined;
+  // Defensive: if upstream ever changes to store the raw BluetoothDevice
+  // directly, take the fast path.
+  if ('gatt' in dev) return dev as BluetoothDevice;
+  const deviceId = (dev as { deviceId?: string }).deviceId;
+  if (!deviceId) return undefined;
+  const bt = navigator.bluetooth as unknown as {
+    getDevices?: () => Promise<BluetoothDevice[]>;
+  };
+  if (!bt.getDevices) return undefined;
+  try {
+    const all = await bt.getDevices();
+    return all.find((d) => (d as unknown as { id?: string }).id === deviceId);
+  } catch {
+    return undefined;
+  }
 }
 
 export function clearBleConn(): void {
@@ -238,7 +260,7 @@ export async function flashCalliopeViaBle(hex: string, name: string): Promise<vo
     updateState((s) => ({ ...s, bleStatus: 'error', bleErrorMessage: (err as Error).message }));
     return;
   }
-  const device = getBleDevice(c);
+  const device = await getBleDevice(c);
   if (!device) {
     updateState((s) => ({
       ...s,
