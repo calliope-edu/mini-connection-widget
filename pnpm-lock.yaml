@@ -12,6 +12,10 @@ patchedDependencies:
 importers:
 
   .:
+    dependencies:
+      nrf-intel-hex:
+        specifier: ^1.4.0
+        version: 1.4.0
     devDependencies:
       '@capacitor-community/bluetooth-le':
         specifier: ^7.3.0

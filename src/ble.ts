@@ -3,8 +3,6 @@ import {
   ConnectionStatus,
   DeviceError,
   ProgressStage,
-  type FlashDataSource,
-  type ProgressCallback,
 } from '@microbit/microbit-connection';
 import {
   createBluetoothConnection,
@@ -19,6 +17,12 @@ import {
 import { appendLog } from './log';
 import { stripMakeCodeMetadata } from './helpers';
 import { startHeartbeat, stopHeartbeat } from './serial';
+import {
+  flashOverBluetoothWeb,
+  BluetoothPartialFlashDalMismatchError,
+  BluetoothPartialFlashInvalidHexError,
+  BluetoothPartialFlashServiceMissingError,
+} from './ble-flash-web';
 
 // ---- Module state -----------------------------------------------------------
 
@@ -29,6 +33,39 @@ let bleRxBuffer = '';
 const bleLineSubs = new Set<(line: string) => void>();
 
 export function getBleConn(): MicrobitBluetoothConnection | null { return bleConn; }
+
+/**
+ * Pull the underlying `BluetoothDevice` (web) / `BleDevice` (capacitor
+ * native) out of the lib's private state. Upstream doesn't expose the
+ * device through its public interface; the field name has been stable
+ * across all 1.0.0-beta.* versions so far. If/when upstream adds a public
+ * getter, replace this cast with the proper call.
+ *
+ * We need access to the underlying device to run our own BLE flash
+ * implementation (see ble-flash-web.ts) — upstream's `connection.flash()`
+ * doesn't work reliably on Web Bluetooth, but our port of the fork's
+ * `flashOverBluetooth` does.
+ */
+type AnyBleDevice = { name?: string; deviceId?: string } & Partial<BluetoothDevice>;
+function getRawBleDevice(c: MicrobitBluetoothConnection): AnyBleDevice | undefined {
+  const wrapper = (c as unknown as {
+    device?: { bleDevice?: AnyBleDevice };
+    bleDevice?: AnyBleDevice;
+  });
+  return wrapper.bleDevice ?? wrapper.device?.bleDevice;
+}
+function getBleDeviceName(c: MicrobitBluetoothConnection): string | undefined {
+  const dev = getRawBleDevice(c);
+  return dev?.name ?? dev?.deviceId;
+}
+function getBleDevice(c: MicrobitBluetoothConnection): BluetoothDevice | undefined {
+  const dev = getRawBleDevice(c);
+  // On the web the underlying object is a BluetoothDevice with a `.gatt`
+  // property. On Capacitor native it's a BleDevice (no .gatt) — we won't
+  // hit this code path there.
+  return dev && 'gatt' in dev ? (dev as BluetoothDevice) : undefined;
+}
+
 export function clearBleConn(): void {
   bleConn = null;
   bleInitPromise = null;
@@ -98,8 +135,14 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
         // capabilities optimistically; the real verdict comes from any
         // actual write/flash that fails, where the error code tells us
         // which mode is broken.
+        const name = getBleDeviceName(c);
+        let boardVersion: 'V1' | 'V2' | undefined;
+        try { boardVersion = c.getBoardVersion(); } catch { /* not ready yet */ }
         updateState((s) => ({
           ...s,
+          bleDeviceName: name ?? s.bleDeviceName,
+          boardVersion: boardVersion ?? s.boardVersion,
+          calliopeVersion: boardVersion === 'V2' ? 'V3' : (boardVersion === 'V1' ? 'V1' : s.calliopeVersion),
           bleCanCommunicate: true,
           bleCanFlash: true,
           bleStaleBond: false,
@@ -195,6 +238,15 @@ export async function flashCalliopeViaBle(hex: string, name: string): Promise<vo
     updateState((s) => ({ ...s, bleStatus: 'error', bleErrorMessage: (err as Error).message }));
     return;
   }
+  const device = getBleDevice(c);
+  if (!device) {
+    updateState((s) => ({
+      ...s,
+      bleStatus: 'error',
+      bleErrorMessage: 'BLE-Gerät nicht zugänglich — bitte erneut verbinden.',
+    }));
+    return;
+  }
 
   updateState((s) => ({
     ...s,
@@ -211,11 +263,28 @@ export async function flashCalliopeViaBle(hex: string, name: string): Promise<vo
     text: `Flashing via BLE "${name}" (${Math.round(cleanHex.length / 1024)} KB)`,
   });
 
-  const dataSource: FlashDataSource = async () => cleanHex;
-  const progress: ProgressCallback = applyFlashProgress;
-
   try {
-    await c.flash(dataSource, { partial: true, progress, minimumProgressIncrement: 0.05 });
+    await flashOverBluetoothWeb({
+      device,
+      hex: cleanHex,
+      onPhase: (phase) => {
+        // Map the port's phases onto our 5-state UI flash phase. The phase
+        // names are the fork's; the right-hand side matches what our UI
+        // already knows how to render.
+        const uiPhase = phase === 'flashing' ? 'flashing'
+          : phase === 'finalising' ? 'finalising'
+          : phase === 'reconnecting' ? 'prepare'
+          : (phase === 'pairing-mode-switch' || phase === 'refreshing') ? 'reboot'
+          : 'check';
+        updateState((s) => ({ ...s, flashPhase: uiPhase }));
+      },
+      onProgress: (p) => {
+        // The port emits combined 0..1 progress across all phases. Only
+        // surface a percentage once we're actually flashing — let the
+        // pre-flash UI use its indeterminate spinner instead.
+        applyFlashProgress(ProgressStage.PartialFlashing, p);
+      },
+    });
     updateState((s) => ({
       ...s,
       flashTransport: undefined,
@@ -225,8 +294,9 @@ export async function flashCalliopeViaBle(hex: string, name: string): Promise<vo
       lastFlashAt: Date.now(),
     }));
     appendLog({ direction: 'info', text: `Flash finished: ${name}` });
-    // BLE always disconnects after flash (lib semantics). Caller has to
-    // reconnect — surface that fact via state so the UI prompts the user.
+    // The Calliope rebooted into application mode and dropped the GATT —
+    // upstream's connection wrapper will see Disconnected. The status
+    // listener handles that.
   } catch (err) {
     handleBleFlashError(err);
   }
@@ -234,7 +304,17 @@ export async function flashCalliopeViaBle(hex: string, name: string): Promise<vo
 
 function handleBleFlashError(err: unknown): void {
   let userMsg: string;
-  if (err instanceof DeviceError) {
+  if (err instanceof BluetoothPartialFlashDalMismatchError) {
+    userMsg = 'Runtime auf dem Calliope passt nicht zum Programm — bitte einmal per USB voll flashen.';
+    updateState((s) => ({ ...s, bleCanFlash: false }));
+  } else if (err instanceof BluetoothPartialFlashServiceMissingError) {
+    userMsg = 'Calliope läuft gerade ohne Partial-Flashing-Service — einmal per USB ein MakeCode-Programm aufspielen.';
+    updateState((s) => ({ ...s, bleCanFlash: false }));
+  } else if (err instanceof BluetoothPartialFlashInvalidHexError) {
+    userMsg = 'Dieses Programm kann nicht über BLE geflasht werden (kein MakeCode-Marker).';
+  } else if (err instanceof DOMException && err.name === 'AbortError') {
+    userMsg = 'Flash abgebrochen.';
+  } else if (err instanceof DeviceError) {
     switch (err.code) {
       case 'pairing-information-lost':
         userMsg = 'OS-Pairing veraltet — Calliope in den OS-Bluetooth-Einstellungen entkoppeln und neu pairen.';
