@@ -70,20 +70,47 @@ async function getBleDevice(
   c: MicrobitBluetoothConnection,
 ): Promise<BluetoothDevice | undefined> {
   const dev = getRawBleDevice(c);
-  if (!dev) return undefined;
-  // Defensive: if upstream ever changes to store the raw BluetoothDevice
-  // directly, take the fast path.
+  if (!dev) {
+    appendLog({ direction: 'error', text: 'getBleDevice: connection has no bleDevice field' });
+    // Dump the connection structure so we can find out where upstream
+    // actually stashes the device this version.
+    try {
+      const keys = Object.keys(c as object).slice(0, 30);
+      appendLog({ direction: 'info', text: `conn keys: ${keys.join(', ')}` });
+    } catch { /* ignore */ }
+    return undefined;
+  }
   if ('gatt' in dev) return dev as BluetoothDevice;
   const deviceId = (dev as { deviceId?: string }).deviceId;
+  appendLog({
+    direction: 'info',
+    text: `getBleDevice: BleDevice deviceId=${deviceId ?? 'undefined'} name=${dev.name ?? '?'}`,
+  });
   if (!deviceId) return undefined;
   const bt = navigator.bluetooth as unknown as {
     getDevices?: () => Promise<BluetoothDevice[]>;
   };
-  if (!bt.getDevices) return undefined;
+  if (!bt.getDevices) {
+    appendLog({ direction: 'error', text: 'getBleDevice: navigator.bluetooth.getDevices unavailable' });
+    return undefined;
+  }
   try {
     const all = await bt.getDevices();
-    return all.find((d) => (d as unknown as { id?: string }).id === deviceId);
-  } catch {
+    const ids = all.map((d) => (d as unknown as { id?: string }).id ?? '?').join(', ');
+    appendLog({
+      direction: 'info',
+      text: `getBleDevice: getDevices() → [${ids}] (looking for ${deviceId})`,
+    });
+    const found = all.find((d) => (d as unknown as { id?: string }).id === deviceId);
+    if (!found) {
+      appendLog({
+        direction: 'error',
+        text: 'getBleDevice: device not in getDevices() — id mismatch or never permitted',
+      });
+    }
+    return found;
+  } catch (e) {
+    appendLog({ direction: 'error', text: `getBleDevice: getDevices threw: ${(e as Error).message}` });
     return undefined;
   }
 }
