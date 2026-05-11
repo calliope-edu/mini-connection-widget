@@ -5,9 +5,9 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
-  '@microbit/microbit-connection@1.0.0-beta.0':
+  '@microbit/microbit-connection@1.0.0-beta.1':
     hash: puknzjbbbv3zvpf4xvaf5ojjqy
-    path: patches/@microbit__microbit-connection@1.0.0-beta.0.patch
+    path: patches/@microbit__microbit-connection@1.0.0-beta.1.patch
 
 importers:
 
@@ -26,8 +26,8 @@ importers:
         specifier: v7.0.0-microbit.4
         version: 7.0.0-microbit.4(@capacitor/core@7.6.2)
       '@microbit/microbit-connection':
-        specifier: 1.0.0-beta.0
-        version: 1.0.0-beta.0(patch_hash=puknzjbbbv3zvpf4xvaf5ojjqy)(@capacitor-community/bluetooth-le@7.3.2(@capacitor/core@7.6.2))(@capacitor/core@7.6.2)(@capacitor/filesystem@7.1.8(@capacitor/core@7.6.2))(@microbit/capacitor-community-nordic-dfu@7.0.0-microbit.4(@capacitor/core@7.6.2))(tslib@2.8.1)
+        specifier: 1.0.0-beta.1
+        version: 1.0.0-beta.1(patch_hash=puknzjbbbv3zvpf4xvaf5ojjqy)(@capacitor-community/bluetooth-le@7.3.2(@capacitor/core@7.6.2))(@capacitor/core@7.6.2)(@capacitor/filesystem@7.1.8(@capacitor/core@7.6.2))(@microbit/capacitor-community-nordic-dfu@7.0.0-microbit.4(@capacitor/core@7.6.2))(tslib@2.8.1)
       '@types/w3c-web-usb':
         specifier: ^1.0.14
         version: 1.0.14
@@ -62,8 +62,8 @@ packages:
     peerDependencies:
       '@capacitor/core': ^7.0.0
 
-  '@microbit/microbit-connection@1.0.0-beta.0':
-    resolution: {integrity: sha512-pPUmQmC2oeUdtM7y5WiMPFPiPUDKHyfxUTSsGpi1YGGCoWYpVPn8s70ETBLkxtfDrU02oDOQpLYcj0XHs/b3gw==}
+  '@microbit/microbit-connection@1.0.0-beta.1':
+    resolution: {integrity: sha512-mD0UakRjwYgXHbQd2XOF55EX2dWWoNCr401zpLNDP9BBAoSe5egwh/lkOhy2/65SbQkk5YfmmeMPAa+pl04dEw==}
     peerDependencies:
       '@capacitor-community/bluetooth-le': ^7.3.0
       '@capacitor/core': ^7.4.4
@@ -119,7 +119,7 @@ snapshots:
     dependencies:
       '@capacitor/core': 7.6.2
 
-  '@microbit/microbit-connection@1.0.0-beta.0(patch_hash=puknzjbbbv3zvpf4xvaf5ojjqy)(@capacitor-community/bluetooth-le@7.3.2(@capacitor/core@7.6.2))(@capacitor/core@7.6.2)(@capacitor/filesystem@7.1.8(@capacitor/core@7.6.2))(@microbit/capacitor-community-nordic-dfu@7.0.0-microbit.4(@capacitor/core@7.6.2))(tslib@2.8.1)':
+  '@microbit/microbit-connection@1.0.0-beta.1(patch_hash=puknzjbbbv3zvpf4xvaf5ojjqy)(@capacitor-community/bluetooth-le@7.3.2(@capacitor/core@7.6.2))(@capacitor/core@7.6.2)(@capacitor/filesystem@7.1.8(@capacitor/core@7.6.2))(@microbit/capacitor-community-nordic-dfu@7.0.0-microbit.4(@capacitor/core@7.6.2))(tslib@2.8.1)':
     dependencies:
       '@capacitor-community/bluetooth-le': 7.3.2(@capacitor/core@7.6.2)
       '@capacitor/core': 7.6.2

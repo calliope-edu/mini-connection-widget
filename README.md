@@ -8,7 +8,7 @@ Status: **early — vanilla store API stable, UI widget not yet shipped.**
 
 ## What this is
 
-`@microbit/microbit-connection@1.0.0-beta.0` provides the GATT layer (WebUSB,
+`@microbit/microbit-connection@1.0.0-beta.1` provides the GATT layer (WebUSB,
 Web Bluetooth, native iOS/Android BLE via Capacitor, partial flashing,
 status events). This package sits one level up and orchestrates everything
 an app actually needs to talk to a Calliope mini:
@@ -66,12 +66,12 @@ git submodule, or vendored copy. With pnpm:
     "@capacitor/core": "^7.4.4",
     "@capacitor/filesystem": "^7.1.6",
     "@microbit/capacitor-community-nordic-dfu": "v7.0.0-microbit.4",
-    "@microbit/microbit-connection": "1.0.0-beta.0"
+    "@microbit/microbit-connection": "1.0.0-beta.1"
   },
   "pnpm": {
     "patchedDependencies": {
-      "@microbit/microbit-connection@1.0.0-beta.0":
-        "../mini-connection-widget/patches/@microbit__microbit-connection@1.0.0-beta.0.patch"
+      "@microbit/microbit-connection@1.0.0-beta.1":
+        "../mini-connection-widget/patches/@microbit__microbit-connection@1.0.0-beta.1.patch"
     }
   }
 }
@@ -83,9 +83,9 @@ apps they bind to native code.
 
 ## Patches
 
-We ship a `pnpm patch` on top of `@microbit/microbit-connection@1.0.0-beta.0`
+We ship a `pnpm patch` on top of `@microbit/microbit-connection@1.0.0-beta.1`
 with four small, Calliope-specific fixes. The patch lives in
-[`patches/@microbit__microbit-connection@1.0.0-beta.0.patch`](./patches) and
+[`patches/@microbit__microbit-connection@1.0.0-beta.1.patch`](./patches) and
 is referenced by both this package and the consuming app's
 `pnpm.patchedDependencies`.
 
