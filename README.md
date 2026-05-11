@@ -1,61 +1,43 @@
 # @calliope-edu/mini-connection-widget
 
-High-level Calliope mini connection orchestration on top of
-[`@microbit/microbit-connection`](https://github.com/microbit-foundation/microbit-connection),
-with a small set of Calliope-specific patches applied to the upstream lib.
+Calliope mini connection layer on top of
+[`@microbit/microbit-connection`](https://github.com/microbit-foundation/microbit-connection).
+Adds Calliope hardware support, simultaneous USB+BLE tracking, automatic
+flash routing, and a framework-agnostic store.
 
 Status: **early — vanilla store API stable, UI widget not yet shipped.**
 
-## What this is
+## What it does
 
-`@microbit/microbit-connection@1.0.0-beta.1` provides the GATT layer (WebUSB,
-Web Bluetooth, native iOS/Android BLE via Capacitor, partial flashing,
-status events). This package sits one level up and orchestrates everything
-an app actually needs to talk to a Calliope mini:
+- **Simultaneous USB and BLE** — both transports tracked independently with
+  per-channel status, capability flags, device names, and errors.
+- **Automatic flash routing** — `flashCalliope(hex)` picks BLE if it's
+  connected and OS-paired (preserves the bond), otherwise USB, otherwise
+  prompts for a USB cable.
+- **Stale-bond detection** — distinguishes *never-paired* from *stale-bond*
+  (typical after a USB full-flash) and surfaces a distinct error.
+- **Smart picker recovery** — works around Chrome's "no devices" trap by
+  clearing cached device state before showing the picker.
+- **Framework-agnostic store** — Svelte-`subscribe`-compatible. Svelte uses
+  `$store` directly; React `useSyncExternalStore`; Vue a watcher.
 
-- **Simultaneous USB and BLE** — both transports tracked independently, with
-  per-channel status, capability flags (`bleCanFlash`, `bleCanCommunicate`),
-  device names, and error messages. A UI can show "Flashen & Kommunikation"
-  on USB and "Nur Kommunikation" on BLE at the same time.
-- **Stale-bond detection** — when the OS still holds a BLE bond but the
-  Calliope has forgotten its whitelist (typical after a USB full-flash),
-  authenticated services are unreachable. The package distinguishes
-  *never-paired* from *stale-bond* (using `DeviceError.code ===
-  'pairing-information-lost'` plus a `uartWrite` probe) and surfaces a
-  distinct error so the app can prompt OS-side re-pairing.
-- **Automatic flash routing** — `flashCalliope(hex)` picks the right
-  transport: BLE if it's connected and OS-paired (preserves the bond);
-  otherwise USB; otherwise prompts the user to plug in. No mode toggle for
-  the user to manage. USB-flash-then-warn-about-BLE-pairing-loss is built in.
-- **Smart picker recovery** — Chrome's Web Bluetooth picker stops scanning
-  after a few back-to-back failed attempts. The connect-then-`clearDevice`
-  sequence side-steps the bug.
-- **Framework-agnostic store** — `calliopeState`, `calliopeLog` etc. expose
-  a Svelte-`subscribe`-compatible contract. Svelte uses `$store` directly;
-  React uses `useSyncExternalStore`; Vue uses a watcher; vanilla JS calls
-  `.subscribe(fn)`.
+## Multi-platform
 
-## Multi-platform reach
-
-Because the underlying lib delegates BLE to
+The underlying lib delegates BLE to
 [`@capacitor-community/bluetooth-le`](https://github.com/capacitor-community/bluetooth-le)
-and USB to WebUSB, the same code path runs across:
+and USB to WebUSB, so the same code runs across:
 
 | Target | How |
 |---|---|
-| Web (browser tab) | Capacitor BLE plugin's web fallback → `navigator.bluetooth`; WebUSB direct |
-| iOS app | Capacitor host + native CoreBluetooth (real OS pairing UI, robust against macOS visibility quirks) |
+| Web (browser) | Capacitor BLE plugin's web fallback → `navigator.bluetooth`; WebUSB direct |
+| iOS app | Capacitor host + native CoreBluetooth |
 | Android app | Capacitor host + native Android BluetoothManager |
-| Tauri / Electron / NW.js (desktop) | WebView's Web Bluetooth / WebUSB; Capacitor deps lie dormant in fallback mode |
-
-For native targets you also get `BondMode` semantics (`pairing` /
-`application` / `none`) — useful because flashing requires pairing-mode
-bonding while live-data streaming wants the app-mode firmware path.
+| Tauri / Electron (desktop) | WebView's Web Bluetooth / WebUSB; Capacitor deps lie dormant |
 
 ## Install
 
-This package isn't published to npm. Consume it as a local checkout (link),
-git submodule, or vendored copy. With pnpm:
+Not published to npm — consume as a local checkout (link), submodule, or
+vendored copy. With pnpm:
 
 ```jsonc
 // app/package.json
@@ -77,30 +59,6 @@ git submodule, or vendored copy. With pnpm:
 }
 ```
 
-The Capacitor packages are peer dependencies of `@microbit/microbit-connection`.
-On the web they include browser fallbacks; on Capacitor-hosted iOS/Android
-apps they bind to native code.
-
-## Patches
-
-We ship a `pnpm patch` on top of `@microbit/microbit-connection@1.0.0-beta.1`
-with four small, Calliope-specific fixes. The patch lives in
-[`patches/@microbit__microbit-connection@1.0.0-beta.1.patch`](./patches) and
-is referenced by both this package and the consuming app's
-`pnpm.patchedDependencies`.
-
-| Patch | File | Reason |
-|---|---|---|
-| Segger J-Link VID/PID in USB picker defaults | `build/*/usb/connection.js` | Calliope mini 1/2 ship Segger J-Link instead of DAPLink. Upstream's hardcoded `0x0d28/0x0204` filter would hide them from the WebUSB picker. |
-| Calliope `namePrefix` in BLE picker defaults | `build/*/bluetooth/connection.js` | Upstream only lists `BBC micro:bit` and `uBit` namePrefixes. Calliope mini advertises as `Calliope mini [name]`. |
-| `partialFlashing` UUID in BLE optionalServices | `build/*/bluetooth/connection.js` | Web Bluetooth requires every service we'll access later to be declared at `requestDevice` time. Upstream omits the partial-flashing UUID, which prevents web BLE flashing from reaching the service. |
-| Lenient `getBoardVersion` | `build/*/bluetooth/services/device-information-service.js` | Upstream throws on any model number that isn't exactly `BBC micro:bit` or contains `BBC micro:bit v2`. Calliope mini reports `Calliope mini V2`/`V3`, which would abort every BLE connect. Patched to accept `calliope mini` / `v2` substrings and default to `V2` on unknown strings rather than throwing. |
-
-If/when upstream lands equivalent support (e.g. via configurable filters or
-a peer-device extension hook), the patch shrinks accordingly. Generic
-improvements that don't depend on Calliope hardware are PR candidates for
-upstream rather than patches.
-
 ## Usage
 
 ```ts
@@ -114,24 +72,16 @@ import {
   onSerialLine,
 } from '@calliope-edu/mini-connection-widget';
 
-// Once at app startup. Silent USB reconnect + paired-device probe.
-initializeCalliopeConnection();
+initializeCalliopeConnection();         // once at app startup
 
-// User clicks Connect (USB or BLE). Both can be open simultaneously.
-await connectCalliope('usb');
+await connectCalliope('usb');           // both transports can be open
 await connectCalliope('ble');
 
-// In a Svelte component:
-//   $: ({ usbStatus, bleStatus, bleCanFlash, bleStaleBond } = $calliopeState);
-
-// Flash a hex — auto-routed to BLE-if-paired, else USB, else USB-plug prompt.
-await flashCalliope(hexString, 'My Project');
-
-// Stream serial lines from the board.
+await flashCalliope(hexString);         // auto-routed
 const unsub = onSerialLine((line) => console.log(line));
 ```
 
-## Public API
+### Public API
 
 ```ts
 // Stores (Svelte-`subscribe` compatible)
@@ -152,18 +102,68 @@ showBlePairingInfo(): void
 dismissBlePairingInfo(): void
 ```
 
+## Patches
+
+A single `pnpm patch` on top of `@microbit/microbit-connection` carries four
+Calliope-specific fixes. Patch file:
+[`patches/@microbit__microbit-connection@1.0.0-beta.1.patch`](./patches).
+
+| Patch | Why |
+|---|---|
+| Segger J-Link VID/PID in USB picker defaults | Calliope mini 1/2 ship J-Link instead of DAPLink — upstream's hardcoded micro:bit VID/PID would hide them. |
+| `Calliope mini` namePrefix in BLE picker | Upstream only lists `BBC micro:bit` and `uBit`. |
+| `partialFlashing` UUID in BLE optionalServices | Web Bluetooth requires every service to be declared at `requestDevice` time; upstream omits the partial-flashing UUID. |
+| Lenient `getBoardVersion` | Upstream throws on any model number that isn't `BBC micro:bit`/`BBC micro:bit v2`. Calliope reports `Calliope mini V2`/`V3`. Patched to accept `calliope mini` / `v2` substrings and default to `V2` on unknown strings. |
+
+Generic improvements that don't depend on Calliope hardware are PR
+candidates for upstream rather than patches; the patch set should shrink
+over time.
+
+### Updating the upstream lib
+
+A walkthrough — happy path first, conflicts at the bottom.
+
+1. **Diff first.** Locally clone `microbit-foundation/microbit-connection`
+   (or use GitHub's compare view) and check whether the new release touches
+   any of the files we patch: `build/*/usb/connection.js`,
+   `build/*/bluetooth/connection.js`,
+   `build/*/bluetooth/services/device-information-service.js`.
+
+2. **Bump the version string.** A single find-and-replace over both
+   `package.json` files swaps the dep version *and* the
+   `patchedDependencies` key (the key embeds the version too).
+
+3. **Rename the patch file** so its filename tracks the new version. The
+   README references it by name in one place — same find-and-replace
+   catches it. Use `git mv` so history is preserved.
+
+4. **`pnpm install`** in both projects. pnpm pulls the new tarball, applies
+   the renamed patch, fails loudly if any hunk doesn't apply.
+
+5. **Type-check, commit, push.**
+
+If `pnpm install` reports a hunk failure (upstream changed a file we
+patch):
+
+1. `pnpm patch @microbit/microbit-connection@<new-version>` extracts a
+   fresh editable copy. pnpm fuzzy-applies hunks where it can and leaves
+   `.rej` files for the conflicts.
+2. Open the conflicted file(s), merge our edit against the new upstream
+   code by hand.
+3. `pnpm patch-commit <path>` regenerates the patch file.
+4. Resume from step 4 above.
+
 ## Roadmap
 
 1. **Web component widget** — Svelte-built `<calliope-mini-connection>`
-   element so any framework (React, Vue, vanilla, Tauri…) can mount the
-   status panel without owning Svelte. Same store, same actions, just UI.
-2. **Capacitor mobile shells** — drop the existing source into an Ionic/
-   Capacitor project, ship as iOS/Android apps. Native-bonded BLE handles
-   the "macOS can't see Calliope in pairing mode" + "stale OS bond after
-   USB flash" pain points the web version has to work around.
-3. **Upstream PRs** for generic improvements (configurable name-prefix
-   filters, configurable USB VID/PID filters, opt-in lenient model-number
-   parsing) so the patch set shrinks over time.
+   element so any framework can mount the status panel without owning
+   Svelte.
+2. **Capacitor mobile shells** — ship as iOS/Android apps. Native-bonded
+   BLE handles the "macOS can't see Calliope in pairing mode" and "stale
+   OS bond after USB flash" pain points the web version works around.
+3. **Upstream PRs** for the generic bits of our patch (configurable name
+   prefixes, configurable USB VID/PID filters, opt-in lenient model-number
+   parsing).
 
 ## License
 
