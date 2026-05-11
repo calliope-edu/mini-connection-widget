@@ -1,0 +1,149 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+patchedDependencies:
+  '@microbit/microbit-connection@1.0.0-beta.0':
+    hash: puknzjbbbv3zvpf4xvaf5ojjqy
+    path: patches/@microbit__microbit-connection@1.0.0-beta.0.patch
+
+importers:
+
+  .:
+    devDependencies:
+      '@capacitor-community/bluetooth-le':
+        specifier: ^7.3.0
+        version: 7.3.2(@capacitor/core@7.6.2)
+      '@capacitor/core':
+        specifier: ^7.4.4
+        version: 7.6.2
+      '@capacitor/filesystem':
+        specifier: ^7.1.6
+        version: 7.1.8(@capacitor/core@7.6.2)
+      '@microbit/capacitor-community-nordic-dfu':
+        specifier: v7.0.0-microbit.4
+        version: 7.0.0-microbit.4(@capacitor/core@7.6.2)
+      '@microbit/microbit-connection':
+        specifier: 1.0.0-beta.0
+        version: 1.0.0-beta.0(patch_hash=puknzjbbbv3zvpf4xvaf5ojjqy)(@capacitor-community/bluetooth-le@7.3.2(@capacitor/core@7.6.2))(@capacitor/core@7.6.2)(@capacitor/filesystem@7.1.8(@capacitor/core@7.6.2))(@microbit/capacitor-community-nordic-dfu@7.0.0-microbit.4(@capacitor/core@7.6.2))(tslib@2.8.1)
+      '@types/w3c-web-usb':
+        specifier: ^1.0.14
+        version: 1.0.14
+      '@types/web-bluetooth':
+        specifier: ^0.0.21
+        version: 0.0.21
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+
+packages:
+
+  '@capacitor-community/bluetooth-le@7.3.2':
+    resolution: {integrity: sha512-7dgtglFXGmyS849XtIZ62iA997aE3yqNsq7XsC8yjR8dqe/agh852+nW1Zk/8QlG58dPu/K5fxVzlWZvZFb80g==}
+    peerDependencies:
+      '@capacitor/core': '>=7.0.0'
+
+  '@capacitor/core@7.6.2':
+    resolution: {integrity: sha512-8HRKEUlYpCOeRec8bCHZwEA4o/E2q5dhHSd0v/Cr6+ume08fZY/gniF+ZCKF+6DO0T/nRaBeNRQn6Up+45J1mg==}
+
+  '@capacitor/filesystem@7.1.8':
+    resolution: {integrity: sha512-Qpw/2SE4/CzqAUvGgSM9hw/uXQ5qoOaF4wxbToXwpAaKPS+tzletS1h5ti3jjLmGcqizTs2sEXMtcsARW/Ceew==}
+    peerDependencies:
+      '@capacitor/core': '>=7.0.0'
+
+  '@capacitor/synapse@1.0.4':
+    resolution: {integrity: sha512-/C1FUo8/OkKuAT4nCIu/34ny9siNHr9qtFezu4kxm6GY1wNFxrCFWjfYx5C1tUhVGz3fxBABegupkpjXvjCHrw==}
+
+  '@microbit/capacitor-community-nordic-dfu@7.0.0-microbit.4':
+    resolution: {integrity: sha512-ffCmbAqvBrd6kSyNu80wh51LlBfoy3UbWsMUjnPHYlTKh/tthi5efDbuRBJUfT2E/4ZznrAPN2wuwLMBcah/CA==}
+    engines: {node: '>=20.0.0'}
+    peerDependencies:
+      '@capacitor/core': ^7.0.0
+
+  '@microbit/microbit-connection@1.0.0-beta.0':
+    resolution: {integrity: sha512-pPUmQmC2oeUdtM7y5WiMPFPiPUDKHyfxUTSsGpi1YGGCoWYpVPn8s70ETBLkxtfDrU02oDOQpLYcj0XHs/b3gw==}
+    peerDependencies:
+      '@capacitor-community/bluetooth-le': ^7.3.0
+      '@capacitor/core': ^7.4.4
+      '@capacitor/filesystem': ^7.1.6
+      '@microbit/capacitor-community-nordic-dfu': v7.0.0-microbit.4
+
+  '@microbit/microbit-universal-hex@0.2.2':
+    resolution: {integrity: sha512-qyFt8ATgxAyPkNz9Yado4HXEeCctwP/8L1/v2hFLeVUqw/HFqVqV4piJbqRMmyOefMcQ9OyVPhLXjtbKn9063Q==}
+    engines: {node: '>=8.5', npm: '>=6.0', yarn: ^1.0}
+    peerDependencies:
+      tslib: '>=1.11.1'
+
+  '@types/w3c-web-usb@1.0.14':
+    resolution: {integrity: sha512-Qu3Nn6JFuF4+sHKYl+IcX9vYiI40ogleXzFFSxoE1W94rG98o/kXs8uJ0QSfFzuwBCZWlGfUGpPkgwuuX4PchA==}
+
+  '@types/web-bluetooth@0.0.20':
+    resolution: {integrity: sha512-g9gZnnXVq7gM7v3tJCWV/qw7w+KeOlSHAhgF9RytFyifW6AF61hdT2ucrYhPq9hLs5JIryeupHV3qGk95dH9ow==}
+
+  '@types/web-bluetooth@0.0.21':
+    resolution: {integrity: sha512-oIQLCGWtcFZy2JW77j9k8nHzAOpqMHLQejDA48XXMWH6tjCQHz5RCFz1bzsmROyL6PUm+LLnUiI4BCn221inxA==}
+
+  nrf-intel-hex@1.4.0:
+    resolution: {integrity: sha512-q3+GGRIpe0VvCjUP1zaqW5rk6IpCZzhD0lu7Sguo1bgWwFcA9kZRjsaKUb0jBQMnefyOl5o0BBGAxvqMqYx8Sg==}
+    engines: {node: '>=6.0.0'}
+
+  tslib@2.8.1:
+    resolution: {integrity: sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==}
+
+  typescript@5.9.3:
+    resolution: {integrity: sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==}
+    engines: {node: '>=14.17'}
+    hasBin: true
+
+snapshots:
+
+  '@capacitor-community/bluetooth-le@7.3.2(@capacitor/core@7.6.2)':
+    dependencies:
+      '@capacitor/core': 7.6.2
+      '@types/web-bluetooth': 0.0.20
+
+  '@capacitor/core@7.6.2':
+    dependencies:
+      tslib: 2.8.1
+
+  '@capacitor/filesystem@7.1.8(@capacitor/core@7.6.2)':
+    dependencies:
+      '@capacitor/core': 7.6.2
+      '@capacitor/synapse': 1.0.4
+
+  '@capacitor/synapse@1.0.4': {}
+
+  '@microbit/capacitor-community-nordic-dfu@7.0.0-microbit.4(@capacitor/core@7.6.2)':
+    dependencies:
+      '@capacitor/core': 7.6.2
+
+  '@microbit/microbit-connection@1.0.0-beta.0(patch_hash=puknzjbbbv3zvpf4xvaf5ojjqy)(@capacitor-community/bluetooth-le@7.3.2(@capacitor/core@7.6.2))(@capacitor/core@7.6.2)(@capacitor/filesystem@7.1.8(@capacitor/core@7.6.2))(@microbit/capacitor-community-nordic-dfu@7.0.0-microbit.4(@capacitor/core@7.6.2))(tslib@2.8.1)':
+    dependencies:
+      '@capacitor-community/bluetooth-le': 7.3.2(@capacitor/core@7.6.2)
+      '@capacitor/core': 7.6.2
+      '@capacitor/filesystem': 7.1.8(@capacitor/core@7.6.2)
+      '@microbit/capacitor-community-nordic-dfu': 7.0.0-microbit.4(@capacitor/core@7.6.2)
+      '@microbit/microbit-universal-hex': 0.2.2(tslib@2.8.1)
+      '@types/w3c-web-usb': 1.0.14
+      '@types/web-bluetooth': 0.0.20
+      nrf-intel-hex: 1.4.0
+    transitivePeerDependencies:
+      - tslib
+
+  '@microbit/microbit-universal-hex@0.2.2(tslib@2.8.1)':
+    dependencies:
+      tslib: 2.8.1
+
+  '@types/w3c-web-usb@1.0.14': {}
+
+  '@types/web-bluetooth@0.0.20': {}
+
+  '@types/web-bluetooth@0.0.21': {}
+
+  nrf-intel-hex@1.4.0: {}
+
+  tslib@2.8.1: {}
+
+  typescript@5.9.3: {}

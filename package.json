@@ -1,0 +1,41 @@
+{
+  "name": "@calliope-edu/mini-connection-widget",
+  "version": "0.1.0",
+  "description": "High-level Calliope mini connection orchestration on top of @microbit/microbit-connection — simultaneous USB+BLE tracking, smart picker recovery, stale-bond detection, automatic flash routing, and a framework-agnostic store. UI widget arrives in a future release.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/calliope-edu/mini-connection-widget.git"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    }
+  },
+  "files": [
+    "src"
+  ],
+  "peerDependencies": {
+    "@microbit/microbit-connection": "1.0.0-beta.0"
+  },
+  "devDependencies": {
+    "@capacitor-community/bluetooth-le": "^7.3.0",
+    "@capacitor/core": "^7.4.4",
+    "@capacitor/filesystem": "^7.1.6",
+    "@microbit/capacitor-community-nordic-dfu": "v7.0.0-microbit.4",
+    "@microbit/microbit-connection": "1.0.0-beta.0",
+    "@types/w3c-web-usb": "^1.0.14",
+    "@types/web-bluetooth": "^0.0.21",
+    "typescript": "^5.6.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "pnpm": {
+    "patchedDependencies": {
+      "@microbit/microbit-connection@1.0.0-beta.0": "patches/@microbit__microbit-connection@1.0.0-beta.0.patch"
+    }
+  }
+}

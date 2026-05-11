@@ -1,0 +1,165 @@
+diff --git a/build/cjs/bluetooth/connection.js b/build/cjs/bluetooth/connection.js
+index bd3d0ed49a2062a55d257e85657ec849b7ea724f..13bdbee3dd26c890ad0a33158b5c64a4d8f7cd02 100644
+--- a/build/cjs/bluetooth/connection.js
++++ b/build/cjs/bluetooth/connection.js
+@@ -276,9 +276,12 @@ class MicrobitBluetoothConnectionImpl extends events_js_1.TypedEventTarget {
+         // Support both the default "BBC micro:bit" name and the shorter "uBit"
+         // name used by some MakeCode extensions (e.g. bsiever/microbit-pxt-blehid).
+         // See https://github.com/bsiever/microbit-pxt-blehid/issues/31
++        // Patched by @calliope-edu/mini-connection-widget: include Calliope
++        // mini namePrefix so Calliope hardware shows up in the BLE picker
++        // alongside micro:bit. Mini 1/2/3 all advertise "Calliope mini [name]".
+         const namePrefixes = this.nameFilter
+-            ? [`BBC micro:bit [${this.nameFilter}]`, `uBit [${this.nameFilter}]`]
+-            : ["BBC micro:bit", "uBit"];
++            ? [`BBC micro:bit [${this.nameFilter}]`, `uBit [${this.nameFilter}]`, `Calliope mini [${this.nameFilter}]`]
++            : ["BBC micro:bit", "uBit", "Calliope mini"];
+         // If we have a cached device, check if it still matches the current filter.
+         // If not, clear it so we find a new device.
+         if (this.bleDevice) {
+@@ -521,6 +524,11 @@ class MicrobitBluetoothConnectionImpl extends events_js_1.TypedEventTarget {
+             profile_js_1.profile.magnetometer.id,
+             profile_js_1.profile.temperature.id,
+             profile_js_1.profile.uart.id,
++            // Patched by @calliope-edu/mini-connection-widget: declare the
++            // partial-flashing service up front so flash() can reach it on
++            // Web Bluetooth. (Capacitor's web fallback can't reach undeclared
++            // services after pairing.)
++            profile_js_1.profile.partialFlashing.id,
+         ];
+         // Temporarily patch navigator.bluetooth.requestDevice to support multiple
+         // name prefix filters. The capacitor-ble plugin only supports a single
+diff --git a/build/cjs/bluetooth/services/device-information-service.js b/build/cjs/bluetooth/services/device-information-service.js
+index 8c3da78c27a79bc9759dd9af9b3079cfe245bcc6..32d947f721a39e7f038715ba088f05622a1b2113 100644
+--- a/build/cjs/bluetooth/services/device-information-service.js
++++ b/build/cjs/bluetooth/services/device-information-service.js
+@@ -16,13 +16,21 @@ class DeviceInformationService {
+         const serviceMeta = profile_js_1.profile.deviceInformation;
+         const modelNumberBytes = await bluetooth_le_1.BleClient.read(this.deviceId, serviceMeta.id, serviceMeta.characteristics.modelNumber.id);
+         const modelNumber = new TextDecoder().decode(modelNumberBytes);
+-        if (modelNumber.toLowerCase() === "BBC micro:bit".toLowerCase()) {
++        const lower = modelNumber.toLowerCase();
++        if (lower === "BBC micro:bit".toLowerCase()) {
+             return "V1";
+         }
+-        if (modelNumber.toLowerCase().includes("BBC micro:bit v2".toLowerCase())) {
++        // Patched by @calliope-edu/mini-connection-widget: recognise Calliope
++        // mini hardware (mini 1/2 → V1-class DAL, mini 3 → V2-class CODAL)
++        // and tolerate firmware-revision suffixes that aren't strict matches.
++        if (lower.includes("calliope mini") || lower.includes("v2")) {
+             return "V2";
+         }
+-        throw new Error(`Unexpected model number: ${modelNumber}`);
++        // Unknown model number — log + default to V2 instead of throwing.
++        // The only consumer of board version on the BLE path picks between
++        // V1 and V2 capability sets; defaulting to V2 is the safe bet.
++        console.warn(`[microbit-connection] Unrecognised model number "${modelNumber}", assuming V2`);
++        return "V2";
+     }
+ }
+ exports.DeviceInformationService = DeviceInformationService;
+diff --git a/build/cjs/usb/connection.js b/build/cjs/usb/connection.js
+index e04b8bfd599dbe03b3d8c5adb0d63f1a780a4b59..8d560bd960aa673661c2269c0a95435cad31053a 100644
+--- a/build/cjs/usb/connection.js
++++ b/build/cjs/usb/connection.js
+@@ -15,7 +15,16 @@ const promise_queue_js_1 = require("./promise-queue.js");
+ const device_wrapper_js_1 = require("./device-wrapper.js");
+ const partial_flashing_js_1 = require("./partial-flashing.js");
+ const cdc_saturation_js_1 = require("./cdc-saturation.js");
+-const defaultFilters = [{ vendorId: 0x0d28, productId: 0x0204 }];
++// Patched by @calliope-edu/mini-connection-widget: include Segger J-Link
++// VID/PID pairs used by Calliope mini 1.x and 2.x boards. Without these,
++// Calliope minis using J-Link debugger firmware are invisible to the
++// WebUSB picker. Mini 3 ships DAPLink at the micro:bit VID/PID so it works
++// out of the box.
++const defaultFilters = [
++    { vendorId: 0x0d28, productId: 0x0204 }, // micro:bit DAPLink + Calliope mini 3
++    { vendorId: 0x1366, productId: 0x1015 }, // Segger J-Link — Calliope mini 2.0
++    { vendorId: 0x1366, productId: 0x1025 }, // Segger J-Link — Calliope mini 2.1
++];
+ exports.DeviceSelectionMode = {
+     /**
+      * Attempts to connect to known device, otherwise asks which device to
+diff --git a/build/esm/bluetooth/connection.js b/build/esm/bluetooth/connection.js
+index 6ee75313cf8ee01d1a986112c6d101289e95eef2..c492280c951ab1282e66aa311d25358d2852d622 100644
+--- a/build/esm/bluetooth/connection.js
++++ b/build/esm/bluetooth/connection.js
+@@ -246,9 +246,12 @@ class MicrobitBluetoothConnectionImpl extends TypedEventTarget {
+         // Support both the default "BBC micro:bit" name and the shorter "uBit"
+         // name used by some MakeCode extensions (e.g. bsiever/microbit-pxt-blehid).
+         // See https://github.com/bsiever/microbit-pxt-blehid/issues/31
++        // Patched by @calliope-edu/mini-connection-widget: include Calliope
++        // mini namePrefix so Calliope hardware shows up in the BLE picker
++        // alongside micro:bit. Mini 1/2/3 all advertise "Calliope mini [name]".
+         const namePrefixes = this.nameFilter
+-            ? [`BBC micro:bit [${this.nameFilter}]`, `uBit [${this.nameFilter}]`]
+-            : ["BBC micro:bit", "uBit"];
++            ? [`BBC micro:bit [${this.nameFilter}]`, `uBit [${this.nameFilter}]`, `Calliope mini [${this.nameFilter}]`]
++            : ["BBC micro:bit", "uBit", "Calliope mini"];
+         // If we have a cached device, check if it still matches the current filter.
+         // If not, clear it so we find a new device.
+         if (this.bleDevice) {
+@@ -491,6 +494,11 @@ class MicrobitBluetoothConnectionImpl extends TypedEventTarget {
+             profile.magnetometer.id,
+             profile.temperature.id,
+             profile.uart.id,
++            // Patched by @calliope-edu/mini-connection-widget: declare the
++            // partial-flashing service up front so flash() can reach it on
++            // Web Bluetooth. (Capacitor's web fallback can't reach undeclared
++            // services after pairing.)
++            profile.partialFlashing.id,
+         ];
+         // Temporarily patch navigator.bluetooth.requestDevice to support multiple
+         // name prefix filters. The capacitor-ble plugin only supports a single
+diff --git a/build/esm/bluetooth/services/device-information-service.js b/build/esm/bluetooth/services/device-information-service.js
+index 496d40d498fbbe95895f48646c77f71c5f5a669c..77d2a629db695e260facca8fae6e315dfbbd22cb 100644
+--- a/build/esm/bluetooth/services/device-information-service.js
++++ b/build/esm/bluetooth/services/device-information-service.js
+@@ -13,13 +13,21 @@ export class DeviceInformationService {
+         const serviceMeta = profile.deviceInformation;
+         const modelNumberBytes = await BleClient.read(this.deviceId, serviceMeta.id, serviceMeta.characteristics.modelNumber.id);
+         const modelNumber = new TextDecoder().decode(modelNumberBytes);
+-        if (modelNumber.toLowerCase() === "BBC micro:bit".toLowerCase()) {
++        const lower = modelNumber.toLowerCase();
++        if (lower === "BBC micro:bit".toLowerCase()) {
+             return "V1";
+         }
+-        if (modelNumber.toLowerCase().includes("BBC micro:bit v2".toLowerCase())) {
++        // Patched by @calliope-edu/mini-connection-widget: recognise Calliope
++        // mini hardware (mini 1/2 → V1-class DAL, mini 3 → V2-class CODAL)
++        // and tolerate firmware-revision suffixes that aren't strict matches.
++        if (lower.includes("calliope mini") || lower.includes("v2")) {
+             return "V2";
+         }
+-        throw new Error(`Unexpected model number: ${modelNumber}`);
++        // Unknown model number — log + default to V2 instead of throwing.
++        // The only consumer of board version on the BLE path picks between
++        // V1 and V2 capability sets; defaulting to V2 is the safe bet.
++        console.warn(`[microbit-connection] Unrecognised model number "${modelNumber}", assuming V2`);
++        return "V2";
+     }
+ }
+ //# sourceMappingURL=device-information-service.js.map
+\ No newline at end of file
+diff --git a/build/esm/usb/connection.js b/build/esm/usb/connection.js
+index f685da48a3bcab4dfcd4a13667efc2ff902dfb51..eefada6fd62059253c57fc93721a7929bdc7b523 100644
+--- a/build/esm/usb/connection.js
++++ b/build/esm/usb/connection.js
+@@ -12,7 +12,16 @@ import { PromiseQueue } from "./promise-queue.js";
+ import { USBDeviceWrapper, } from "./device-wrapper.js";
+ import { PartialFlashing } from "./partial-flashing.js";
+ import { saturateCdcPipeline } from "./cdc-saturation.js";
+-const defaultFilters = [{ vendorId: 0x0d28, productId: 0x0204 }];
++// Patched by @calliope-edu/mini-connection-widget: include Segger J-Link
++// VID/PID pairs used by Calliope mini 1.x and 2.x boards. Without these,
++// Calliope minis using J-Link debugger firmware are invisible to the
++// WebUSB picker. Mini 3 ships DAPLink at the micro:bit VID/PID so it works
++// out of the box.
++const defaultFilters = [
++    { vendorId: 0x0d28, productId: 0x0204 }, // micro:bit DAPLink + Calliope mini 3
++    { vendorId: 0x1366, productId: 0x1015 }, // Segger J-Link — Calliope mini 2.0
++    { vendorId: 0x1366, productId: 0x1025 }, // Segger J-Link — Calliope mini 2.1
++];
+ export const DeviceSelectionMode = {
+     /**
+      * Attempts to connect to known device, otherwise asks which device to
