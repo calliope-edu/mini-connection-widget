@@ -58,6 +58,37 @@ function getBleDeviceName(c: MicrobitBluetoothConnection): string | undefined {
   const dev = getRawBleDevice(c);
   return dev?.name ?? dev?.deviceId;
 }
+
+// ---- BluetoothDevice tracking ----------------------------------------------
+//
+// Capacitor's BleClient stores the real `BluetoothDevice` in a private
+// `deviceMap` keyed by `device.id`, and only exposes a `BleDevice` wrapper
+// publicly. Our flash code needs the real `BluetoothDevice` to drive GATT
+// directly. On Chrome variants where `navigator.bluetooth.getDevices()` is
+// available we can look it up by id; in older/restricted builds it isn't.
+//
+// To always have access, we transparently intercept
+// `navigator.bluetooth.requestDevice` on module load and keep our own
+// `Map<id, BluetoothDevice>`. Same id semantics Capacitor uses internally,
+// so a `BleDevice.deviceId` always finds its `BluetoothDevice`.
+const trackedDevices = new Map<string, BluetoothDevice>();
+let requestDeviceInterceptInstalled = false;
+function installRequestDeviceIntercept(): void {
+  if (requestDeviceInterceptInstalled) return;
+  if (typeof navigator === 'undefined' || !navigator.bluetooth) return;
+  requestDeviceInterceptInstalled = true;
+  const bt = navigator.bluetooth as unknown as {
+    requestDevice: (opts: unknown) => Promise<BluetoothDevice>;
+  };
+  const orig = bt.requestDevice.bind(navigator.bluetooth);
+  bt.requestDevice = async (opts: unknown) => {
+    const d = await orig(opts);
+    if (d && d.id) trackedDevices.set(d.id, d);
+    return d;
+  };
+}
+// Install eagerly so the first connect()'s requestDevice call gets captured.
+installRequestDeviceIntercept();
 /**
  * Locate the real `BluetoothDevice` upstream is using. Upstream stores a
  * Capacitor `BleDevice` (a plain `{deviceId, name}` wrapper) on the
@@ -70,49 +101,33 @@ async function getBleDevice(
   c: MicrobitBluetoothConnection,
 ): Promise<BluetoothDevice | undefined> {
   const dev = getRawBleDevice(c);
-  if (!dev) {
-    appendLog({ direction: 'error', text: 'getBleDevice: connection has no bleDevice field' });
-    // Dump the connection structure so we can find out where upstream
-    // actually stashes the device this version.
-    try {
-      const keys = Object.keys(c as object).slice(0, 30);
-      appendLog({ direction: 'info', text: `conn keys: ${keys.join(', ')}` });
-    } catch { /* ignore */ }
-    return undefined;
-  }
+  if (!dev) return undefined;
+  // Defensive: if upstream ever changes to store the raw BluetoothDevice
+  // directly, take the fast path.
   if ('gatt' in dev) return dev as BluetoothDevice;
   const deviceId = (dev as { deviceId?: string }).deviceId;
-  appendLog({
-    direction: 'info',
-    text: `getBleDevice: BleDevice deviceId=${deviceId ?? 'undefined'} name=${dev.name ?? '?'}`,
-  });
   if (!deviceId) return undefined;
+  // Primary path: our own requestDevice intercept tracks every device the
+  // lib has connected to in this session.
+  const tracked = trackedDevices.get(deviceId);
+  if (tracked) return tracked;
+  // Fallback: try navigator.bluetooth.getDevices() if Chrome exposes it
+  // (Chrome flag `enable-experimental-web-platform-features` in some
+  // builds). Without it, the intercept is the only path.
   const bt = navigator.bluetooth as unknown as {
     getDevices?: () => Promise<BluetoothDevice[]>;
   };
-  if (!bt.getDevices) {
-    appendLog({ direction: 'error', text: 'getBleDevice: navigator.bluetooth.getDevices unavailable' });
-    return undefined;
+  if (bt.getDevices) {
+    try {
+      const all = await bt.getDevices();
+      const found = all.find((d) => (d as unknown as { id?: string }).id === deviceId);
+      if (found) {
+        trackedDevices.set(deviceId, found);
+        return found;
+      }
+    } catch { /* ignore */ }
   }
-  try {
-    const all = await bt.getDevices();
-    const ids = all.map((d) => (d as unknown as { id?: string }).id ?? '?').join(', ');
-    appendLog({
-      direction: 'info',
-      text: `getBleDevice: getDevices() → [${ids}] (looking for ${deviceId})`,
-    });
-    const found = all.find((d) => (d as unknown as { id?: string }).id === deviceId);
-    if (!found) {
-      appendLog({
-        direction: 'error',
-        text: 'getBleDevice: device not in getDevices() — id mismatch or never permitted',
-      });
-    }
-    return found;
-  } catch (e) {
-    appendLog({ direction: 'error', text: `getBleDevice: getDevices threw: ${(e as Error).message}` });
-    return undefined;
-  }
+  return undefined;
 }
 
 export function clearBleConn(): void {
