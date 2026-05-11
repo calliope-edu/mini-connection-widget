@@ -1,3 +1,4 @@
+/// <reference types="web-bluetooth" />
 import {
   ConnectionStatus,
   DeviceError,
@@ -92,8 +93,17 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
       if (mapped === 'connected') {
         startHeartbeat();
         appendLog({ direction: 'info', text: 'Connected (BLE)' });
-        // Probe capabilities now that GATT is open.
-        if (getState().flashTransport !== 'ble') void probeCapabilities();
+        // Successful connect means upstream already read the model number
+        // (an authenticated characteristic), so OS bonding is fine. Mark
+        // capabilities optimistically; the real verdict comes from any
+        // actual write/flash that fails, where the error code tells us
+        // which mode is broken.
+        updateState((s) => ({
+          ...s,
+          bleCanCommunicate: true,
+          bleCanFlash: true,
+          bleStaleBond: false,
+        }));
       } else {
         if (getState().usbStatus !== 'connected') stopHeartbeat();
         if (mapped === 'disconnected') appendLog({ direction: 'info', text: 'Disconnected (BLE)' });
@@ -145,27 +155,6 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
  * `bleCanFlash` is true when connected — the real answer comes when the
  * user actually flashes; if it fails with a relevant error we can flip.
  */
-async function probeCapabilities(): Promise<void> {
-  if (!bleConn) return;
-  let canCommunicate = false;
-  try {
-    await bleConn.uartWrite(textEncoder.encode(''));
-    canCommunicate = true;
-  } catch {
-    canCommunicate = false;
-  }
-  const staleBond = !canCommunicate && getState().bleHasPaired;
-  updateState((s) => ({
-    ...s,
-    bleCanCommunicate: canCommunicate,
-    bleCanFlash: canCommunicate, // assume flashable when UART works; flip on real error
-    bleStaleBond: staleBond,
-    bleErrorMessage: staleBond
-      ? 'OS-Pairing veraltet — Calliope in den OS-Bluetooth-Einstellungen entkoppeln und neu pairen.'
-      : (canCommunicate ? undefined : s.bleErrorMessage),
-  }));
-}
-
 // ---- Flash via BLE ----------------------------------------------------------
 
 function applyFlashProgress(stage: ProgressStage, progress: number | undefined): void {
