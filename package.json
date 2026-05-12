@@ -18,7 +18,11 @@
     "src"
   ],
   "peerDependencies": {
-    "@microbit/microbit-connection": "1.0.0-beta.1"
+    "@microbit/microbit-connection": "1.0.0-beta.1",
+    "svelte": "^5.0.0"
+  },
+  "peerDependenciesMeta": {
+    "svelte": { "optional": true }
   },
   "devDependencies": {
     "@capacitor-community/bluetooth-le": "^7.3.0",

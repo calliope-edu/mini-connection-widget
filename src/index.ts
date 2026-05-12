@@ -47,6 +47,17 @@ export { getConnectedBleDevice } from './ble';
 export { getRunningProgramType } from './program-type';
 export type { CalliopeProgramType, CalliopeProgramInfo } from './program-type';
 
+// ---- UI (Svelte 5) --------------------------------------------------------
+// Components are framework-coupled; consumers need Svelte 5. Apps that don't
+// use Svelte just don't import from `./ui` and stay vanilla-only.
+
+export { default as ConnectButton } from './ui/ConnectButton.svelte';
+export { default as ConnectionPanel } from './ui/ConnectionPanel.svelte';
+export { default as UsbPlugRequestModal } from './ui/UsbPlugRequestModal.svelte';
+export { default as BlePairingInfoModal } from './ui/BlePairingInfoModal.svelte';
+export { DEFAULT_LABELS, mergeLabels } from './ui/labels';
+export type { ConnectLabels } from './ui/labels';
+
 // ---- Initialization --------------------------------------------------------
 
 /**
