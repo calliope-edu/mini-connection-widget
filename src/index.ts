@@ -46,6 +46,18 @@ export { sendSerialLine, onSerialLine } from './serial';
 export { getConnectedBleDevice } from './ble';
 export { getRunningProgramType } from './program-type';
 export type { CalliopeProgramType, CalliopeProgramInfo } from './program-type';
+export {
+  MM_SFD,
+  MM_REQ,
+  MM_RES,
+  MBIT_MORE_SERVICE_UUID,
+  MbitMoreFrameParser,
+  buildMbitMoreFrame,
+  characteristicToChannel,
+  sendMbitMoreFrameOverUsb,
+  onMbitMoreFrameFromUsb,
+} from './mbitmore';
+export type { MbitMoreFrame } from './mbitmore';
 
 // ---- UI (Svelte 5) --------------------------------------------------------
 // Components are framework-coupled; consumers need Svelte 5. Apps that don't
