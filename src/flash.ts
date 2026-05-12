@@ -6,6 +6,7 @@ import { awaitUsbPlugConfirm } from './usb-plug';
 import { flashCalliopeViaBle } from './ble';
 import { flashCalliopeViaUsb, getUsbConn } from './usb';
 import { getBleConn } from './ble';
+import { connectCalliope } from './connect';
 
 /**
  * Top-level flash dispatcher. Auto-routes:
@@ -29,8 +30,16 @@ export async function flashCalliope(hex: string, name: string = 'project'): Prom
     return;
   }
 
+  // Remember whether BLE was connected pre-flash so we can re-establish it
+  // automatically after the Calliope reboots into the new program. Without
+  // this the editor stays disconnected after flashing and the user has to
+  // click "Verbinden" again — annoying for the blocks-editor loop especially.
+  const wasBleConnected = s.bleStatus === 'connected';
+
   if (s.bleStatus === 'connected' && s.bleCanFlash) {
-    return flashCalliopeViaBle(hex, name);
+    await flashCalliopeViaBle(hex, name);
+    await scheduleBleReconnect();
+    return;
   }
   if (s.usbStatus === 'connected') {
     if (s.bleStatus === 'connected') {
@@ -39,7 +48,9 @@ export async function flashCalliope(hex: string, name: string = 'project'): Prom
         text: 'USB-Flash überschreibt das BLE-Pairing. Nach dem Flashen bitte erneut über BLE verbinden.',
       });
     }
-    return flashCalliopeViaUsb(hex, name);
+    await flashCalliopeViaUsb(hex, name);
+    if (wasBleConnected) await scheduleBleReconnect();
+    return;
   }
   if (s.bleStatus === 'connected' && !s.bleCanFlash) {
     showBlePairingInfo();
@@ -50,8 +61,41 @@ export async function flashCalliope(hex: string, name: string = 'project'): Prom
     }));
     return;
   }
-  if (SUPPORT.usb) return flashCalliopeHybrid(hex, name);
-  return flashCalliopeViaUsb(hex, name);
+  if (SUPPORT.usb) {
+    await flashCalliopeHybrid(hex, name);
+    if (wasBleConnected) await scheduleBleReconnect();
+    return;
+  }
+  await flashCalliopeViaUsb(hex, name);
+  if (wasBleConnected) await scheduleBleReconnect();
+}
+
+/**
+ * After a successful flash, the Calliope reboots and any BLE GATT it had
+ * is gone for a few seconds. Wait briefly then attempt a silent reconnect
+ * — same device, no chooser prompt — so the user lands back in a connected
+ * state without having to click "Verbinden". Failure is non-fatal; the UI
+ * reflects the state via the connect listener either way.
+ *
+ * Skipped when BLE was already reconnected in the meantime (e.g. the
+ * upstream lib auto-reconnected during the flash flow).
+ */
+async function scheduleBleReconnect(): Promise<void> {
+  if (!SUPPORT.ble) return;
+  // Settle delay: longer than the typical app-mode reboot but short enough
+  // that the user notices the reconnect rather than the gap.
+  await new Promise((r) => setTimeout(r, 1200));
+  const s = getState();
+  if (s.bleStatus === 'connected' || s.bleStatus === 'connecting') return;
+  appendLog({ direction: 'info', text: 'Auto-reconnecting BLE after flash' });
+  try {
+    await connectCalliope('ble');
+  } catch (err) {
+    appendLog({
+      direction: 'info',
+      text: `Auto-reconnect failed: ${(err as Error)?.message ?? err}`,
+    });
+  }
 }
 
 /**

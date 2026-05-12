@@ -72,6 +72,42 @@ function getBleDeviceName(c: MicrobitBluetoothConnection): string | undefined {
 // `Map<id, BluetoothDevice>`. Same id semantics Capacitor uses internally,
 // so a `BleDevice.deviceId` always finds its `BluetoothDevice`.
 const trackedDevices = new Map<string, BluetoothDevice>();
+
+/**
+ * Extra GATT services we declare on every requestDevice call so the
+ * browser exposes them after pairing.
+ *
+ * Web Bluetooth hides services not listed in `optionalServices`/`filters`
+ * at request time — even if the device advertises them. Upstream
+ * `@microbit/microbit-connection` lists the standard micro:bit profile;
+ * we add the Calliope-specific MbitMore service so the blocks runtime is
+ * visible to:
+ *   - Scratch's BLE bridge (see WidgetScratchLinkSocket)
+ *   - the blocks-runtime detector (program-type.ts)
+ * without making the embedder re-prompt the user.
+ *
+ * Keep this list narrow — every entry shows up in the OS-level pairing
+ * prompt on some platforms.
+ */
+const EXTRA_OPTIONAL_SERVICES: BluetoothServiceUUID[] = [
+  '0b50f3e4-607f-4151-9091-7d008d6ffc5c', // MbitMore (pxt-scratch blocks runtime)
+];
+
+function augmentRequestDeviceOptions(opts: unknown): unknown {
+  if (!opts || typeof opts !== 'object') return opts;
+  const o = opts as { optionalServices?: BluetoothServiceUUID[] } & Record<string, unknown>;
+  const existing = Array.isArray(o.optionalServices) ? o.optionalServices : [];
+  const known = new Set<string>(existing.map((s) => String(s).toLowerCase()));
+  const merged = [...existing];
+  for (const s of EXTRA_OPTIONAL_SERVICES) {
+    if (!known.has(String(s).toLowerCase())) {
+      merged.push(s);
+      known.add(String(s).toLowerCase());
+    }
+  }
+  return { ...o, optionalServices: merged };
+}
+
 let requestDeviceInterceptInstalled = false;
 function installRequestDeviceIntercept(): void {
   if (requestDeviceInterceptInstalled) return;
@@ -82,7 +118,8 @@ function installRequestDeviceIntercept(): void {
   };
   const orig = bt.requestDevice.bind(navigator.bluetooth);
   bt.requestDevice = async (opts: unknown) => {
-    const d = await orig(opts);
+    const augmented = augmentRequestDeviceOptions(opts);
+    const d = await orig(augmented);
     if (d && d.id) trackedDevices.set(d.id, d);
     return d;
   };
