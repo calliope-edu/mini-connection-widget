@@ -134,6 +134,18 @@ export function clearBleConn(): void {
   bleConn = null;
   bleInitPromise = null;
 }
+
+/**
+ * Return the raw `BluetoothDevice` for the currently-connected Calliope, or
+ * null if BLE isn't connected. Exposed so embedders can drive GATT services
+ * directly (e.g. Scratch's MbitMore service over the same connection used
+ * for flashing) without opening a second `requestDevice` prompt.
+ */
+export async function getConnectedBleDevice(): Promise<BluetoothDevice | null> {
+  if (!bleConn) return null;
+  const dev = await getBleDevice(bleConn);
+  return dev ?? null;
+}
 export function addBleLineSubscriber(cb: (line: string) => void): () => void {
   bleLineSubs.add(cb);
   return () => { bleLineSubs.delete(cb); };

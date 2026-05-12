@@ -43,6 +43,7 @@ export { calliopeUsbPlugRequest } from './usb-plug';
 export { connectCalliope, disconnectAndForget } from './connect';
 export { flashCalliope } from './flash';
 export { sendSerialLine, onSerialLine } from './serial';
+export { getConnectedBleDevice } from './ble';
 
 // ---- Initialization --------------------------------------------------------
 
