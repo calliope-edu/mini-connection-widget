@@ -64,6 +64,7 @@
     if (s.bleStatus === 'connected') {
       if (s.bleCanFlash && s.bleCanCommunicate) return labels.bleConnectedFull;
       if (s.bleCanCommunicate) return labels.bleConnectedCommOnly;
+      if (s.bleCanBlocks) return labels.bleConnectedBlocksOnly;
       if (s.bleStaleBond) return labels.bleConnectedStaleBond;
       return labels.bleConnectedNeedsPairing;
     }
@@ -162,7 +163,7 @@
     {#if s.bleSupported}
       {@const bleBusy = s.bleStatus === 'connecting' || s.flashTransport === 'ble'}
       {@const bleConnected = s.bleStatus === 'connected'}
-      {@const needsPairing = bleConnected && !s.bleCanCommunicate}
+      {@const needsPairing = bleConnected && !s.bleCanCommunicate && !s.bleCanBlocks}
       <div class="transport-row" class:connected={bleConnected} class:err={s.bleStatus === 'error'} class:warn={needsPairing}>
         <div class="transport-row-head">
           <span class="transport-name">{labels.ble}</span>

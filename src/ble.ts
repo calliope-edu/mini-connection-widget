@@ -177,11 +177,112 @@ export function clearBleConn(): void {
  * null if BLE isn't connected. Exposed so embedders can drive GATT services
  * directly (e.g. Scratch's MbitMore service over the same connection used
  * for flashing) without opening a second `requestDevice` prompt.
+ *
+ * Also resolves the blocks-only fallback device when upstream's full
+ * connection isn't available (stale-bond case).
  */
 export async function getConnectedBleDevice(): Promise<BluetoothDevice | null> {
-  if (!bleConn) return null;
-  const dev = await getBleDevice(bleConn);
-  return dev ?? null;
+  if (bleConn) {
+    const dev = await getBleDevice(bleConn);
+    if (dev) return dev;
+  }
+  if (blocksOnlyDevice && blocksOnlyDevice.gatt?.connected) return blocksOnlyDevice;
+  return null;
+}
+
+// ---- Blocks-only (bare-GATT, no bond) connection ---------------------------
+//
+// When upstream's bonded connect path fails — typically because the OS bond
+// became stale after a USB reflash on the Calliope — we can still talk to
+// any unauthenticated GATT services. The blocks runtime (MbitMore) doesn't
+// need a bond, so Scratch-style block communication keeps working even when
+// UART and partial-flashing are unreachable. This is the "communication-only"
+// mode the iOS app falls back to (full DFU runs without bond too).
+//
+// We track the device separately from `bleConn` because upstream's
+// `MicrobitBluetoothConnection` is tightly coupled to authenticated
+// characteristics; we just need the raw BluetoothDevice.
+
+const MBIT_MORE_SERVICE_UUID = '0b50f3e4-607f-4151-9091-7d008d6ffc5c';
+
+let blocksOnlyDevice: BluetoothDevice | null = null;
+
+function setupBlocksOnlyDisconnectListener(dev: BluetoothDevice): void {
+  // Reflect device-side disconnects back into the state machine. Web
+  // Bluetooth fires `gattserverdisconnected` whenever the link drops.
+  const onDisconnected = () => {
+    updateState((s) => ({
+      ...s,
+      bleStatus: s.bleStatus === 'connected' && s.bleCanBlocks ? 'disconnected' : s.bleStatus,
+      bleCanBlocks: false,
+    }));
+    appendLog({ direction: 'info', text: 'Disconnected (BLE blocks-only)' });
+  };
+  try {
+    dev.addEventListener('gattserverdisconnected', onDisconnected, { once: true } as AddEventListenerOptions);
+  } catch { /* ignore */ }
+}
+
+/**
+ * Open a bare-GATT connection scoped to the MbitMore service — no UART,
+ * no partial-flashing. Returns true on success and updates state to
+ * `connected` + `bleCanBlocks: true`. Returns false if the device doesn't
+ * expose MbitMore (i.e. it's not running the blocks runtime).
+ *
+ * Idempotent — calling again when already connected just confirms.
+ */
+export async function tryConnectBlocksOnly(): Promise<boolean> {
+  if (blocksOnlyDevice && blocksOnlyDevice.gatt?.connected) return true;
+  // Reuse any already-known device (from a prior failed full connect, or
+  // from our requestDevice intercept). If none is around, this path can't
+  // run silently — the caller should fall back to a normal `connectCalliope`.
+  let device: BluetoothDevice | undefined;
+  if (bleConn) device = await getBleDevice(bleConn);
+  if (!device) {
+    for (const d of trackedDevices.values()) { device = d; break; }
+  }
+  if (!device?.gatt) return false;
+
+  try {
+    const server = device.gatt.connected ? device.gatt : await device.gatt.connect();
+    // Probe MbitMore — if it's not there, this Calliope isn't running the
+    // blocks runtime and there's nothing for us to do in blocks-only mode.
+    try {
+      await server.getPrimaryService(MBIT_MORE_SERVICE_UUID);
+    } catch {
+      try { device.gatt.disconnect(); } catch { /* ignore */ }
+      return false;
+    }
+    blocksOnlyDevice = device;
+    setupBlocksOnlyDisconnectListener(device);
+    updateState((s) => ({
+      ...s,
+      bleStatus: 'connected',
+      bleErrorMessage: undefined,
+      bleDeviceName: device.name ?? s.bleDeviceName,
+      bleCanBlocks: true,
+      // Keep these false — we *know* they're unreachable in blocks-only mode.
+      bleCanCommunicate: false,
+      bleCanFlash: false,
+      bleHasPaired: true,
+      connectedAt: s.connectedAt ?? Date.now(),
+    }));
+    appendLog({ direction: 'info', text: 'Connected (BLE blocks-only)' });
+    return true;
+  } catch (err) {
+    appendLog({
+      direction: 'info',
+      text: `Blocks-only connect failed: ${(err as Error)?.message ?? err}`,
+    });
+    return false;
+  }
+}
+
+export function clearBlocksOnlyDevice(): void {
+  if (blocksOnlyDevice) {
+    try { blocksOnlyDevice.gatt?.disconnect(); } catch { /* ignore */ }
+  }
+  blocksOnlyDevice = null;
 }
 export function addBleLineSubscriber(cb: (line: string) => void): () => void {
   bleLineSubs.add(cb);
@@ -236,6 +337,7 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
           bleErrorMessage: mapped === 'connected' ? undefined : s.bleErrorMessage,
           bleCanCommunicate: mapped === 'connected' ? s.bleCanCommunicate : false,
           bleCanFlash: mapped === 'connected' ? s.bleCanFlash : false,
+          bleCanBlocks: mapped === 'connected' ? s.bleCanBlocks : false,
           bleStaleBond: mapped === 'connected' ? s.bleStaleBond : false,
           connectedAt: mapped === 'connected' ? Date.now() : s.connectedAt,
         };

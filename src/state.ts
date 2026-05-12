@@ -36,6 +36,14 @@ export interface CalliopeState {
   bleCanFlash: boolean;
   /** UART service exposed (BLE serial communication possible). */
   bleCanCommunicate: boolean;
+  /**
+   * MbitMore service exposed → the Calliope is running the blocks runtime
+   * and Scratch-style block communication is possible. Unauthenticated, so
+   * this can be true even with `bleCanCommunicate`/`bleCanFlash` false
+   * (e.g. a stale-bond device where UART/partial-flashing are unreachable
+   * but the unauthenticated MbitMore service still works).
+   */
+  bleCanBlocks: boolean;
   /** Connected over BLE to a previously-paired device but authenticated
    *  services are inaccessible — i.e. OS still holds a bond, but the
    *  Calliope has forgotten its whitelist (typical after USB full-flash).
@@ -90,6 +98,7 @@ const initial: CalliopeState = recomputeOverall({
   bleHasPaired: false,
   bleCanFlash: false,
   bleCanCommunicate: false,
+  bleCanBlocks: false,
   bleStaleBond: false,
   usbSupported,
   bleSupported,

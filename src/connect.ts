@@ -5,6 +5,8 @@ import {
   forgetAllBleDevices,
   getBleConnection,
   disconnectBle,
+  tryConnectBlocksOnly,
+  clearBlocksOnlyDevice,
 } from './ble';
 import {
   clearUsbConn,
@@ -68,7 +70,17 @@ export async function connectCalliope(
       return;
     }
     if (code === 'pairing-information-lost' && transport === 'ble') {
-      // Stale-bond signature surfaced directly by the lib.
+      // OS bond is stale. Authenticated services (UART, partial-flashing)
+      // are unreachable, but the unauthenticated MbitMore service often
+      // still works. Try a bare-GATT blocks-only fallback before giving
+      // up — this is what the iOS app does (it can still do Nordic DFU
+      // and unauthenticated comms in the same situation).
+      appendLog({
+        direction: 'info',
+        text: 'OS-Pairing stale, attempting blocks-only fallback',
+      });
+      const ok = await tryConnectBlocksOnly();
+      if (ok) return;
       updateState((s) => ({
         ...s,
         bleStatus: 'error',
@@ -76,6 +88,14 @@ export async function connectCalliope(
         bleErrorMessage: 'OS-Pairing veraltet — Calliope in den OS-Bluetooth-Einstellungen entkoppeln und neu pairen.',
       }));
       return;
+    }
+    // Unknown failure mode — but if the device looks reachable, blocks-only
+    // may still work (e.g. some Calliopes refuse the upstream connect probe
+    // even though their MbitMore service is up). Treat blocks-only as the
+    // graceful degradation path for any BLE connect error.
+    if (transport === 'ble') {
+      const ok = await tryConnectBlocksOnly();
+      if (ok) return;
     }
     const message = (err as Error)?.message ?? String(err);
     updateState((s) => transport === 'ble'
@@ -102,6 +122,7 @@ export async function disconnectAndForget(transport: CalliopeTransport): Promise
     return;
   }
   await disconnectBle();
+  clearBlocksOnlyDevice();
   await forgetAllBleDevices();
   updateState((s) => ({
     ...s,
@@ -111,6 +132,7 @@ export async function disconnectAndForget(transport: CalliopeTransport): Promise
     bleHasPaired: false,
     bleCanFlash: false,
     bleCanCommunicate: false,
+    bleCanBlocks: false,
     bleStaleBond: false,
   }));
   appendLog({ direction: 'info', text: 'BLE device disconnected and forgotten.' });
