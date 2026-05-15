@@ -41,13 +41,48 @@ const PENDING_FLASH_TTL_MS = 60_000;
  *     the user picks a device and the transport flips to connected.
  */
 export async function flashCalliope(hex: string, name: string = 'project'): Promise<void> {
-  const s = getState();
+  let s = getState();
   if (s.status === 'flashing') {
     appendLog({
       direction: 'info',
       text: `Flash bereits aktiv — zusätzlicher Versuch ignoriert (${name}).`,
     });
     return;
+  }
+
+  // Silent BLE reconnect: if BLE was previously paired but is now down
+  // (typical when post-flash `scheduleBleReconnect` gave up just before the
+  // device finished rebooting), try the cached browser permission once
+  // before falling through to the 3-way modal. Same effect as clicking
+  // "Verbinden" — avoids the modal-then-picker-then-fail dance for what's
+  // really a transient drop. Direct `c.connect()` (not `connectCalliope`)
+  // so a failure doesn't fire the stale-bond modal; if it doesn't come
+  // back, we just fall through to the regular dispatcher.
+  if (
+    SUPPORT.ble &&
+    s.bleHasPaired &&
+    s.bleStatus !== 'connected' &&
+    s.bleStatus !== 'connecting' &&
+    s.usbStatus !== 'connected'
+  ) {
+    appendLog({
+      direction: 'info',
+      text: `Flash requested but BLE not connected — trying silent reconnect with cached device`,
+    });
+    try {
+      const c = await getBleConnection();
+      updateState((st) => ({ ...st, bleStatus: 'connecting', bleErrorMessage: undefined }));
+      await c.connect({ bondMode: 'application' });
+      updateState((st) => ({ ...st, bleHasPaired: true }));
+      appendLog({ direction: 'info', text: 'Silent BLE reconnect succeeded' });
+    } catch (err) {
+      updateState((st) => ({ ...st, bleStatus: 'disconnected', bleErrorMessage: undefined }));
+      appendLog({
+        direction: 'info',
+        text: `Silent BLE reconnect failed (${(err as Error)?.message ?? err}) — continuing to dispatcher`,
+      });
+    }
+    s = getState();
   }
 
   // Remember whether BLE was connected pre-flash so we can re-establish it
