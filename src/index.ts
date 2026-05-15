@@ -19,8 +19,10 @@
 
 import { connectCalliope } from './connect';
 import { getUsbConnection } from './usb';
-import { refreshPairedBleStatus } from './ble';
+import { getBleConnection, refreshPairedBleStatus } from './ble';
+import { updateState } from './state';
 import { appendLog } from './log';
+import { initScratchBridge } from './scratch-bridge';
 
 // ---- Public API ------------------------------------------------------------
 
@@ -33,12 +35,14 @@ export type {
 export type { CalliopeVersion } from './helpers';
 export type { CalliopeLogEntry } from './log';
 export type { UsbPlugRequest } from './usb-plug';
+export type { ConnectionChoice, ConnectionChoiceRequest } from './connection-choice';
 export type { Readable, Writable, Subscriber, Unsubscriber } from './store';
 
 export { calliopeState } from './state';
 export { calliopeLog, clearCalliopeLog } from './log';
 export { calliopeBlePairingInfo, dismissBlePairingInfo, showBlePairingInfo } from './pairing-info';
 export { calliopeUsbPlugRequest } from './usb-plug';
+export { calliopeConnectionChoiceRequest } from './connection-choice';
 
 export { connectCalliope, disconnectAndForget } from './connect';
 export { flashCalliope } from './flash';
@@ -58,6 +62,12 @@ export {
   onMbitMoreFrameFromUsb,
 } from './mbitmore';
 export type { MbitMoreFrame } from './mbitmore';
+export { initScratchBridge } from './scratch-bridge';
+export { ensureBlocksRuntime } from './blocks-runtime';
+export type {
+  EnsureBlocksRuntimeOptions,
+  EnsureBlocksRuntimeResult,
+} from './blocks-runtime';
 
 // ---- UI (Svelte 5) --------------------------------------------------------
 // Components are framework-coupled; consumers need Svelte 5. Apps that don't
@@ -66,7 +76,10 @@ export type { MbitMoreFrame } from './mbitmore';
 export { default as ConnectButton } from './ui/ConnectButton.svelte';
 export { default as ConnectionPanel } from './ui/ConnectionPanel.svelte';
 export { default as UsbPlugRequestModal } from './ui/UsbPlugRequestModal.svelte';
+export { default as ConnectionChoiceModal } from './ui/ConnectionChoiceModal.svelte';
 export { default as BlePairingInfoModal } from './ui/BlePairingInfoModal.svelte';
+export { default as MiniNamePattern } from './ui/MiniNamePattern.svelte';
+export { extractFriendlyName, friendlyNameToPattern, friendlyNameFromDeviceId } from './friendly-name';
 export { DEFAULT_LABELS, mergeLabels } from './ui/labels';
 export type { ConnectLabels } from './ui/labels';
 
@@ -84,9 +97,11 @@ export function initializeCalliopeConnection(): void {
   if (initialized) return;
   initialized = true;
   if (typeof window === 'undefined') return;
+  initScratchBridge();
   // Brief delay so the page has time to settle before we fire WebUSB calls.
   setTimeout(() => {
-    void tryAutoReconnect();
+    void tryAutoReconnectUsb();
+    void tryAutoReconnectBle();
     void refreshPairedBleStatus();
   }, 250);
 }
@@ -96,7 +111,7 @@ export function initializeCalliopeConnection(): void {
  * a real connect when `navigator.usb.getDevices()` already returns an
  * authorized DAPLink — never prompts the user.
  */
-async function tryAutoReconnect(): Promise<void> {
+async function tryAutoReconnectUsb(): Promise<void> {
   if (typeof navigator === 'undefined' || !('usb' in navigator)) return;
   try {
     const devices = (await (navigator as unknown as {
@@ -106,13 +121,42 @@ async function tryAutoReconnect(): Promise<void> {
       (d) => d.vendorId === 0x0d28 && d.productId === 0x0204,
     );
     if (!authorized) return;
-    appendLog({ direction: 'info', text: 'Auto-reconnecting to authorized device' });
+    appendLog({ direction: 'info', text: 'Auto-reconnecting to authorized USB device' });
     const c = await getUsbConnection();
     await c.connect();
   } catch (err) {
     appendLog({
       direction: 'info',
-      text: `Auto-reconnect skipped: ${(err as Error)?.message ?? err}`,
+      text: `USB auto-reconnect skipped: ${(err as Error)?.message ?? err}`,
+    });
+  }
+}
+
+/**
+ * Silently reconnect to a previously-paired BLE Calliope on page load. Uses
+ * `navigator.bluetooth.getDevices()` to find already-permitted devices and
+ * attempts a silent connect. Bypasses `connectCalliope` so a transient
+ * failure doesn't pop the stale-bond modal — if the bond really is stale
+ * the user will discover that when they click "Verbinden" themselves.
+ *
+ * Requires the experimental WebBluetooth `getDevices()` API. Browsers that
+ * don't support it just skip the auto-reconnect.
+ */
+async function tryAutoReconnectBle(): Promise<void> {
+  if (typeof navigator === 'undefined' || !('bluetooth' in navigator)) return;
+  const bt = (navigator as { bluetooth?: { getDevices?: () => Promise<unknown[]> } }).bluetooth;
+  if (!bt?.getDevices) return;
+  try {
+    const devices = await bt.getDevices();
+    if (!devices || devices.length === 0) return;
+    appendLog({ direction: 'info', text: 'Auto-reconnecting to previously-paired BLE device' });
+    const c = await getBleConnection();
+    await c.connect({ bondMode: 'application' });
+    updateState((s) => ({ ...s, bleHasPaired: true }));
+  } catch (err) {
+    appendLog({
+      direction: 'info',
+      text: `BLE auto-reconnect skipped: ${(err as Error)?.message ?? err}`,
     });
   }
 }

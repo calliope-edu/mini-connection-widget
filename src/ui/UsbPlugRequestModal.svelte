@@ -16,15 +16,21 @@
       </div>
       <h2 id="usb-plug-title">Calliope per USB anschließen</h2>
       <p>
-        Der Bluetooth-Modus überträgt nur Live-Daten — zum Aufspielen von
-        <strong>{req.fileName}</strong> brauchen wir kurz das USB-Kabel.
-        Nach dem Übertragen läuft die Verbindung automatisch wieder über
-        Bluetooth weiter.
+        <strong>{req.fileName}</strong> lässt sich gerade nicht über
+        Bluetooth übertragen. Mit dem USB-Kabel klappt es trotzdem in
+        wenigen Sekunden.
       </p>
       <ol class="steps">
         <li>USB-Kabel mit dem Calliope verbinden.</li>
         <li>Auf <em>"Übertragen"</em> klicken — beim allerersten Mal Browser-Dialog mit dem Calliope auswählen.</li>
       </ol>
+      <p class="hint">
+        Hinweis: Ein USB-Flash setzt die Bluetooth-Kopplung auf dem Calliope
+        zurück. Danach in den OS-Bluetooth-Einstellungen den Calliope
+        einmal entkoppeln und neu pairen (A&nbsp;+&nbsp;B halten und Reset
+        kurz drücken — der Bildschirm zeigt das Muster). Erst dann ist die
+        Bluetooth-Verbindung wieder voll nutzbar.
+      </p>
       <div class="actions">
         <button type="button" class="btn ghost" onclick={() => req.cancel()}>
           Abbrechen
@@ -77,12 +83,22 @@
   }
   .steps {
     text-align: left;
-    margin: 0 0 18px;
+    margin: 0 0 14px;
     padding-left: 22px;
     font-size: 13px;
     color: #374151;
     line-height: 1.55;
     li + li { margin-top: 4px; }
+  }
+  .hint {
+    background: #f1f5f9;
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 12px;
+    color: #334155;
+    text-align: left;
+    line-height: 1.5;
+    margin: 0 0 14px;
   }
   .actions {
     display: flex;

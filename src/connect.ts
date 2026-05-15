@@ -1,19 +1,19 @@
 import { DeviceError } from '@microbit/microbit-connection';
-import { updateState, SUPPORT, type CalliopeTransport } from './state';
+import { getState, updateState, SUPPORT, type CalliopeTransport } from './state';
 import { appendLog } from './log';
 import {
   forgetAllBleDevices,
   getBleConnection,
   disconnectBle,
-  tryConnectBlocksOnly,
-  clearBlocksOnlyDevice,
 } from './ble';
 import {
   clearUsbConn,
   connectWithRetry,
   disconnectUsb,
+  forgetAllUsbDevices,
   getUsbConnection,
 } from './usb';
+import { showBlePairingInfo } from './pairing-info';
 
 /**
  * Connect to a Calliope on the chosen transport. Always tries the silent
@@ -69,33 +69,29 @@ export async function connectCalliope(
         : { ...s, usbStatus: 'disconnected', usbErrorMessage: undefined });
       return;
     }
-    if (code === 'pairing-information-lost' && transport === 'ble') {
-      // OS bond is stale. Authenticated services (UART, partial-flashing)
-      // are unreachable, but the unauthenticated MbitMore service often
-      // still works. Try a bare-GATT blocks-only fallback before giving
-      // up — this is what the iOS app does (it can still do Nordic DFU
-      // and unauthenticated comms in the same situation).
-      appendLog({
-        direction: 'info',
-        text: 'OS-Pairing stale, attempting blocks-only fallback',
-      });
-      const ok = await tryConnectBlocksOnly();
-      if (ok) return;
-      updateState((s) => ({
-        ...s,
-        bleStatus: 'error',
-        bleStaleBond: true,
-        bleErrorMessage: 'OS-Pairing veraltet — Calliope in den OS-Bluetooth-Einstellungen entkoppeln und neu pairen.',
-      }));
-      return;
-    }
-    // Unknown failure mode — but if the device looks reachable, blocks-only
-    // may still work (e.g. some Calliopes refuse the upstream connect probe
-    // even though their MbitMore service is up). Treat blocks-only as the
-    // graceful degradation path for any BLE connect error.
     if (transport === 'ble') {
-      const ok = await tryConnectBlocksOnly();
-      if (ok) return;
+      // Stale-bond heuristic: upstream only emits `pairing-information-lost`
+      // on the native (Capacitor) path. On web, BLE connect failures after
+      // the device-side whitelist was wiped (typical: a USB flash since
+      // the last pairing) just surface as generic `connection-error` /
+      // "Connection attempt failed" / "GATT Server is disconnected". If
+      // the user has paired before, treat any non-user-abort connect
+      // failure as a stale bond and walk them through re-pairing.
+      const wasPaired = getState().bleHasPaired || code === 'pairing-information-lost';
+      if (wasPaired) {
+        appendLog({
+          direction: 'info',
+          text: `BLE connect failed after previous pairing — assuming stale bond (code=${code || 'none'}).`,
+        });
+        updateState((s) => ({
+          ...s,
+          bleStatus: 'error',
+          bleStaleBond: true,
+          bleErrorMessage: 'OS-Pairing veraltet — Calliope in den OS-Bluetooth-Einstellungen entkoppeln und neu pairen.',
+        }));
+        showBlePairingInfo();
+        return;
+      }
     }
     const message = (err as Error)?.message ?? String(err);
     updateState((s) => transport === 'ble'
@@ -112,17 +108,20 @@ export async function connectCalliope(
 export async function disconnectAndForget(transport: CalliopeTransport): Promise<void> {
   if (transport === 'usb') {
     await disconnectUsb();
+    await forgetAllUsbDevices();
     clearUsbConn();
     updateState((s) => ({
       ...s,
       usbStatus: SUPPORT.usb ? 'disconnected' : 'unsupported',
       usbDeviceName: undefined,
       usbErrorMessage: undefined,
+      // Drop the friendly name if BLE isn't also holding the device.
+      friendlyName: s.bleStatus === 'connected' ? s.friendlyName : undefined,
     }));
+    appendLog({ direction: 'info', text: 'USB device disconnected and forgotten.' });
     return;
   }
   await disconnectBle();
-  clearBlocksOnlyDevice();
   await forgetAllBleDevices();
   updateState((s) => ({
     ...s,
@@ -132,8 +131,9 @@ export async function disconnectAndForget(transport: CalliopeTransport): Promise
     bleHasPaired: false,
     bleCanFlash: false,
     bleCanCommunicate: false,
-    bleCanBlocks: false,
     bleStaleBond: false,
+    // Drop the friendly name if USB isn't also holding the device.
+    friendlyName: s.usbStatus === 'connected' ? s.friendlyName : undefined,
   }));
   appendLog({ direction: 'info', text: 'BLE device disconnected and forgotten.' });
 }

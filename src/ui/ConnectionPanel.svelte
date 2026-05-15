@@ -10,6 +10,8 @@
   import { showBlePairingInfo } from '../pairing-info';
   import type { CalliopeStatus, CalliopeTransport } from '../state';
   import { mergeLabels, type ConnectLabels } from './labels';
+  import { extractFriendlyName } from '../friendly-name';
+  import MiniNamePattern from './MiniNamePattern.svelte';
 
   type Props = {
     labels?: Partial<ConnectLabels>;
@@ -64,7 +66,6 @@
     if (s.bleStatus === 'connected') {
       if (s.bleCanFlash && s.bleCanCommunicate) return labels.bleConnectedFull;
       if (s.bleCanCommunicate) return labels.bleConnectedCommOnly;
-      if (s.bleCanBlocks) return labels.bleConnectedBlocksOnly;
       if (s.bleStaleBond) return labels.bleConnectedStaleBond;
       return labels.bleConnectedNeedsPairing;
     }
@@ -109,22 +110,38 @@
   </div>
 
   {#if s.calliopeVersion || s.boardVersion || s.usbDeviceName || s.bleDeviceName}
+    {@const friendly = s.friendlyName ?? extractFriendlyName(s.bleDeviceName ?? s.usbDeviceName)}
     <div class="device-card">
       <div class="device-card-head">
-        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <rect x="3" y="5" width="18" height="14" rx="2" />
-          <circle cx="8" cy="12" r="1" />
-          <circle cx="16" cy="12" r="1" />
-        </svg>
-        <span class="device-card-name">
-          {s.usbDeviceName ?? s.bleDeviceName ?? 'Calliope mini'}
-        </span>
+        {#if friendly}
+          <MiniNamePattern name={friendly} size={32} />
+        {:else}
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="5" width="18" height="14" rx="2" />
+            <circle cx="8" cy="12" r="1" />
+            <circle cx="16" cy="12" r="1" />
+          </svg>
+        {/if}
+        <div class="device-card-name-stack">
+          <span class="device-card-name">
+            {s.usbDeviceName ?? s.bleDeviceName ?? 'Calliope mini'}
+          </span>
+          {#if friendly}
+            <span class="device-card-friendly">{friendly}</span>
+          {/if}
+        </div>
       </div>
       <div class="device-card-rows">
         {#if s.calliopeVersion || s.boardVersion}
           <div class="meta-row">
             <span class="meta-key">{labels.version}</span>
             <span class="meta-val">{s.calliopeVersion ?? s.boardVersion}</span>
+          </div>
+        {/if}
+        {#if s.programType === 'blocks'}
+          <div class="meta-row">
+            <span class="meta-key">{labels.program}</span>
+            <span class="meta-val">{labels.programBlocks}</span>
           </div>
         {/if}
         {#if s.status === 'connected' && s.connectedAt}
@@ -163,7 +180,7 @@
     {#if s.bleSupported}
       {@const bleBusy = s.bleStatus === 'connecting' || s.flashTransport === 'ble'}
       {@const bleConnected = s.bleStatus === 'connected'}
-      {@const needsPairing = bleConnected && !s.bleCanCommunicate && !s.bleCanBlocks}
+      {@const needsPairing = bleConnected && !s.bleCanCommunicate}
       <div class="transport-row" class:connected={bleConnected} class:err={s.bleStatus === 'error'} class:warn={needsPairing}>
         <div class="transport-row-head">
           <span class="transport-name">{labels.ble}</span>
@@ -267,11 +284,22 @@
     margin-bottom: 10px;
   }
   .device-card-head {
-    display: flex; align-items: center; gap: 8px;
+    display: flex; align-items: center; gap: 10px;
     color: #111; font-weight: 600; font-size: 13px; margin-bottom: 4px;
     svg { color: #6b7280; flex-shrink: 0; }
   }
+  .device-card-name-stack {
+    display: flex; flex-direction: column; min-width: 0;
+  }
   .device-card-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .device-card-friendly {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-weight: 500;
+    font-size: 11px;
+    color: #6b7280;
+    letter-spacing: 0.05em;
+    text-transform: lowercase;
+  }
 
   .transports { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 4px; }
   .transport-row {

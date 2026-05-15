@@ -24,7 +24,7 @@
 
 import { getConnectedBleDevice } from './ble';
 import { getUsbConn } from './usb';
-import { calliopeState } from './state';
+import { calliopeState, updateState } from './state';
 
 export type CalliopeProgramType = 'blocks' | 'unknown' | 'disconnected';
 
@@ -74,19 +74,24 @@ async function probeBle(): Promise<CalliopeProgramInfo | null> {
   }
   try {
     const service = await server.getPrimaryService(MBIT_MORE_SERVICE_UUID);
-    let protocolVersion: number | undefined;
-    let hardwareVersion: number | undefined;
+    // Service presence is no longer enough — the CODAL stub registers it
+    // unconditionally so partial-flash DAL hashes line up. Discriminate by
+    // reading STATE: real runtime continuously fills it with sensor data
+    // (byte 5 = temperature + 128, byte 4 = light level, …); the stub's
+    // buffer stays all-zero. Any non-zero byte → real runtime.
+    let isReal = false;
     try {
       const ch = await service.getCharacteristic(MBIT_MORE_STATE_CHAR_UUID);
       const v = await ch.readValue();
-      if (v.byteLength >= 2) {
-        hardwareVersion = v.getUint8(0);
-        protocolVersion = v.getUint8(1);
+      for (let i = 0; i < v.byteLength; i++) {
+        if (v.getUint8(i) !== 0) { isReal = true; break; }
       }
     } catch {
-      /* STATE read failed — service presence is enough. */
+      // STATE read failed — without proof of life, treat as unknown.
+      return null;
     }
-    return { type: 'blocks', via: 'ble', protocolVersion, hardwareVersion };
+    if (!isReal) return null;
+    return { type: 'blocks', via: 'ble' };
   } catch {
     return null;
   }
@@ -173,4 +178,42 @@ export async function getRunningProgramType(
   });
 
   return firstHit ?? { type: 'unknown' };
+}
+
+// ---- Auto-refresh -------------------------------------------------------
+//
+// Keep `calliopeState.programType` in sync with reality: whenever the set of
+// connected transports changes, kick off a probe and write the result back
+// into the store. Consumers can `$calliopeState.programType` and react
+// without ever calling `getRunningProgramType` themselves.
+
+let probeTimer: ReturnType<typeof setTimeout> | null = null;
+let lastConnectedKey = '<init>';
+
+if (typeof window !== 'undefined') {
+  calliopeState.subscribe((s) => {
+    const key = `${s.usbStatus === 'connected' ? 'u' : ''}${s.bleStatus === 'connected' ? 'b' : ''}`;
+    if (key === lastConnectedKey) return;
+    lastConnectedKey = key;
+
+    if (probeTimer) {
+      clearTimeout(probeTimer);
+      probeTimer = null;
+    }
+
+    if (!key) {
+      // Neither transport connected — clear the latch.
+      updateState((st) => (st.programType === 'disconnected' ? st : { ...st, programType: 'disconnected' }));
+      return;
+    }
+
+    // Give GATT/service discovery a moment to settle, then probe.
+    probeTimer = setTimeout(() => {
+      probeTimer = null;
+      void (async () => {
+        const info = await getRunningProgramType();
+        updateState((st) => (st.programType === info.type ? st : { ...st, programType: info.type }));
+      })();
+    }, 500);
+  });
 }

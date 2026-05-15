@@ -23,6 +23,47 @@ import {
   BluetoothPartialFlashInvalidHexError,
   BluetoothPartialFlashServiceMissingError,
 } from './ble-flash-web';
+import {
+  flashOverNordicDfuWeb,
+  BluetoothDfuFailedError,
+  BluetoothDfuServiceMissingError,
+  type BluetoothDfuPhase,
+} from './ble-dfu-web';
+import { extractFriendlyName, friendlyNameFromDeviceId } from './friendly-name';
+
+// Standard Bluetooth SIG Device Information Service — every micro:bit /
+// Calliope firmware exposes it. The Serial Number string characteristic
+// (0x2A25) is the firmware's `getSerial()` output: decimal representation
+// of `target_get_serial()` = `((uint64_t)FICR.DEVICEID[1] << 32) |
+// FICR.DEVICEID[0]`. Parse it, take the upper 32 bits, run the same
+// algorithm the firmware uses (`microbit_friendly_name`).
+const BLE_DIS_SERVICE_UUID = 0x180a;
+const BLE_DIS_SERIAL_NUMBER_CHAR_UUID = 0x2a25;
+
+/**
+ * Derive the 5-letter friendly name from the standard Device Information
+ * Service's Serial Number characteristic. Silently returns `undefined`
+ * on any failure — falling back to whatever the GAP name regex found.
+ */
+async function readFriendlyNameViaGatt(c: MicrobitBluetoothConnection): Promise<string | undefined> {
+  const device = await getBleDevice(c);
+  if (!device?.gatt?.connected) return undefined;
+  try {
+    const service = await device.gatt.getPrimaryService(BLE_DIS_SERVICE_UUID);
+    const char = await service.getCharacteristic(BLE_DIS_SERIAL_NUMBER_CHAR_UUID);
+    const v = await char.readValue();
+    const serialStr = new TextDecoder().decode(v).trim();
+    if (!/^\d+$/.test(serialStr)) return undefined;
+    // `target_get_serial()` is 64-bit; only the upper 32 bits
+    // (`FICR.DEVICEID[1]`) feed the friendly-name algorithm.
+    const serial64 = BigInt(serialStr);
+    const deviceId = Number(serial64 >> 32n) >>> 0;
+    if (deviceId === 0) return undefined;
+    return friendlyNameFromDeviceId(deviceId);
+  } catch {
+    return undefined;
+  }
+}
 
 // ---- Module state -----------------------------------------------------------
 
@@ -91,6 +132,8 @@ const trackedDevices = new Map<string, BluetoothDevice>();
  */
 const EXTRA_OPTIONAL_SERVICES: BluetoothServiceUUID[] = [
   '0b50f3e4-607f-4151-9091-7d008d6ffc5c', // MbitMore (pxt-scratch blocks runtime)
+  0x180a, // Device Information Service — Serial Number → friendly-name derivation
+  0xfe59, // Nordic Semiconductor DFU service (buttonless in app + Secure DFU in bootloader)
 ];
 
 function augmentRequestDeviceOptions(opts: unknown): unknown {
@@ -177,113 +220,15 @@ export function clearBleConn(): void {
  * null if BLE isn't connected. Exposed so embedders can drive GATT services
  * directly (e.g. Scratch's MbitMore service over the same connection used
  * for flashing) without opening a second `requestDevice` prompt.
- *
- * Also resolves the blocks-only fallback device when upstream's full
- * connection isn't available (stale-bond case).
  */
 export async function getConnectedBleDevice(): Promise<BluetoothDevice | null> {
   if (bleConn) {
     const dev = await getBleDevice(bleConn);
     if (dev) return dev;
   }
-  if (blocksOnlyDevice && blocksOnlyDevice.gatt?.connected) return blocksOnlyDevice;
   return null;
 }
 
-// ---- Blocks-only (bare-GATT, no bond) connection ---------------------------
-//
-// When upstream's bonded connect path fails — typically because the OS bond
-// became stale after a USB reflash on the Calliope — we can still talk to
-// any unauthenticated GATT services. The blocks runtime (MbitMore) doesn't
-// need a bond, so Scratch-style block communication keeps working even when
-// UART and partial-flashing are unreachable. This is the "communication-only"
-// mode the iOS app falls back to (full DFU runs without bond too).
-//
-// We track the device separately from `bleConn` because upstream's
-// `MicrobitBluetoothConnection` is tightly coupled to authenticated
-// characteristics; we just need the raw BluetoothDevice.
-
-const MBIT_MORE_SERVICE_UUID = '0b50f3e4-607f-4151-9091-7d008d6ffc5c';
-
-let blocksOnlyDevice: BluetoothDevice | null = null;
-
-function setupBlocksOnlyDisconnectListener(dev: BluetoothDevice): void {
-  // Reflect device-side disconnects back into the state machine. Web
-  // Bluetooth fires `gattserverdisconnected` whenever the link drops.
-  const onDisconnected = () => {
-    updateState((s) => ({
-      ...s,
-      bleStatus: s.bleStatus === 'connected' && s.bleCanBlocks ? 'disconnected' : s.bleStatus,
-      bleCanBlocks: false,
-    }));
-    appendLog({ direction: 'info', text: 'Disconnected (BLE blocks-only)' });
-  };
-  try {
-    dev.addEventListener('gattserverdisconnected', onDisconnected, { once: true } as AddEventListenerOptions);
-  } catch { /* ignore */ }
-}
-
-/**
- * Open a bare-GATT connection scoped to the MbitMore service — no UART,
- * no partial-flashing. Returns true on success and updates state to
- * `connected` + `bleCanBlocks: true`. Returns false if the device doesn't
- * expose MbitMore (i.e. it's not running the blocks runtime).
- *
- * Idempotent — calling again when already connected just confirms.
- */
-export async function tryConnectBlocksOnly(): Promise<boolean> {
-  if (blocksOnlyDevice && blocksOnlyDevice.gatt?.connected) return true;
-  // Reuse any already-known device (from a prior failed full connect, or
-  // from our requestDevice intercept). If none is around, this path can't
-  // run silently — the caller should fall back to a normal `connectCalliope`.
-  let device: BluetoothDevice | undefined;
-  if (bleConn) device = await getBleDevice(bleConn);
-  if (!device) {
-    for (const d of trackedDevices.values()) { device = d; break; }
-  }
-  if (!device?.gatt) return false;
-
-  try {
-    const server = device.gatt.connected ? device.gatt : await device.gatt.connect();
-    // Probe MbitMore — if it's not there, this Calliope isn't running the
-    // blocks runtime and there's nothing for us to do in blocks-only mode.
-    try {
-      await server.getPrimaryService(MBIT_MORE_SERVICE_UUID);
-    } catch {
-      try { device.gatt.disconnect(); } catch { /* ignore */ }
-      return false;
-    }
-    blocksOnlyDevice = device;
-    setupBlocksOnlyDisconnectListener(device);
-    updateState((s) => ({
-      ...s,
-      bleStatus: 'connected',
-      bleErrorMessage: undefined,
-      bleDeviceName: device.name ?? s.bleDeviceName,
-      bleCanBlocks: true,
-      // Keep these false — we *know* they're unreachable in blocks-only mode.
-      bleCanCommunicate: false,
-      bleCanFlash: false,
-      bleHasPaired: true,
-      connectedAt: s.connectedAt ?? Date.now(),
-    }));
-    appendLog({ direction: 'info', text: 'Connected (BLE blocks-only)' });
-    return true;
-  } catch (err) {
-    appendLog({
-      direction: 'info',
-      text: `Blocks-only connect failed: ${(err as Error)?.message ?? err}`,
-    });
-    return false;
-  }
-}
-
-export function clearBlocksOnlyDevice(): void {
-  if (blocksOnlyDevice) {
-    try { blocksOnlyDevice.gatt?.disconnect(); } catch { /* ignore */ }
-  }
-  blocksOnlyDevice = null;
-}
 export function addBleLineSubscriber(cb: (line: string) => void): () => void {
   bleLineSubs.add(cb);
   return () => { bleLineSubs.delete(cb); };
@@ -337,7 +282,6 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
           bleErrorMessage: mapped === 'connected' ? undefined : s.bleErrorMessage,
           bleCanCommunicate: mapped === 'connected' ? s.bleCanCommunicate : false,
           bleCanFlash: mapped === 'connected' ? s.bleCanFlash : false,
-          bleCanBlocks: mapped === 'connected' ? s.bleCanBlocks : false,
           bleStaleBond: mapped === 'connected' ? s.bleStaleBond : false,
           connectedAt: mapped === 'connected' ? Date.now() : s.connectedAt,
         };
@@ -353,15 +297,31 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
         const name = getBleDeviceName(c);
         let boardVersion: 'V1' | 'V2' | undefined;
         try { boardVersion = c.getBoardVersion(); } catch { /* not ready yet */ }
+        // BLE name only carries the friendly suffix when whitelist is off
+        // OR the device was discovered while in pairing mode, in which
+        // case the OS cached "Calliope mini [tipov]". Often it's just
+        // "Calliope mini" — in that case the regex returns undefined and
+        // we keep whatever friendlyName USB (or a prior connect) supplied.
+        const friendly = extractFriendlyName(name);
         updateState((s) => ({
           ...s,
           bleDeviceName: name ?? s.bleDeviceName,
           boardVersion: boardVersion ?? s.boardVersion,
           calliopeVersion: boardVersion === 'V2' ? 'V3' : (boardVersion === 'V1' ? 'V1' : s.calliopeVersion),
+          friendlyName: friendly ?? s.friendlyName,
           bleCanCommunicate: true,
           bleCanFlash: true,
           bleStaleBond: false,
         }));
+        // Background: query the CODAL DeviceInfo characteristic for the
+        // canonical device id. More reliable than the GAP name, which only
+        // carries the [tipov] suffix when the OS cached it during pairing
+        // mode. Falls through silently on older firmware that doesn't
+        // expose DeviceInfo yet — extractFriendlyName has already done
+        // what it can with the advertised name.
+        void readFriendlyNameViaGatt(c).then((g) => {
+          if (g) updateState((s) => ({ ...s, friendlyName: g }));
+        });
       } else {
         if (getState().usbStatus !== 'connected') stopHeartbeat();
         if (mapped === 'disconnected') appendLog({ direction: 'info', text: 'Disconnected (BLE)' });
@@ -455,12 +415,14 @@ export async function flashCalliopeViaBle(hex: string, name: string): Promise<vo
   }
   const device = await getBleDevice(c);
   if (!device) {
-    updateState((s) => ({
-      ...s,
-      bleStatus: 'error',
-      bleErrorMessage: 'BLE-Gerät nicht zugänglich — bitte erneut verbinden.',
-    }));
-    return;
+    // Upstream's `BluetoothConnection` wrapper still reports `connected`
+    // but we can't resolve the underlying `BluetoothDevice` — usually a
+    // stale-tracking situation (HMR wiped our `trackedDevices` map while
+    // the upstream wrapper kept a reference to the old `BleDevice`).
+    // Throw rather than silently returning so the dispatcher can either
+    // try DFU (which will hit the same problem and fall through to USB)
+    // or surface the failure to the user with a real action they can take.
+    throw new Error('BLE-Gerät nicht zugänglich — bitte erneut verbinden.');
   }
 
   updateState((s) => ({
@@ -513,7 +475,140 @@ export async function flashCalliopeViaBle(hex: string, name: string): Promise<vo
     // upstream's connection wrapper will see Disconnected. The status
     // listener handles that.
   } catch (err) {
+    // DAL mismatch is recoverable via USB — propagate so the dispatcher in
+    // flash.ts can fall back to USB without showing a hard error. Leave
+    // `bleCanFlash` true: a successful USB flash will bring the device's
+    // DAL in line with the hex, so the very next BLE flash will probably
+    // succeed. Sticky `false` would otherwise force every later flash
+    // through USB until the user manually disconnects, plus mis-fire the
+    // "needs OS pairing" modal even though pairing is fine.
+    if (err instanceof BluetoothPartialFlashDalMismatchError ||
+        err instanceof BluetoothPartialFlashServiceMissingError) {
+      // Both errors mean partial flash is impossible, but full BLE flash
+      // via Nordic DFU might still work (especially relevant after a
+      // failed/interrupted DFU left the device in a non-MakeCode state
+      // where the partial-flash service isn't advertised). Reset flash
+      // state and let the dispatcher decide whether to try DFU next.
+      updateState((s) => ({
+        ...s,
+        flashTransport: undefined,
+        flashProgress: undefined,
+        flashPhase: undefined,
+        flashPartial: undefined,
+      }));
+      const reason = err instanceof BluetoothPartialFlashDalMismatchError
+        ? 'DAL mismatch'
+        : 'partial-flash service missing';
+      appendLog({ direction: 'info', text: `BLE partial flash impossible (${reason})` });
+      throw err;
+    }
     handleBleFlashError(err);
+  }
+}
+
+/**
+ * Full BLE flash via Nordic Secure DFU. Used as a fallback when partial
+ * flashing reports a DAL mismatch — the runtime on the device is too
+ * different from the hex's expected runtime for partial flashing to work,
+ * but a full re-flash via the bootloader still succeeds (this is what the
+ * iOS / Android Calliope apps do via the native Nordic DFU library).
+ *
+ * Returns normally on success — caller is responsible for the post-flash
+ * BLE auto-reconnect (the device reboots into the freshly-flashed app and
+ * the GATT drops, same as after a partial flash).
+ *
+ * Throws {@link BluetoothDfuFailedError} on protocol failure or
+ * {@link BluetoothDfuServiceMissingError} if the device isn't exposing the
+ * Nordic DFU service at all. Both are recoverable by the caller; the
+ * dispatcher falls back to USB.
+ */
+export async function flashCalliopeViaBleDfu(hex: string, name: string): Promise<void> {
+  if (!SUPPORT.ble) {
+    throw new BluetoothDfuFailedError('Web Bluetooth not supported');
+  }
+  const c = await getBleConnection();
+  const device = await getBleDevice(c);
+  if (!device) {
+    throw new BluetoothDfuFailedError('BLE device not accessible — please reconnect first.');
+  }
+  let boardVersion: 'V2' | undefined;
+  try {
+    const v = c.getBoardVersion();
+    if (v === 'V2') boardVersion = 'V2';
+  } catch { /* not ready yet */ }
+  if (boardVersion !== 'V2') {
+    throw new BluetoothDfuFailedError('Full BLE flash is only supported on Calliope mini 3.');
+  }
+  const cleanHex = stripMakeCodeMetadata(hex);
+  appendLog({
+    direction: 'info',
+    text: `Flashing via BLE-DFU "${name}" (${Math.round(cleanHex.length / 1024)} KB)`,
+  });
+  updateState((s) => ({
+    ...s,
+    flashTransport: 'ble',
+    flashProgress: undefined,
+    flashPhase: 'reboot',
+    flashPartial: false,
+    bleErrorMessage: undefined,
+    lastFlashName: name,
+  }));
+  try {
+    await flashOverNordicDfuWeb({
+      device,
+      hex: cleanHex,
+      boardVersion,
+      onPhase: (p: BluetoothDfuPhase) => {
+        // Setup phases (everything before firmware streaming) keep
+        // `flashProgress: undefined` so the UI shows an indeterminate
+        // spinner — the few hundred ms of bootloader-entry + reconnect +
+        // init-packet shouldn't be partial-percentages on the same bar
+        // that the firmware stream will fill cleanly from 0..100.
+        const uiPhase = p === 'flashing' ? 'flashing'
+          : p === 'finalising' ? 'finalising'
+          : (p === 'sending-init') ? 'check'
+          : 'reboot';
+        updateState((s) => ({
+          ...s,
+          flashPhase: uiPhase,
+          flashProgress: p === 'finalising' ? 100 : undefined,
+        }));
+      },
+      onProgress: (progress) => {
+        // Called only during the firmware-streaming phase, with 0..1
+        // mapped to firmware bytes transferred — render as 0..100 % on the
+        // bar so the user sees a clean linear advance.
+        const intPct = Math.round(progress * 100);
+        updateState((s) => ({
+          ...s,
+          flashPhase: 'flashing',
+          flashProgress: intPct,
+          flashPartial: false,
+        }));
+        appendLog({ direction: 'info', text: `Flash: ${intPct}%`, kind: 'flash-progress' });
+      },
+    });
+    updateState((s) => ({
+      ...s,
+      flashTransport: undefined,
+      flashProgress: undefined,
+      flashPhase: undefined,
+      flashPartial: undefined,
+      lastFlashAt: Date.now(),
+    }));
+    appendLog({ direction: 'info', text: `BLE-DFU flash finished: ${name}` });
+  } catch (err) {
+    updateState((s) => ({
+      ...s,
+      flashTransport: undefined,
+      flashProgress: undefined,
+      flashPhase: undefined,
+      flashPartial: undefined,
+    }));
+    // Don't promote the error into state.bleErrorMessage here — the caller
+    // (flash.ts) decides whether to retry via USB or surface the failure.
+    appendLog({ direction: 'info', text: `BLE-DFU flash failed: ${(err as Error)?.message ?? err}` });
+    throw err;
   }
 }
 

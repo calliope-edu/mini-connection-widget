@@ -123,7 +123,7 @@
     }
     &.status-connected .dot { background: #98f600; }
     &.status-connecting .dot { background: #ff4e00; }
-    &.status-flashing .dot { background: #ff4e00; }
+    &.status-flashing .dot { background: #00b8cc; }
     &.status-error .dot { background: #e53f4b; }
   }
   @keyframes spin { to { transform: rotate(360deg); } }

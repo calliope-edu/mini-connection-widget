@@ -28,7 +28,6 @@ export interface ConnectLabels {
   usbConnected: string;
   bleConnectedFull: string;
   bleConnectedCommOnly: string;
-  bleConnectedBlocksOnly: string;
   bleConnectedStaleBond: string;
   bleConnectedNeedsPairing: string;
   notSupportedUsb: string;
@@ -52,6 +51,8 @@ export interface ConnectLabels {
   // Device card
   version: string;
   connectedSince: string;
+  program: string;
+  programBlocks: string;
 }
 
 export const DEFAULT_LABELS: ConnectLabels = {
@@ -74,7 +75,6 @@ export const DEFAULT_LABELS: ConnectLabels = {
   usbConnected: 'Flashen & Kommunikation',
   bleConnectedFull: 'Flashen & Kommunikation',
   bleConnectedCommOnly: 'Nur Kommunikation',
-  bleConnectedBlocksOnly: 'Nur Blocks (ohne Pairing)',
   bleConnectedStaleBond: 'Verbunden — OS-Pairing veraltet',
   bleConnectedNeedsPairing: 'Verbunden — OS-Pairing fehlt',
   notSupportedUsb: 'WebUSB nicht verfuegbar',
@@ -100,6 +100,8 @@ export const DEFAULT_LABELS: ConnectLabels = {
 
   version: 'Version',
   connectedSince: 'Verbunden seit',
+  program: 'Programm',
+  programBlocks: 'Blocks-Runtime',
 };
 
 export function mergeLabels(overrides?: Partial<ConnectLabels>): ConnectLabels {

@@ -1,12 +1,29 @@
 import { ConnectionStatus } from '@microbit/microbit-connection';
-import { getState, updateState, SUPPORT } from './state';
+import { calliopeState, getState, updateState, SUPPORT } from './state';
 import { appendLog } from './log';
 import { showBlePairingInfo } from './pairing-info';
 import { awaitUsbPlugConfirm } from './usb-plug';
-import { flashCalliopeViaBle } from './ble';
-import { flashCalliopeViaUsb, getUsbConn } from './usb';
-import { getBleConn } from './ble';
+import { awaitConnectionChoice } from './connection-choice';
 import { connectCalliope } from './connect';
+import {
+  flashCalliopeViaBle,
+  flashCalliopeViaBleDfu,
+  getBleConn,
+  getBleConnection,
+} from './ble';
+import { flashCalliopeViaUsb, getUsbConn } from './usb';
+import {
+  BluetoothPartialFlashDalMismatchError,
+  BluetoothPartialFlashServiceMissingError,
+} from './ble-flash-web';
+import { BluetoothDfuServiceMissingError } from './ble-dfu-web';
+
+/**
+ * If a pending flash sits unfulfilled for longer than this, clear it on the
+ * next inspection. Prevents a stale request from a previous session firing
+ * unexpectedly when the user finally connects.
+ */
+const PENDING_FLASH_TTL_MS = 60_000;
 
 /**
  * Top-level flash dispatcher. Auto-routes:
@@ -18,7 +35,10 @@ import { connectCalliope } from './connect';
  *     connected so the user knows BLE will need re-pairing afterwards.
  *  3. **BLE connected but no pairing** → surface the OS-pairing explainer
  *     plus a hint to plug in USB.
- *  4. **Nothing connected** → prompt for USB plug-in (hybrid path).
+ *  4. **Nothing connected** → show the 3-way connection choice modal
+ *     (Bluetooth / USB / Download hex). For 'ble' and 'usb' we set
+ *     `pendingFlash` so the auto-resume hook below re-fires the flash once
+ *     the user picks a device and the transport flips to connected.
  */
 export async function flashCalliope(hex: string, name: string = 'project'): Promise<void> {
   const s = getState();
@@ -36,10 +56,71 @@ export async function flashCalliope(hex: string, name: string = 'project'): Prom
   // click "Verbinden" again — annoying for the blocks-editor loop especially.
   const wasBleConnected = s.bleStatus === 'connected';
 
+  // Either transport is connected? Clear any leftover pending flash —
+  // we're about to handle the request live, no need for the auto-resume
+  // hook to fire a duplicate.
+  if (s.bleStatus === 'connected' || s.usbStatus === 'connected') {
+    clearPendingFlash();
+  }
+
   if (s.bleStatus === 'connected' && s.bleCanFlash) {
-    await flashCalliopeViaBle(hex, name);
-    await scheduleBleReconnect();
-    return;
+    try {
+      await flashCalliopeViaBle(hex, name);
+      await scheduleBleReconnect();
+      return;
+    } catch (err) {
+      const partialUnusable =
+        err instanceof BluetoothPartialFlashDalMismatchError ||
+        err instanceof BluetoothPartialFlashServiceMissingError;
+      if (!partialUnusable) throw err;
+      // Partial flash impossible — either DAL hash mismatch (running runtime
+      // doesn't match the hex) or the partial-flashing service isn't there
+      // at all (typical after a previous DFU left the device in a state
+      // where the application's GATT profile changed). Try a full BLE flash
+      // via Nordic DFU; iOS/Android do the same via their native DFU lib.
+      const reason = err instanceof BluetoothPartialFlashDalMismatchError
+        ? 'DAL mismatch'
+        : 'partial-flash service missing';
+      appendLog({
+        direction: 'info',
+        text: `BLE partial flash impossible (${reason}) — trying full BLE-DFU flash.`,
+      });
+      try {
+        await flashCalliopeViaBleDfu(hex, name);
+        await scheduleBleReconnect();
+        return;
+      } catch (dfuErr) {
+        if (dfuErr instanceof BluetoothDfuServiceMissingError) {
+          appendLog({
+            direction: 'info',
+            text: 'Calliope is not exposing the Nordic DFU service — falling back to USB.',
+          });
+        } else {
+          appendLog({
+            direction: 'info',
+            text: `BLE-DFU flash failed (${(dfuErr as Error)?.message ?? dfuErr}) — falling back to USB.`,
+          });
+        }
+        const sNow = getState();
+        if (sNow.usbStatus === 'connected') {
+          await flashCalliopeViaUsb(hex, name);
+          await scheduleBleReconnect();
+          return;
+        }
+        if (SUPPORT.usb) {
+          await flashCalliopeHybrid(hex, name);
+          await scheduleBleReconnect();
+          return;
+        }
+        showBlePairingInfo();
+        updateState((st) => ({
+          ...st,
+          bleErrorMessage:
+            'Runtime auf dem Calliope passt nicht zum Programm und der BLE-Vollflash ist fehlgeschlagen — bitte per USB voll flashen.',
+        }));
+        return;
+      }
+    }
   }
   if (s.usbStatus === 'connected') {
     if (s.bleStatus === 'connected') {
@@ -61,41 +142,178 @@ export async function flashCalliope(hex: string, name: string = 'project'): Prom
     }));
     return;
   }
-  if (SUPPORT.usb) {
-    await flashCalliopeHybrid(hex, name);
-    if (wasBleConnected) await scheduleBleReconnect();
+  // Nothing connected — let the user choose between Bluetooth, USB, and
+  // saving the hex to disk. The first two set `pendingFlash` so the
+  // auto-resume hook re-fires the flash once the transport is ready;
+  // 'download' just hands the file to the browser and we're done.
+  let choice: 'ble' | 'usb' | 'download';
+  try {
+    choice = await awaitConnectionChoice(name);
+  } catch {
+    appendLog({ direction: 'info', text: `Flash cancelled at connection-choice modal (${name})` });
     return;
   }
-  await flashCalliopeViaUsb(hex, name);
-  if (wasBleConnected) await scheduleBleReconnect();
+  switch (choice) {
+    case 'ble': {
+      setPendingFlash(hex, name);
+      appendLog({ direction: 'info', text: `User chose BLE — opening picker, flash will resume after connect` });
+      // Run the BLE connect in the user-gesture context that bubbled
+      // from the choice click. `forceChooser=true` so the picker always
+      // shows — we know nothing is connected here.
+      await connectCalliope('ble', true);
+      // Auto-resume runs from the state subscription once `bleStatus`
+      // flips to 'connected'. If the user cancelled the picker the
+      // status goes back to 'disconnected' and the pending flash
+      // expires after PENDING_FLASH_TTL_MS.
+      return;
+    }
+    case 'usb': {
+      setPendingFlash(hex, name);
+      appendLog({ direction: 'info', text: `User chose USB — opening picker, flash will resume after connect` });
+      // The hybrid path covers both "USB cable not plugged in" and
+      // "user needs to pick the DAPLink device" — same UX as before.
+      await flashCalliopeHybrid(hex, name);
+      // flashCalliopeHybrid runs the flash inline, so clear pending
+      // and we're done. (We still set it above so a mid-flow disconnect
+      // recovery — e.g. the user cancels the plug prompt then reconnects
+      // USB later — could still resume; but the typical path completes
+      // synchronously here.)
+      clearPendingFlash();
+      if (wasBleConnected) await scheduleBleReconnect();
+      return;
+    }
+    case 'download': {
+      appendLog({ direction: 'info', text: `User chose hex download (${name})` });
+      downloadHexFile(hex, name);
+      return;
+    }
+  }
+}
+
+// ---- Pending-flash plumbing -----------------------------------------------
+
+function setPendingFlash(hex: string, name: string): void {
+  updateState((st) => ({
+    ...st,
+    pendingFlash: { hex, name, createdAt: Date.now() },
+  }));
+}
+
+function clearPendingFlash(): void {
+  updateState((st) => (st.pendingFlash ? { ...st, pendingFlash: undefined } : st));
 }
 
 /**
- * After a successful flash, the Calliope reboots and any BLE GATT it had
- * is gone for a few seconds. Wait briefly then attempt a silent reconnect
- * — same device, no chooser prompt — so the user lands back in a connected
- * state without having to click "Verbinden". Failure is non-fatal; the UI
- * reflects the state via the connect listener either way.
+ * Subscribe once at module load to transport-status changes. When a transport
+ * flips into `connected` AND we have a fresh `pendingFlash`, re-fire the
+ * flash. Prevents the user from having to click Download a second time
+ * after the BLE/USB picker dance.
  *
- * Skipped when BLE was already reconnected in the meantime (e.g. the
- * upstream lib auto-reconnected during the flash flow).
+ * Guards:
+ *  - Only fires when *currently* not flashing (so an in-flight flash isn't
+ *    disrupted by a transient status flicker).
+ *  - Expires `pendingFlash` older than `PENDING_FLASH_TTL_MS` to avoid
+ *    surprising the user with a request they no longer expect.
+ *  - Uses `wasConnected` to fire only on the `disconnected→connected` (or
+ *    `connecting→connected`) edge, not on every state mutation.
+ */
+let prevBleConnected = false;
+let prevUsbConnected = false;
+calliopeState.subscribe((s) => {
+  const bleConnected = s.bleStatus === 'connected';
+  const usbConnected = s.usbStatus === 'connected';
+  const edge =
+    (bleConnected && !prevBleConnected) ||
+    (usbConnected && !prevUsbConnected);
+  prevBleConnected = bleConnected;
+  prevUsbConnected = usbConnected;
+  if (!edge) return;
+  const pending = s.pendingFlash;
+  if (!pending) return;
+  if (s.status === 'flashing') return;
+  if (Date.now() - pending.createdAt > PENDING_FLASH_TTL_MS) {
+    appendLog({
+      direction: 'info',
+      text: `Pending flash for "${pending.name}" expired — not resuming.`,
+    });
+    clearPendingFlash();
+    return;
+  }
+  appendLog({
+    direction: 'info',
+    text: `Transport ${bleConnected ? 'BLE' : 'USB'} connected — auto-resuming pending flash "${pending.name}"`,
+  });
+  clearPendingFlash();
+  // Fire-and-forget: the dispatcher handles its own errors. We don't
+  // `await` here because we're inside a store subscription.
+  flashCalliope(pending.hex, pending.name).catch((err) => {
+    appendLog({
+      direction: 'error',
+      text: `Auto-resumed flash failed: ${(err as Error)?.message ?? err}`,
+    });
+  });
+});
+
+// ---- Hex download ---------------------------------------------------------
+
+/**
+ * Save the hex string to the user's downloads folder. Used by the
+ * "Download .hex file" choice in the connection-choice modal — the user
+ * then drags the file onto the Calliope's USB mass-storage drive (DAPLink)
+ * to flash it manually.
+ */
+function downloadHexFile(hex: string, name: string): void {
+  const safeName = name.replace(/[^a-zA-Z0-9._-]+/g, '-');
+  const fileName = safeName.endsWith('.hex') ? safeName : `${safeName}.hex`;
+  const blob = new Blob([hex], { type: 'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Defer revoke so the download has time to start.
+  setTimeout(() => URL.revokeObjectURL(url), 5_000);
+}
+
+/**
+ * After a successful flash, the Calliope reboots and the BLE GATT drops for
+ * a few seconds. Retry with backoff so the user lands back in 'connected'
+ * without having to click "Verbinden". Bypasses `connectCalliope` to avoid
+ * triggering the stale-bond modal on transient reboot-window failures —
+ * those are expected here and resolve on the next retry.
+ *
+ * Skipped when BLE has reconnected already (e.g. upstream's auto-reconnect
+ * beat us to it during the flash flow).
  */
 async function scheduleBleReconnect(): Promise<void> {
   if (!SUPPORT.ble) return;
-  // Settle delay: longer than the typical app-mode reboot but short enough
-  // that the user notices the reconnect rather than the gap.
-  await new Promise((r) => setTimeout(r, 1200));
-  const s = getState();
-  if (s.bleStatus === 'connected' || s.bleStatus === 'connecting') return;
-  appendLog({ direction: 'info', text: 'Auto-reconnecting BLE after flash' });
-  try {
-    await connectCalliope('ble');
-  } catch (err) {
-    appendLog({
-      direction: 'info',
-      text: `Auto-reconnect failed: ${(err as Error)?.message ?? err}`,
-    });
+  // Device reboot after partial flash can take several seconds; bond
+  // re-establishment another moment on top. Retry with backoff until the
+  // total budget elapses. Only short-circuit on a real `connected` state
+  // — if upstream is stuck in `connecting`, our explicit retry is what
+  // unsticks it.
+  const delays = [1500, 2500, 3500, 5000, 7000];
+  for (const delay of delays) {
+    await new Promise((r) => setTimeout(r, delay));
+    const s = getState();
+    if (s.bleStatus === 'connected') return;
+    appendLog({ direction: 'info', text: `Auto-reconnecting BLE after flash (delay ${delay}ms, status=${s.bleStatus})` });
+    try {
+      const c = await getBleConnection();
+      await c.connect({ bondMode: 'application' });
+      updateState((st) => ({ ...st, bleHasPaired: true }));
+      appendLog({ direction: 'info', text: 'Auto-reconnect succeeded' });
+      return;
+    } catch (err) {
+      appendLog({
+        direction: 'info',
+        text: `Auto-reconnect attempt failed: ${(err as Error)?.message ?? err}`,
+      });
+    }
   }
+  appendLog({ direction: 'info', text: 'Auto-reconnect gave up after retries' });
 }
 
 /**

@@ -1,7 +1,9 @@
 <script lang="ts">
   import { calliopeBlePairingInfo, dismissBlePairingInfo } from '../pairing-info';
+  import { calliopeState } from '../state';
 
   const visible = $derived($calliopeBlePairingInfo);
+  const staleBond = $derived($calliopeState.bleStaleBond);
 </script>
 
 {#if visible}
@@ -12,15 +14,28 @@
           <path d="M7 7l10 10-5 5V2l5 5L7 17" />
         </svg>
       </div>
-      <h2 id="ble-pair-title">Calliope am Computer koppeln</h2>
-      <p>
-        Im reinen Bluetooth-Modus muss der Calliope einmalig in den
-        Bluetooth-Einstellungen deines Computers gekoppelt werden — der Browser
-        kann das selbst nicht anstoßen. Ohne diese Kopplung schlägt das
-        Übertragen über Bluetooth fehl.
-      </p>
+      <h2 id="ble-pair-title">
+        {staleBond ? 'Calliope neu koppeln' : 'Calliope am Computer koppeln'}
+      </h2>
+      {#if staleBond}
+        <p>
+          Das alte OS-Pairing passt nicht mehr — typischerweise nach einem
+          USB-Flash, der die Bond-Whitelist auf dem Calliope löscht. Bitte
+          das alte Pairing entfernen und neu koppeln:
+        </p>
+      {:else}
+        <p>
+          Im reinen Bluetooth-Modus muss der Calliope einmalig in den
+          Bluetooth-Einstellungen deines Computers gekoppelt werden — der Browser
+          kann das selbst nicht anstoßen. Ohne diese Kopplung schlägt das
+          Übertragen über Bluetooth fehl.
+        </p>
+      {/if}
       <ol class="steps">
         <li>Öffne die <strong>Bluetooth-Einstellungen</strong> deines Betriebssystems.</li>
+        {#if staleBond}
+          <li><strong>Bestehende Calliope-Kopplung entfernen</strong> (in der OS-Liste den Calliope auswählen und "Entkoppeln" / "Vergessen").</li>
+        {/if}
         <li>Drücke <strong>A + B</strong> auf dem Calliope und halte sie, beim
           mini 3 zusätzlich kurz <strong>Reset</strong> drücken — der Modus zum
           Pairing wird aktiv (Bildschirm zeigt "PAIR").</li>
@@ -29,9 +44,9 @@
         <li>Komm zurück in den Browser und klicke auf <em>Verbinden</em>.</li>
       </ol>
       <p class="hint">
-        Tipp: Wenn du keine Kopplung einrichten möchtest, nutze stattdessen
-        den Modus <strong>BLE + USB</strong> — der Calliope wird per USB-Kabel
-        beschrieben und sendet danach drahtlos Live-Daten.
+        Tipp: Du kannst den Calliope alternativ per <strong>USB</strong>
+        anschließen — dann brauchst du keine Kopplung. Flashen und Kommunikation
+        laufen dann komplett über das Kabel.
       </p>
       <div class="actions">
         <button type="button" class="btn primary" onclick={() => dismissBlePairingInfo()}>

@@ -18,6 +18,7 @@ import {
 } from './state';
 import { appendLog } from './log';
 import { detectCalliopeVersion, stripMakeCodeMetadata } from './helpers';
+import { friendlyNameFromDeviceId } from './friendly-name';
 import { startHeartbeat, stopHeartbeat } from './serial';
 
 let usbConn: MicrobitUSBConnection | null = null;
@@ -93,6 +94,18 @@ export async function getUsbConnection(): Promise<MicrobitUSBConnection> {
       const dev = c.getDevice();
       const pn = dev?.productName ?? undefined;
       const cv = detectCalliopeVersion(pn, undefined);
+      // FICR.DEVICEID[1] from DAPLink — same number the firmware feeds
+      // into `microbit_friendly_name`. Throws when not yet connected, so
+      // we only attempt it on the connected transition.
+      let friendly: string | undefined;
+      if (mapped === 'connected') {
+        try {
+          const id = c.getDeviceId();
+          if (typeof id === 'number' && id !== 0) {
+            friendly = friendlyNameFromDeviceId(id);
+          }
+        } catch { /* not-connected race — leave undefined */ }
+      }
       updateState((s) => {
         if (s.flashTransport === 'usb' && mapped !== 'connected') return s;
         return {
@@ -103,6 +116,7 @@ export async function getUsbConnection(): Promise<MicrobitUSBConnection> {
             : s.usbDeviceName,
           usbErrorMessage: mapped === 'connected' ? undefined : s.usbErrorMessage,
           calliopeVersion: cv ?? s.calliopeVersion,
+          friendlyName: friendly ?? s.friendlyName,
           connectedAt: mapped === 'connected' ? Date.now() : s.connectedAt,
         };
       });
@@ -240,4 +254,34 @@ export async function disconnectUsb(): Promise<void> {
   if (!usbConn) return;
   const t = new Promise<void>((res) => setTimeout(res, 2000));
   try { await Promise.race([usbConn.disconnect(), t]); } catch { /* ignore */ }
+}
+
+/**
+ * Revoke WebUSB permission for every authorized Calliope DAPLink. Mirrors
+ * `forgetAllBleDevices` in ble.ts. Without this, the browser keeps the device
+ * permission and `tryAutoReconnectUsb` silently re-connects on the next page
+ * load — even after the user explicitly clicked "Trennen & vergessen".
+ *
+ * Upstream's `MicrobitUSBConnection.clearDevice` only clears its internal
+ * cache; it never calls `USBDevice.forget()`, which is what actually revokes
+ * the WebUSB permission. We call both: upstream for its bookkeeping, then
+ * the per-device `forget()` to clear the browser permission.
+ */
+export async function forgetAllUsbDevices(): Promise<void> {
+  if (usbConn) {
+    try { await usbConn.clearDevice(); } catch { /* ignore */ }
+  }
+  if (typeof navigator === 'undefined' || !('usb' in navigator)) return;
+  try {
+    const nav = navigator as unknown as {
+      usb: { getDevices(): Promise<{ vendorId: number; productId: number; forget?: () => Promise<void> }[]> };
+    };
+    const devices = await nav.usb.getDevices();
+    for (const d of devices) {
+      if (d.vendorId !== 0x0d28 || d.productId !== 0x0204) continue;
+      if (typeof d.forget === 'function') {
+        try { await d.forget(); } catch { /* ignore */ }
+      }
+    }
+  } catch { /* ignore */ }
 }

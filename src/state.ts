@@ -1,5 +1,6 @@
 import type { BoardVersion } from '@microbit/microbit-connection';
 import type { CalliopeVersion } from './helpers';
+import type { CalliopeProgramType } from './program-type';
 import { writable, type Readable } from './store';
 
 /** Physical channel carrying serial / flashing. Both can be open at once. */
@@ -36,14 +37,6 @@ export interface CalliopeState {
   bleCanFlash: boolean;
   /** UART service exposed (BLE serial communication possible). */
   bleCanCommunicate: boolean;
-  /**
-   * MbitMore service exposed → the Calliope is running the blocks runtime
-   * and Scratch-style block communication is possible. Unauthenticated, so
-   * this can be true even with `bleCanCommunicate`/`bleCanFlash` false
-   * (e.g. a stale-bond device where UART/partial-flashing are unreachable
-   * but the unauthenticated MbitMore service still works).
-   */
-  bleCanBlocks: boolean;
   /** Connected over BLE to a previously-paired device but authenticated
    *  services are inaccessible — i.e. OS still holds a bond, but the
    *  Calliope has forgotten its whitelist (typical after USB full-flash).
@@ -65,6 +58,37 @@ export interface CalliopeState {
   boardVersion?: BoardVersion;
   calliopeVersion?: CalliopeVersion;
   connectedAt?: number;
+
+  /**
+   * Latest result of the program-type probe. `'blocks'` when the running
+   * hex is the pxt-blocks / MbitMore runtime (real handlers wired up);
+   * `'unknown'` when a non-blocks program is running; `'disconnected'`
+   * when no transport is connected. Refreshed automatically whenever a
+   * transport flips into/out of `'connected'` — see `program-type.ts`.
+   */
+  programType?: CalliopeProgramType;
+
+  /**
+   * The 5-letter Calliope friendly name (e.g. `tipov`), derived from
+   * `FICR.DEVICEID[1]` over USB and from the advertised BLE name when it
+   * carries the `[xxxxx]` suffix. Stable per device; once captured by
+   * either transport it stays set until the user disconnects-and-forgets.
+   */
+  friendlyName?: string;
+
+  /**
+   * A flash request the dispatcher couldn't fulfil yet — usually because
+   * no transport was connected, or BLE went into a re-pair state mid-flow.
+   * The auto-resume hook in `flash.ts` watches transport-status changes
+   * and re-fires `flashCalliope(hex, name)` once either USB or BLE flips
+   * to `connected`, then clears this slot. Auto-expires after 60 s so a
+   * stale pending flash from a previous session can't surprise the user.
+   */
+  pendingFlash?: {
+    hex: string;
+    name: string;
+    createdAt: number;
+  };
 
   /**
    * Roll-up status — `flashing` if a flash is in flight, else `connected`
@@ -98,7 +122,6 @@ const initial: CalliopeState = recomputeOverall({
   bleHasPaired: false,
   bleCanFlash: false,
   bleCanCommunicate: false,
-  bleCanBlocks: false,
   bleStaleBond: false,
   usbSupported,
   bleSupported,
