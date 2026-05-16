@@ -602,12 +602,19 @@ export async function flashCalliopeViaBle(hex: string, name: string): Promise<vo
     // through USB until the user manually disconnects, plus mis-fire the
     // "needs OS pairing" modal even though pairing is fine.
     if (err instanceof BluetoothPartialFlashDalMismatchError ||
-        err instanceof BluetoothPartialFlashServiceMissingError) {
-      // Both errors mean partial flash is impossible, but full BLE flash
-      // via Nordic DFU might still work (especially relevant after a
-      // failed/interrupted DFU left the device in a non-MakeCode state
-      // where the partial-flash service isn't advertised). Reset flash
-      // state and let the dispatcher decide whether to try DFU next.
+        err instanceof BluetoothPartialFlashServiceMissingError ||
+        err instanceof BluetoothPartialFlashInvalidHexError) {
+      // All three mean partial flash is impossible, but a full BLE flash
+      // via Nordic DFU still works:
+      //  - DAL mismatch / service missing: typical after a failed or
+      //    interrupted DFU left the device in a non-MakeCode state where
+      //    the partial-flashing service isn't advertised.
+      //  - Invalid hex: the image isn't MakeCode-shaped (e.g. a
+      //    MicroPython firmware build — no end-of-app marker). The iOS
+      //    and Android Calliope apps take the same path: Nordic DFU for
+      //    anything that isn't a MakeCode partial-flash payload.
+      // Reset flash state and let the dispatcher decide whether to try
+      // DFU (or USB) next.
       updateState((s) => ({
         ...s,
         flashTransport: undefined,
@@ -617,6 +624,8 @@ export async function flashCalliopeViaBle(hex: string, name: string): Promise<vo
       }));
       const reason = err instanceof BluetoothPartialFlashDalMismatchError
         ? 'DAL mismatch'
+        : err instanceof BluetoothPartialFlashInvalidHexError
+        ? 'no MakeCode marker (non-MakeCode hex)'
         : 'partial-flash service missing';
       appendLog({ direction: 'info', text: `BLE partial flash impossible (${reason})` });
       throw err;
