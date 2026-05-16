@@ -14,6 +14,7 @@ import {
 import { flashCalliopeViaUsb, getUsbConn } from './usb';
 import {
   BluetoothPartialFlashDalMismatchError,
+  BluetoothPartialFlashInvalidHexError,
   BluetoothPartialFlashServiceMissingError,
 } from './ble-flash-web';
 import { BluetoothDfuServiceMissingError } from './ble-dfu-web';
@@ -106,15 +107,22 @@ export async function flashCalliope(hex: string, name: string = 'project'): Prom
     } catch (err) {
       const partialUnusable =
         err instanceof BluetoothPartialFlashDalMismatchError ||
-        err instanceof BluetoothPartialFlashServiceMissingError;
+        err instanceof BluetoothPartialFlashServiceMissingError ||
+        err instanceof BluetoothPartialFlashInvalidHexError;
       if (!partialUnusable) throw err;
-      // Partial flash impossible — either DAL hash mismatch (running runtime
-      // doesn't match the hex) or the partial-flashing service isn't there
-      // at all (typical after a previous DFU left the device in a state
-      // where the application's GATT profile changed). Try a full BLE flash
-      // via Nordic DFU; iOS/Android do the same via their native DFU lib.
+      // Partial flash impossible — one of:
+      //   - DAL hash mismatch (running runtime doesn't match the hex)
+      //   - partial-flashing service isn't there at all (typical after a
+      //     previous DFU left the device in a state where the application's
+      //     GATT profile changed)
+      //   - hex isn't MakeCode-shaped (e.g. MicroPython firmware images
+      //     have no MakeCode marker, so partial flash refuses them)
+      // Try a full BLE flash via Nordic DFU; iOS/Android do the same via
+      // their native DFU lib.
       const reason = err instanceof BluetoothPartialFlashDalMismatchError
         ? 'DAL mismatch'
+        : err instanceof BluetoothPartialFlashInvalidHexError
+        ? 'no MakeCode marker (non-MakeCode hex)'
         : 'partial-flash service missing';
       appendLog({
         direction: 'info',
