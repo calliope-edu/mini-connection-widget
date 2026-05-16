@@ -30,7 +30,7 @@ import {
   type BluetoothDfuPhase,
 } from './ble-dfu-web';
 import { extractFriendlyName, friendlyNameFromDeviceId } from './friendly-name';
-import { showBlePairingInfo, dismissBlePairingInfo } from './pairing-info';
+import { showBlePairingInfo } from './pairing-info';
 
 // Standard Bluetooth SIG Device Information Service — every micro:bit /
 // Calliope firmware exposes it. The Serial Number string characteristic
@@ -272,64 +272,6 @@ export async function bleSerialWrite(line: string): Promise<void> {
   await bleConn.uartWrite(textEncoder.encode(line));
 }
 
-// ---- OS-pairing handshake --------------------------------------------------
-
-// Nordic UART Service — used by both micro:bit and Calliope MakeCode for the
-// serial channel. Read/write on TX/RX is gated on encryption in the
-// `SECURITY_MODE_ENCRYPTION_NO_MITM` profile.
-const UART_SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
-const UART_RX_CHAR_UUID = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
-
-type ForceBondResult = 'success' | 'no-uart' | 'failed';
-
-/**
- * Probe whether the OS-level bond is in place by writing one byte to UART
- * RX. Upstream `c.connect()` only does GATT service discovery on web, so
- * the encryption challenge that prompts for an OS bond may never fire on
- * its own — on a never-paired device the Calliope's PAIR-mode then times
- * out silently with no checkmark/cross.
- *
- * `writeValueWithResponse` is a write-with-ack: the central waits for the
- * device's link-layer ack, so it actually round-trips through encryption.
- * Cheaper alternatives (`startNotifications` CCCD writes, descriptor
- * reads) can be cached by Chrome and silently return success without
- * touching the device, giving false positives on Windows.
- *
- * On macOS / Linux a successful write may trigger the OS bond prompt
- * inline; on Windows Chrome the OS does NOT prompt automatically — the
- * write simply fails until the user pairs via Settings → Bluetooth. The
- * BlePairingInfoModal walks them through that and offers a retry.
- * Either way, the `success`/`failed` return is an authoritative signal.
- *
- *  - Already-bonded device → resolves silently.
- *  - Fresh pair-mode device (mac/Linux) → OS prompt → user accepts →
- *    resolves; Calliope shows the checkmark.
- *  - Stale bond / no bond on Windows → throws → we surface the modal.
- *  - Hex without UART → 'no-uart', silent (rare, e.g. raw MicroPython).
- *
- * The payload is a single 0x20 (space) byte: benign for the MakeCode
- * pxt-blocks / Scratch runtimes, dropped by hexes that don't listen on
- * UART. We don't care about its semantics — only whether the GATT op
- * completes.
- */
-async function forceBlePairingHandshake(c: MicrobitBluetoothConnection): Promise<ForceBondResult> {
-  const device = await getBleDevice(c);
-  if (!device?.gatt?.connected) return 'failed';
-  let service: BluetoothRemoteGATTService;
-  try {
-    service = await device.gatt.getPrimaryService(UART_SERVICE_UUID);
-  } catch {
-    return 'no-uart';
-  }
-  try {
-    const char = await service.getCharacteristic(UART_RX_CHAR_UUID);
-    await char.writeValueWithResponse(new Uint8Array([0x20]));
-    return 'success';
-  } catch {
-    return 'failed';
-  }
-}
-
 // ---- Connection wrapper -----------------------------------------------------
 
 export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
@@ -390,45 +332,14 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
         void readFriendlyNameViaGatt(c).then((g) => {
           if (g) updateState((s) => ({ ...s, friendlyName: g }));
         });
-        // Background: force the OS-level pairing handshake. Upstream's
-        // `c.connect()` only does GATT service discovery on web, so the
-        // encryption challenge that prompts for an OS bond never fires
-        // on a never-paired device. Touching UART TX's CCCD does. If
-        // pairing was already established this is a no-op; if it fails
-        // we flip into stale-bond state so the UI surfaces the modal.
-        void forceBlePairingHandshake(c).then((result) => {
-          // Probe is fire-and-forget — if the device disconnected (e.g. user
-          // closed the picker mid-way, or the firmware dropped us) while it
-          // was in flight, don't retroactively mark the now-disconnected
-          // state as stale-bond.
-          if (getState().bleStatus !== 'connected') return;
-          if (result === 'success') {
-            appendLog({ direction: 'info', text: 'OS pairing handshake confirmed' });
-            // Auto-close any pairing-info modal left over from a previous
-            // failed attempt — the user just successfully re-paired and
-            // hit "Erneut verbinden". They don't need to dismiss it
-            // manually a second time.
-            dismissBlePairingInfo();
-            return;
-          }
-          if (result === 'no-uart') {
-            appendLog({ direction: 'info', text: 'Skipping pairing handshake — UART service not exposed' });
-            return;
-          }
-          appendLog({
-            direction: 'info',
-            text: 'OS pairing handshake failed — bond not established',
-          });
-          updateState((s) => ({
-            ...s,
-            bleStaleBond: true,
-            bleCanFlash: false,
-            bleCanCommunicate: false,
-            bleErrorMessage:
-              'Calliope ist über Bluetooth erreichbar, aber das OS-Pairing fehlt — bitte in den Bluetooth-Einstellungen koppeln.',
-          }));
-          showBlePairingInfo();
-        });
+        // No automatic OS-pairing probe: on Windows Chrome, touching an
+        // encrypted GATT char after connect actively poisons the bond
+        // window. The Calliope's PAIR mode closes on the first GATT
+        // connect, so by the time we'd write to UART RX the SMP exchange
+        // can't initiate — Windows says "Try later again to connect your
+        // device" and no bond is created. We instead detect missing bond
+        // at flash time (handleBleFlashError) and walk the user through
+        // OS-side pairing via the BlePairingInfoModal.
       } else {
         updateState((s) => ({
           ...s,
@@ -757,6 +668,10 @@ function handleBleFlashError(err: unknown): void {
       case 'pairing-information-lost':
         userMsg = 'OS-Pairing veraltet — Calliope in den OS-Bluetooth-Einstellungen entkoppeln und neu pairen.';
         updateState((s) => ({ ...s, bleStaleBond: true, bleCanFlash: false }));
+        // Surface the pairing modal right away — without this the user
+        // only sees a terse error message and has to retry the flash to
+        // get the explainer.
+        showBlePairingInfo();
         break;
       case 'firmware-update-required':
         userMsg = 'Runtime auf dem Calliope passt nicht zum Programm — bitte einmal per USB voll flashen.';
@@ -769,6 +684,7 @@ function handleBleFlashError(err: unknown): void {
       case 'permission-denied':
         userMsg = 'Bluetooth-Pairing fehlt: Calliope einmal in den OS-Bluetooth-Einstellungen koppeln, oder per USB anschließen.';
         updateState((s) => ({ ...s, bleCanFlash: false }));
+        showBlePairingInfo();
         break;
       default:
         userMsg = err.message || `BLE flash error: ${err.code}`;

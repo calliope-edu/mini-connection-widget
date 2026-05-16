@@ -221,11 +221,7 @@ export async function flashCalliopeViaUsb(hex: string, name: string): Promise<vo
   const progress: ProgressCallback = applyFlashProgress;
 
   try {
-    await c.flash(dataSource, {
-      partial: true,
-      progress,
-      minimumProgressIncrement: 0.05,
-    });
+    await runFlashWithTransferRetry(c, dataSource, progress);
     updateState((s) => ({
       ...s,
       flashTransport: undefined,
@@ -248,6 +244,64 @@ export async function flashCalliopeViaUsb(hex: string, name: string): Promise<vo
     }));
     appendLog({ direction: 'error', text: `Flash failed: ${(err as Error).message}` });
   }
+}
+
+/**
+ * WebUSB occasionally throws "Failed to execute 'transferOut' on
+ * 'USBDevice': A transfer error has occurred" mid-flash — a stale
+ * endpoint state on the host side, typically after a previous session
+ * left the DAPLink interface in an inconsistent state. The standard
+ * recovery is: bounce the connection (`disconnect` → `connect`) which
+ * makes the lib re-claim the interface and reset the endpoint, then
+ * retry the flash once.
+ *
+ * Without this the user has to click "Verbinden" again manually and
+ * lose the original flash request.
+ */
+async function runFlashWithTransferRetry(
+  c: MicrobitUSBConnection,
+  dataSource: FlashDataSource,
+  progress: ProgressCallback,
+): Promise<void> {
+  try {
+    await c.flash(dataSource, { partial: true, progress, minimumProgressIncrement: 0.05 });
+    return;
+  } catch (err) {
+    if (!isTransientUsbTransferError(err)) throw err;
+    appendLog({
+      direction: 'info',
+      text: 'USB transferOut error — bouncing the connection and retrying once',
+    });
+    try {
+      await c.disconnect();
+    } catch { /* ignore — we're about to reconnect anyway */ }
+    // Give the host a moment to free the endpoint before re-claiming.
+    await new Promise((r) => setTimeout(r, 400));
+    try {
+      await c.connect();
+    } catch (reconnectErr) {
+      throw new Error(
+        `USB transfer error; reconnect failed: ${(reconnectErr as Error).message}`,
+      );
+    }
+    // Reset the UI flash phase — the lib starts the second attempt from
+    // scratch ("FindingDevice" → ...), so the progress bar would jump
+    // backwards if we left the previous percentage on screen.
+    updateState((s) => ({ ...s, flashPhase: 'check', flashProgress: undefined }));
+    await c.flash(dataSource, { partial: true, progress, minimumProgressIncrement: 0.05 });
+  }
+}
+
+/**
+ * Match the specific WebUSB transferOut errors we know are recoverable
+ * by bouncing the connection. Other USB errors (device unplugged,
+ * permission revoked, no DAPLink) need user attention.
+ */
+function isTransientUsbTransferError(err: unknown): boolean {
+  const msg = (err as Error)?.message ?? '';
+  return (
+    /transferOut/i.test(msg) && /transfer error/i.test(msg)
+  ) || /transferIn/i.test(msg) && /transfer error/i.test(msg);
 }
 
 export async function disconnectUsb(): Promise<void> {
