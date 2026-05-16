@@ -1,7 +1,12 @@
 import { ConnectionStatus } from '@microbit/microbit-connection';
 import { appendLog } from './log';
 import { getUsbConn } from './usb';
-import { addBleLineSubscriber, bleSerialWrite, getBleConn } from './ble';
+import {
+  addBleLineSubscriber,
+  addBleRawSubscriber,
+  bleSerialWrite,
+  getBleConn,
+} from './ble';
 
 const HEARTBEAT_MS = 1000;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -52,6 +57,57 @@ export async function sendSerialLine(line: string): Promise<void> {
   } catch {
     /* ignore — caller may be in a tight loop */
   }
+}
+
+/**
+ * Send raw data to the board without forcing a trailing newline. Use this
+ * for character-level transports — typically the MicroPython REPL, where
+ * every keystroke goes to the device as it's typed.
+ */
+export async function sendSerialData(data: string): Promise<void> {
+  if (!data) return;
+  try {
+    const usb = getUsbConn();
+    if (usb?.status === ConnectionStatus.Connected) {
+      await usb.serialWrite(data);
+      return;
+    }
+    const ble = getBleConn();
+    if (ble?.status !== ConnectionStatus.Connected) return;
+    await bleSerialWrite(data);
+  } catch {
+    /* ignore — caller may be in a tight loop */
+  }
+}
+
+/**
+ * Subscribe to raw decoded chunks from the board (no line buffering, no
+ * filtering, partial lines welcome). The complement of `sendSerialData`,
+ * for consumers that need char-level data — typically the MicroPython
+ * REPL.
+ */
+export function onSerialData(cb: (chunk: string) => void): () => void {
+  const usbHandler = (ev: { data: string }) => {
+    if (ev.data) cb(ev.data);
+  };
+  const unsubBle = addBleRawSubscriber(cb);
+  let disposed = false;
+  const tryAttach = () => {
+    if (disposed) return;
+    const usb = getUsbConn();
+    if (usb) {
+      usb.addEventListener('serialdata', usbHandler);
+      return;
+    }
+    setTimeout(tryAttach, 250);
+  };
+  tryAttach();
+  return () => {
+    disposed = true;
+    unsubBle();
+    const usb = getUsbConn();
+    if (usb) usb.removeEventListener('serialdata', usbHandler);
+  };
 }
 
 /**

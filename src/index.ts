@@ -46,7 +46,12 @@ export { calliopeConnectionChoiceRequest } from './connection-choice';
 
 export { connectCalliope, disconnectAndForget } from './connect';
 export { flashCalliope } from './flash';
-export { sendSerialLine, onSerialLine } from './serial';
+export {
+  sendSerialLine,
+  onSerialLine,
+  sendSerialData,
+  onSerialData,
+} from './serial';
 export { getConnectedBleDevice } from './ble';
 export { getRunningProgramType } from './program-type';
 export type { CalliopeProgramType, CalliopeProgramInfo } from './program-type';

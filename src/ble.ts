@@ -235,6 +235,17 @@ export function addBleLineSubscriber(cb: (line: string) => void): () => void {
   return () => { bleLineSubs.delete(cb); };
 }
 
+const bleRawSubs = new Set<(chunk: string) => void>();
+
+/**
+ * Subscribe to raw decoded UART chunks (no line buffering). For consumers
+ * that need character-level data — typically the MicroPython REPL.
+ */
+export function addBleRawSubscriber(cb: (chunk: string) => void): () => void {
+  bleRawSubs.add(cb);
+  return () => { bleRawSubs.delete(cb); };
+}
+
 function mapStatus(s: ConnectionStatus): CalliopeStatus {
   switch (s) {
     case ConnectionStatus.NoAuthorizedDevice:
@@ -427,7 +438,12 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
     // UART data — upstream gives us a Uint8Array per notification. Buffer and
     // split into newline-terminated lines, same as USB.
     c.addEventListener('uartdata', (data) => {
-      bleRxBuffer += new TextDecoder().decode(data.value);
+      const chunk = new TextDecoder().decode(data.value);
+      // Raw subscribers (e.g. MicroPython REPL) want every byte as it arrives,
+      // even partial-line chunks.
+      bleRawSubs.forEach((cb) => { try { cb(chunk); } catch { /* ignore */ } });
+      // Line subscribers and the rx log still split on '\n'.
+      bleRxBuffer += chunk;
       let idx: number;
       while ((idx = bleRxBuffer.indexOf('\n')) >= 0) {
         const line = bleRxBuffer.slice(0, idx).replace(/\r$/, '');
