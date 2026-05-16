@@ -274,18 +274,9 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
     await c.initialize();
     c.addEventListener('status', (ev) => {
       const mapped = mapStatus(ev.status);
-      updateState((s) => {
-        if (s.flashTransport === 'ble' && mapped !== 'connected') return s;
-        return {
-          ...s,
-          bleStatus: mapped,
-          bleErrorMessage: mapped === 'connected' ? undefined : s.bleErrorMessage,
-          bleCanCommunicate: mapped === 'connected' ? s.bleCanCommunicate : false,
-          bleCanFlash: mapped === 'connected' ? s.bleCanFlash : false,
-          bleStaleBond: mapped === 'connected' ? s.bleStaleBond : false,
-          connectedAt: mapped === 'connected' ? Date.now() : s.connectedAt,
-        };
-      });
+      // During an in-flight BLE flash, ignore non-connected transitions so a
+      // transient device-side drop doesn't crater state.
+      if (getState().flashTransport === 'ble' && mapped !== 'connected') return;
       if (mapped === 'connected') {
         startHeartbeat();
         appendLog({ direction: 'info', text: 'Connected (BLE)' });
@@ -303,8 +294,14 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
         // "Calliope mini" — in that case the regex returns undefined and
         // we keep whatever friendlyName USB (or a prior connect) supplied.
         const friendly = extractFriendlyName(name);
+        // Single atomic update — subscribers (notably flash.ts's auto-resume
+        // hook) never observe a `connected && !bleCanFlash` half-state, so
+        // the dispatcher can't mis-fire the "OS pairing missing" modal in
+        // the brief window between status flip and capability flip.
         updateState((s) => ({
           ...s,
+          bleStatus: 'connected',
+          bleErrorMessage: undefined,
           bleDeviceName: name ?? s.bleDeviceName,
           boardVersion: boardVersion ?? s.boardVersion,
           calliopeVersion: boardVersion === 'V2' ? 'V3' : (boardVersion === 'V1' ? 'V1' : s.calliopeVersion),
@@ -312,6 +309,7 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
           bleCanCommunicate: true,
           bleCanFlash: true,
           bleStaleBond: false,
+          connectedAt: Date.now(),
         }));
         // Background: query the CODAL DeviceInfo characteristic for the
         // canonical device id. More reliable than the GAP name, which only
@@ -323,6 +321,13 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
           if (g) updateState((s) => ({ ...s, friendlyName: g }));
         });
       } else {
+        updateState((s) => ({
+          ...s,
+          bleStatus: mapped,
+          bleCanCommunicate: false,
+          bleCanFlash: false,
+          bleStaleBond: false,
+        }));
         if (getState().usbStatus !== 'connected') stopHeartbeat();
         if (mapped === 'disconnected') appendLog({ direction: 'info', text: 'Disconnected (BLE)' });
       }

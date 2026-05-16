@@ -4,6 +4,35 @@
 
   const visible = $derived($calliopeBlePairingInfo);
   const staleBond = $derived($calliopeState.bleStaleBond);
+
+  // Platform-specific deep link into the OS Bluetooth pane.
+  //  - Windows: ms-settings: URI handled by the Settings app
+  //  - macOS:   x-apple.systempreferences: URI handled by System Settings
+  //  - Linux / unknown: no standard scheme, button is hidden
+  // Chrome shows a one-time confirmation toast the first time these schemes
+  // are opened; Edge typically opens them directly.
+  function detectOsBluetoothUrl(): string | null {
+    if (typeof navigator === 'undefined') return null;
+    const ua = navigator.userAgent;
+    if (/Windows/i.test(ua)) return 'ms-settings:bluetooth';
+    if (/Mac OS X|Macintosh/i.test(ua)) return 'x-apple.systempreferences:com.apple.preference.Bluetooth';
+    return null;
+  }
+  const osBluetoothUrl = detectOsBluetoothUrl();
+
+  function openOsBluetoothSettings(): void {
+    if (!osBluetoothUrl) return;
+    // Use an anchor click rather than location.href so failures (unsupported
+    // scheme, user dismissed the browser confirmation) don't navigate the
+    // page away from the editor.
+    const a = document.createElement('a');
+    a.href = osBluetoothUrl;
+    a.rel = 'noopener';
+    a.target = '_self';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
 </script>
 
 {#if visible}
@@ -49,6 +78,11 @@
         laufen dann komplett über das Kabel.
       </p>
       <div class="actions">
+        {#if osBluetoothUrl}
+          <button type="button" class="btn secondary" onclick={openOsBluetoothSettings}>
+            Bluetooth-Einstellungen öffnen
+          </button>
+        {/if}
         <button type="button" class="btn primary" onclick={() => dismissBlePairingInfo()}>
           Verstanden
         </button>
@@ -130,6 +164,12 @@
       background: #1b1c1d;
       color: #fff;
       &:hover { background: #333; }
+    }
+    &.secondary {
+      background: #fff;
+      color: #1b1c1d;
+      border-color: #cbd5e1;
+      &:hover { background: #f1f5f9; }
     }
   }
 </style>
