@@ -30,6 +30,7 @@ import {
   type BluetoothDfuPhase,
 } from './ble-dfu-web';
 import { extractFriendlyName, friendlyNameFromDeviceId } from './friendly-name';
+import { showBlePairingInfo } from './pairing-info';
 
 // Standard Bluetooth SIG Device Information Service — every micro:bit /
 // Calliope firmware exposes it. The Serial Number string characteristic
@@ -260,6 +261,58 @@ export async function bleSerialWrite(line: string): Promise<void> {
   await bleConn.uartWrite(textEncoder.encode(line));
 }
 
+// ---- OS-pairing handshake --------------------------------------------------
+
+// Nordic UART Service — used by both micro:bit and Calliope MakeCode for the
+// serial channel. Read/write on TX/RX is gated on encryption in the
+// `SECURITY_MODE_ENCRYPTION_NO_MITM` profile, so subscribing to TX
+// notifications is the cheapest way to force an OS-level bond handshake.
+const UART_SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const UART_TX_CHAR_UUID = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
+
+type ForceBondResult = 'success' | 'no-uart' | 'failed';
+
+/**
+ * Force the OS-level pairing handshake by touching an encrypted GATT
+ * characteristic — upstream `c.connect()` only does service discovery,
+ * which doesn't trigger encryption negotiation, so on a never-paired
+ * device the OS prompt never appears and the Calliope's PAIR-mode times
+ * out silently. Subscribing to UART TX notifications writes the CCCD on
+ * an encrypted characteristic; that's what kicks the OS into asking for
+ * (or silently re-using) a bond.
+ *
+ * Already-bonded devices: succeeds silently (encryption reused).
+ * Fresh PAIR-mode device: OS prompt appears, Calliope shows checkmark
+ *   on success, cross on rejection.
+ * Hex without UART (rare): no-op — we can't probe, hope upstream's own
+ *   GATT work covers it. We don't surface a modal in this case.
+ */
+async function forceBlePairingHandshake(c: MicrobitBluetoothConnection): Promise<ForceBondResult> {
+  const device = await getBleDevice(c);
+  if (!device?.gatt?.connected) return 'failed';
+  let service: BluetoothRemoteGATTService;
+  try {
+    service = await device.gatt.getPrimaryService(UART_SERVICE_UUID);
+  } catch {
+    // UART not exposed — happens on non-MakeCode hexes (raw MicroPython,
+    // custom firmware). Nothing to probe; don't surface a pairing error.
+    return 'no-uart';
+  }
+  try {
+    const char = await service.getCharacteristic(UART_TX_CHAR_UUID);
+    // CCCD write on an encrypted char — this is the actual trigger. On a
+    // fresh pair the call resolves when the OS bond completes (user
+    // accepted the prompt). On rejection it throws.
+    await char.startNotifications();
+    return 'success';
+  } catch {
+    // Most common shapes here: SecurityError, NotAllowedError, or a
+    // generic NetworkError with "GATT operation failed". All map to "no
+    // bond established" from the user's POV.
+    return 'failed';
+  }
+}
+
 // ---- Connection wrapper -----------------------------------------------------
 
 export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
@@ -319,6 +372,40 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
         // what it can with the advertised name.
         void readFriendlyNameViaGatt(c).then((g) => {
           if (g) updateState((s) => ({ ...s, friendlyName: g }));
+        });
+        // Background: force the OS-level pairing handshake. Upstream's
+        // `c.connect()` only does GATT service discovery on web, so the
+        // encryption challenge that prompts for an OS bond never fires
+        // on a never-paired device. Touching UART TX's CCCD does. If
+        // pairing was already established this is a no-op; if it fails
+        // we flip into stale-bond state so the UI surfaces the modal.
+        void forceBlePairingHandshake(c).then((result) => {
+          // Probe is fire-and-forget — if the device disconnected (e.g. user
+          // closed the picker mid-way, or the firmware dropped us) while it
+          // was in flight, don't retroactively mark the now-disconnected
+          // state as stale-bond.
+          if (getState().bleStatus !== 'connected') return;
+          if (result === 'success') {
+            appendLog({ direction: 'info', text: 'OS pairing handshake confirmed' });
+            return;
+          }
+          if (result === 'no-uart') {
+            appendLog({ direction: 'info', text: 'Skipping pairing handshake — UART service not exposed' });
+            return;
+          }
+          appendLog({
+            direction: 'info',
+            text: 'OS pairing handshake failed — bond not established',
+          });
+          updateState((s) => ({
+            ...s,
+            bleStaleBond: true,
+            bleCanFlash: false,
+            bleCanCommunicate: false,
+            bleErrorMessage:
+              'Calliope ist über Bluetooth erreichbar, aber das OS-Pairing fehlt — bitte in den Bluetooth-Einstellungen koppeln.',
+          }));
+          showBlePairingInfo();
         });
       } else {
         updateState((s) => ({
