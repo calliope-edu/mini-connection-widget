@@ -30,7 +30,7 @@ import {
   type BluetoothDfuPhase,
 } from './ble-dfu-web';
 import { extractFriendlyName, friendlyNameFromDeviceId } from './friendly-name';
-import { showBlePairingInfo } from './pairing-info';
+import { showBlePairingInfo, dismissBlePairingInfo } from './pairing-info';
 
 // Standard Bluetooth SIG Device Information Service — every micro:bit /
 // Calliope firmware exposes it. The Serial Number string characteristic
@@ -276,27 +276,41 @@ export async function bleSerialWrite(line: string): Promise<void> {
 
 // Nordic UART Service — used by both micro:bit and Calliope MakeCode for the
 // serial channel. Read/write on TX/RX is gated on encryption in the
-// `SECURITY_MODE_ENCRYPTION_NO_MITM` profile, so subscribing to TX
-// notifications is the cheapest way to force an OS-level bond handshake.
+// `SECURITY_MODE_ENCRYPTION_NO_MITM` profile.
 const UART_SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
-const UART_TX_CHAR_UUID = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
+const UART_RX_CHAR_UUID = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
 
 type ForceBondResult = 'success' | 'no-uart' | 'failed';
 
 /**
- * Force the OS-level pairing handshake by touching an encrypted GATT
- * characteristic — upstream `c.connect()` only does service discovery,
- * which doesn't trigger encryption negotiation, so on a never-paired
- * device the OS prompt never appears and the Calliope's PAIR-mode times
- * out silently. Subscribing to UART TX notifications writes the CCCD on
- * an encrypted characteristic; that's what kicks the OS into asking for
- * (or silently re-using) a bond.
+ * Probe whether the OS-level bond is in place by writing one byte to UART
+ * RX. Upstream `c.connect()` only does GATT service discovery on web, so
+ * the encryption challenge that prompts for an OS bond may never fire on
+ * its own — on a never-paired device the Calliope's PAIR-mode then times
+ * out silently with no checkmark/cross.
  *
- * Already-bonded devices: succeeds silently (encryption reused).
- * Fresh PAIR-mode device: OS prompt appears, Calliope shows checkmark
- *   on success, cross on rejection.
- * Hex without UART (rare): no-op — we can't probe, hope upstream's own
- *   GATT work covers it. We don't surface a modal in this case.
+ * `writeValueWithResponse` is a write-with-ack: the central waits for the
+ * device's link-layer ack, so it actually round-trips through encryption.
+ * Cheaper alternatives (`startNotifications` CCCD writes, descriptor
+ * reads) can be cached by Chrome and silently return success without
+ * touching the device, giving false positives on Windows.
+ *
+ * On macOS / Linux a successful write may trigger the OS bond prompt
+ * inline; on Windows Chrome the OS does NOT prompt automatically — the
+ * write simply fails until the user pairs via Settings → Bluetooth. The
+ * BlePairingInfoModal walks them through that and offers a retry.
+ * Either way, the `success`/`failed` return is an authoritative signal.
+ *
+ *  - Already-bonded device → resolves silently.
+ *  - Fresh pair-mode device (mac/Linux) → OS prompt → user accepts →
+ *    resolves; Calliope shows the checkmark.
+ *  - Stale bond / no bond on Windows → throws → we surface the modal.
+ *  - Hex without UART → 'no-uart', silent (rare, e.g. raw MicroPython).
+ *
+ * The payload is a single 0x20 (space) byte: benign for the MakeCode
+ * pxt-blocks / Scratch runtimes, dropped by hexes that don't listen on
+ * UART. We don't care about its semantics — only whether the GATT op
+ * completes.
  */
 async function forceBlePairingHandshake(c: MicrobitBluetoothConnection): Promise<ForceBondResult> {
   const device = await getBleDevice(c);
@@ -305,21 +319,13 @@ async function forceBlePairingHandshake(c: MicrobitBluetoothConnection): Promise
   try {
     service = await device.gatt.getPrimaryService(UART_SERVICE_UUID);
   } catch {
-    // UART not exposed — happens on non-MakeCode hexes (raw MicroPython,
-    // custom firmware). Nothing to probe; don't surface a pairing error.
     return 'no-uart';
   }
   try {
-    const char = await service.getCharacteristic(UART_TX_CHAR_UUID);
-    // CCCD write on an encrypted char — this is the actual trigger. On a
-    // fresh pair the call resolves when the OS bond completes (user
-    // accepted the prompt). On rejection it throws.
-    await char.startNotifications();
+    const char = await service.getCharacteristic(UART_RX_CHAR_UUID);
+    await char.writeValueWithResponse(new Uint8Array([0x20]));
     return 'success';
   } catch {
-    // Most common shapes here: SecurityError, NotAllowedError, or a
-    // generic NetworkError with "GATT operation failed". All map to "no
-    // bond established" from the user's POV.
     return 'failed';
   }
 }
@@ -398,6 +404,11 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
           if (getState().bleStatus !== 'connected') return;
           if (result === 'success') {
             appendLog({ direction: 'info', text: 'OS pairing handshake confirmed' });
+            // Auto-close any pairing-info modal left over from a previous
+            // failed attempt — the user just successfully re-paired and
+            // hit "Erneut verbinden". They don't need to dismiss it
+            // manually a second time.
+            dismissBlePairingInfo();
             return;
           }
           if (result === 'no-uart') {

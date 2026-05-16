@@ -1,16 +1,16 @@
 <script lang="ts">
   import { calliopeBlePairingInfo, dismissBlePairingInfo } from '../pairing-info';
   import { calliopeState } from '../state';
+  import { connectCalliope } from '../connect';
 
   const visible = $derived($calliopeBlePairingInfo);
   const staleBond = $derived($calliopeState.bleStaleBond);
+  let retrying = $state(false);
 
   // Platform-specific deep link into the OS Bluetooth pane.
   //  - Windows: ms-settings: URI handled by the Settings app
   //  - macOS:   x-apple.systempreferences: URI handled by System Settings
-  //  - Linux / unknown: no standard scheme, button is hidden
-  // Chrome shows a one-time confirmation toast the first time these schemes
-  // are opened; Edge typically opens them directly.
+  //  - Linux / unknown: no standard scheme, fall back to a manual hint
   function detectOsBluetoothUrl(): string | null {
     if (typeof navigator === 'undefined') return null;
     const ua = navigator.userAgent;
@@ -22,9 +22,8 @@
 
   function openOsBluetoothSettings(): void {
     if (!osBluetoothUrl) return;
-    // Use an anchor click rather than location.href so failures (unsupported
-    // scheme, user dismissed the browser confirmation) don't navigate the
-    // page away from the editor.
+    // Anchor click (not location.href) so a blocked scheme doesn't navigate
+    // the editor away.
     const a = document.createElement('a');
     a.href = osBluetoothUrl;
     a.rel = 'noopener';
@@ -32,6 +31,21 @@
     document.body.appendChild(a);
     a.click();
     a.remove();
+  }
+
+  async function retryConnect(): Promise<void> {
+    if (retrying) return;
+    retrying = true;
+    try {
+      // forceChooser=true so the browser picker re-opens — the user just
+      // paired in OS settings, picker permission may have been cleared by
+      // a prior forceChooser cycle (e.g. from the 3-way modal route). On
+      // a successful reconnect, ble.ts's force-pair probe will run and
+      // auto-dismiss this modal via dismissBlePairingInfo().
+      await connectCalliope('ble', true);
+    } finally {
+      retrying = false;
+    }
   }
 </script>
 
@@ -44,47 +58,68 @@
         </svg>
       </div>
       <h2 id="ble-pair-title">
-        {staleBond ? 'Calliope neu koppeln' : 'Calliope am Computer koppeln'}
+        {staleBond ? 'Calliope neu koppeln' : 'Calliope koppeln'}
       </h2>
-      {#if staleBond}
-        <p>
-          Das alte OS-Pairing passt nicht mehr — typischerweise nach einem
-          USB-Flash, der die Bond-Whitelist auf dem Calliope löscht. Bitte
-          das alte Pairing entfernen und neu koppeln:
-        </p>
-      {:else}
-        <p>
-          Im reinen Bluetooth-Modus muss der Calliope einmalig in den
-          Bluetooth-Einstellungen deines Computers gekoppelt werden — der Browser
-          kann das selbst nicht anstoßen. Ohne diese Kopplung schlägt das
-          Übertragen über Bluetooth fehl.
-        </p>
-      {/if}
-      <ol class="steps">
-        <li>Öffne die <strong>Bluetooth-Einstellungen</strong> deines Betriebssystems.</li>
+      <p class="lead">
         {#if staleBond}
-          <li><strong>Bestehende Calliope-Kopplung entfernen</strong> (in der OS-Liste den Calliope auswählen und "Entkoppeln" / "Vergessen").</li>
+          Das alte Pairing passt nicht mehr. So geht's:
+        {:else}
+          In 3 Schritten anmelden — dann klappt's beim nächsten Mal von allein.
         {/if}
-        <li>Drücke <strong>A + B</strong> auf dem Calliope und halte sie, beim
-          mini 3 zusätzlich kurz <strong>Reset</strong> drücken — der Modus zum
-          Pairing wird aktiv (Bildschirm zeigt "PAIR").</li>
-        <li>Wähle den Calliope in der OS-Liste aus und bestätige die Kopplung
-          (in der Regel ohne PIN, "Just Works").</li>
-        <li>Komm zurück in den Browser und klicke auf <em>Verbinden</em>.</li>
-      </ol>
-      <p class="hint">
-        Tipp: Du kannst den Calliope alternativ per <strong>USB</strong>
-        anschließen — dann brauchst du keine Kopplung. Flashen und Kommunikation
-        laufen dann komplett über das Kabel.
       </p>
-      <div class="actions">
-        {#if osBluetoothUrl}
-          <button type="button" class="btn secondary" onclick={openOsBluetoothSettings}>
-            Bluetooth-Einstellungen öffnen
-          </button>
+
+      <ol class="steps">
+        <li>
+          <span class="num">1</span>
+          <div class="step-body">
+            <div class="step-title">Bluetooth-Einstellungen öffnen</div>
+            {#if osBluetoothUrl}
+              <button type="button" class="step-btn" onclick={openOsBluetoothSettings}>
+                Einstellungen öffnen
+              </button>
+            {:else}
+              <div class="step-hint">Bluetooth-Einstellungen auf deinem Computer öffnen.</div>
+            {/if}
+          </div>
+        </li>
+
+        {#if staleBond}
+          <li>
+            <span class="num">2</span>
+            <div class="step-body">
+              <div class="step-title">Alten Calliope entfernen</div>
+              <div class="step-hint">In der Liste auf den Calliope tippen, dann „Entkoppeln" oder „Vergessen".</div>
+            </div>
+          </li>
         {/if}
-        <button type="button" class="btn primary" onclick={() => dismissBlePairingInfo()}>
-          Verstanden
+
+        <li>
+          <span class="num">{staleBond ? 3 : 2}</span>
+          <div class="step-body">
+            <div class="step-title">A + B halten, kurz Reset drücken</div>
+            <div class="step-hint">Das Display zeigt <code>PAIR</code>.</div>
+          </div>
+        </li>
+
+        <li>
+          <span class="num">{staleBond ? 4 : 3}</span>
+          <div class="step-body">
+            <div class="step-title">Calliope in den Einstellungen hinzufügen</div>
+            <div class="step-hint">„Bluetooth-Gerät hinzufügen" → Calliope auswählen → bestätigen (kein PIN nötig).</div>
+          </div>
+        </li>
+      </ol>
+
+      <p class="hint">
+        Tipp: Mit dem <strong>USB-Kabel</strong> brauchst du keine Kopplung.
+      </p>
+
+      <div class="actions">
+        <button type="button" class="btn secondary" onclick={() => dismissBlePairingInfo()}>
+          Schließen
+        </button>
+        <button type="button" class="btn primary" onclick={retryConnect} disabled={retrying}>
+          {retrying ? 'Verbinde…' : 'Fertig — erneut verbinden'}
         </button>
       </div>
     </div>
@@ -119,15 +154,15 @@
     margin-bottom: 8px;
   }
   h2 {
-    font-size: 18px;
-    font-weight: 600;
-    margin: 0 0 10px;
+    font-size: 20px;
+    font-weight: 700;
+    margin: 0 0 6px;
   }
-  p {
+  .lead {
     font-size: 14px;
     line-height: 1.5;
     color: #4b5563;
-    margin: 0 0 12px;
+    margin: 0 0 16px;
   }
   .hint {
     background: #f1f5f9;
@@ -136,15 +171,73 @@
     font-size: 13px;
     color: #334155;
     text-align: left;
+    margin: 0 0 4px;
   }
   .steps {
+    list-style: none;
     text-align: left;
-    margin: 4px 0 14px;
-    padding-left: 22px;
-    font-size: 13px;
-    color: #374151;
-    line-height: 1.55;
-    li + li { margin-top: 6px; }
+    margin: 0 0 14px;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .steps li {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    background: #f8fafc;
+    border-radius: 10px;
+    padding: 10px 12px;
+  }
+  .num {
+    flex: 0 0 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: #0ea5b7;
+    color: #fff;
+    font-weight: 700;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .step-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .step-title {
+    font-weight: 600;
+    font-size: 14px;
+    color: #1b1c1d;
+  }
+  .step-hint {
+    font-size: 12.5px;
+    color: #4b5563;
+    line-height: 1.45;
+    code {
+      background: #e2e8f0;
+      padding: 1px 5px;
+      border-radius: 4px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+    }
+  }
+  .step-btn {
+    align-self: flex-start;
+    background: #0ea5b7;
+    color: #fff;
+    border: none;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: 12.5px;
+    cursor: pointer;
+    transition: background 0.15s;
+    margin-top: 2px;
+    &:hover { background: #0891a4; }
   }
   .actions {
     display: flex;
@@ -153,17 +246,18 @@
   }
   .btn {
     flex: 1;
-    padding: 10px 14px;
+    padding: 11px 14px;
     border-radius: 8px;
     border: 1px solid transparent;
     font-weight: 600;
-    font-size: 13px;
+    font-size: 14px;
     cursor: pointer;
-    transition: background 0.15s;
+    transition: background 0.15s, opacity 0.15s;
+    &[disabled] { opacity: 0.6; cursor: progress; }
     &.primary {
       background: #1b1c1d;
       color: #fff;
-      &:hover { background: #333; }
+      &:hover:not([disabled]) { background: #333; }
     }
     &.secondary {
       background: #fff;
