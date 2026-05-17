@@ -263,7 +263,7 @@
   </div>
 {/if}
 
-<style lang="scss">
+<style>
   .connect-wrap { position: relative; display: inline-flex; }
 
   .conn-pill {
@@ -293,8 +293,8 @@
       color: #1b1c1d;
       &:hover { background: #f3f4f6; }
     }
-    // Subtle teal outline so the user can tell their floating window is up
-    // even when it's behind another tab / minimised offscreen.
+    /* Subtle teal outline so the user can tell their floating window is up
+       even when it's behind another tab or minimised offscreen. */
     &.pinned-indicator { outline: 1.5px solid #0ea5b7; outline-offset: 1px; }
 
     .dot { width: 8px; height: 8px; border-radius: 50%; background: #e53f4b; }
@@ -335,7 +335,7 @@
     z-index: 1099;
   }
 
-  // ---- Floating window -----------------------------------------------------
+  /* ---- Floating window ---------------------------------------------------- */
 
   .floating {
     position: fixed;
@@ -350,13 +350,13 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    // No backdrop / no scrim — the floating layout is meant to stay open
-    // while the user does other work in the editor.
+    /* No backdrop or scrim - the floating layout is meant to stay open while
+       the user does other work in the editor. */
   }
-  // Invisible grab strip across the top of the floating window — covers the
-  // panel-header so the user can drag from the title bar without us needing
-  // a separate visible chrome bar. Buttons inside the header still win the
-  // pointer because we early-return on `closest('button')`.
+  /* Invisible grab strip across the top of the floating window. Covers the
+     panel-header so the user can drag from the title bar without a separate
+     visible chrome bar. Buttons inside the header still win the pointer
+     because the drag handler early-returns on closest button. */
   .floating-drag-handle {
     position: absolute;
     top: 0;
@@ -371,8 +371,8 @@
     flex: 1;
     min-height: 0;
     overflow: auto;
-    /* ConnectionPanel's CommsPanel is `height: 280px; display: flex` — let it
-       grow to fill the resizable container instead of staying short. */
+    /* Let CommsPanel fill the resizable container instead of capping at its
+       built-in 280px height. */
     :global(.panel) {
       height: 100%;
       box-sizing: border-box;
