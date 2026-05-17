@@ -1,11 +1,52 @@
 <script lang="ts">
   import { calliopeBlePairingInfo, dismissBlePairingInfo } from '../pairing-info';
-  import { calliopeState } from '../state';
+  import { calliopeState, updateState } from '../state';
   import { connectCalliope } from '../connect';
+  import { disconnectBle } from '../ble';
+  import { appendLog } from '../log';
 
   const visible = $derived($calliopeBlePairingInfo);
   const staleBond = $derived($calliopeState.bleStaleBond);
   let retrying = $state(false);
+
+  // ---- Release the Chrome BLE link as soon as the modal opens -----------
+  //
+  // On Windows, Chrome's Web Bluetooth implementation does NOT write the
+  // long-term key into the OS bond database when it negotiates a just-works
+  // session. The only path to a real OS bond is letting Windows do the
+  // pairing itself — and that requires Chrome to release the GATT link
+  // first, because Windows' "Add a Bluetooth device" inquiry can't find a
+  // pairable advertisement while the device is still connected to Chrome.
+  //
+  // The classifier in `connection-errors.ts` decides this modal should pop;
+  // here we make sure the link is gone by the time the user reads step 1.
+  let releasedFor = $state(false);
+  $effect(() => {
+    if (!visible || releasedFor) return;
+    releasedFor = true;
+    void (async () => {
+      try {
+        await disconnectBle();
+        // Reset transport state so the UI reflects "disconnected" right away
+        // — without this, the connection panel still shows "connected" while
+        // the modal is up, which is confusing.
+        updateState((s) => ({
+          ...s,
+          bleStatus: 'disconnected',
+          bleCanFlash: false,
+          bleCanCommunicate: false,
+        }));
+        appendLog({
+          direction: 'info',
+          text: 'BLE link released for OS pairing — Chrome was holding the connection.',
+        });
+      } catch { /* best effort */ }
+    })();
+  });
+  // When the modal closes, allow re-arming on the next open.
+  $effect(() => {
+    if (!visible) releasedFor = false;
+  });
 
   // Platform-specific deep link into the OS Bluetooth pane.
   //  - Windows: ms-settings: URI handled by the Settings app
@@ -37,12 +78,15 @@
     if (retrying) return;
     retrying = true;
     try {
-      // forceChooser=true so the browser picker re-opens — the user just
-      // paired in OS settings, picker permission may have been cleared by
-      // a prior forceChooser cycle (e.g. from the 3-way modal route). On
-      // a successful reconnect, ble.ts's force-pair probe will run and
-      // auto-dismiss this modal via dismissBlePairingInfo().
-      await connectCalliope('ble', true);
+      // forceChooser=false: the browser's per-origin permission is still
+      // valid (the user already accepted the picker the first time). What
+      // changed is the OS-level bond, and `c.connect()` will pick that up
+      // transparently. Re-prompting the picker here would be wasted clicks
+      // and would invalidate the picker's "remembered device" cache.
+      await connectCalliope('ble', false);
+      // Don't auto-dismiss — the connect status listener does that when
+      // bleCanFlash flips to true. If pairing didn't actually take, the
+      // user sees the same modal again with the next encrypted operation.
     } finally {
       retrying = false;
     }
@@ -64,48 +108,64 @@
         {#if staleBond}
           Das alte Pairing passt nicht mehr. So geht's:
         {:else}
-          In 3 Schritten anmelden — dann klappt's beim nächsten Mal von allein.
+          Damit Windows den Calliope koppeln kann, muss der Calliope im Pairing-Modus sein
+          — sonst meldet Windows „Später nochmal versuchen".
         {/if}
       </p>
 
       <ol class="steps">
-        <li>
-          <span class="num">1</span>
-          <div class="step-body">
-            <div class="step-title">Bluetooth-Einstellungen öffnen</div>
-            {#if osBluetoothUrl}
-              <button type="button" class="step-btn" onclick={openOsBluetoothSettings}>
-                Einstellungen öffnen
-              </button>
-            {:else}
-              <div class="step-hint">Bluetooth-Einstellungen auf deinem Computer öffnen.</div>
-            {/if}
-          </div>
-        </li>
-
         {#if staleBond}
           <li>
-            <span class="num">2</span>
+            <span class="num">1</span>
             <div class="step-body">
-              <div class="step-title">Alten Calliope entfernen</div>
-              <div class="step-hint">In der Liste auf den Calliope tippen, dann „Entkoppeln" oder „Vergessen".</div>
+              <div class="step-title">Alten Calliope entkoppeln</div>
+              <div class="step-hint">
+                In den Bluetooth-Einstellungen den alten Calliope antippen → „Gerät entfernen" / „Vergessen".
+              </div>
+              {#if osBluetoothUrl}
+                <button type="button" class="step-btn" onclick={openOsBluetoothSettings}>
+                  Bluetooth-Einstellungen öffnen
+                </button>
+              {/if}
             </div>
           </li>
         {/if}
 
         <li>
+          <span class="num">{staleBond ? 2 : 1}</span>
+          <div class="step-body">
+            <div class="step-title">Calliope in den Pairing-Modus bringen</div>
+            <div class="step-hint">
+              A + B gedrückt halten und kurz Reset drücken. Das Display zeigt <code>PAIR</code> und
+              ein scrollendes Symbol-Muster. Erst jetzt nimmt der Calliope eine neue Kopplung an.
+            </div>
+          </div>
+        </li>
+
+        <li>
           <span class="num">{staleBond ? 3 : 2}</span>
           <div class="step-body">
-            <div class="step-title">A + B halten, kurz Reset drücken</div>
-            <div class="step-hint">Das Display zeigt <code>PAIR</code>.</div>
+            <div class="step-title">In den Bluetooth-Einstellungen hinzufügen</div>
+            <div class="step-hint">
+              „Bluetooth-Gerät hinzufügen" → <strong>Calliope mini [xxxxx]</strong> auswählen → bestätigen
+              (kein PIN nötig). Wenn Windows „Später nochmal versuchen" sagt: nochmal A + B + Reset drücken,
+              der Calliope war nicht mehr im Pairing-Modus.
+            </div>
+            {#if osBluetoothUrl && !staleBond}
+              <button type="button" class="step-btn" onclick={openOsBluetoothSettings}>
+                Bluetooth-Einstellungen öffnen
+              </button>
+            {/if}
           </div>
         </li>
 
         <li>
           <span class="num">{staleBond ? 4 : 3}</span>
           <div class="step-body">
-            <div class="step-title">Calliope in den Einstellungen hinzufügen</div>
-            <div class="step-hint">„Bluetooth-Gerät hinzufügen" → Calliope auswählen → bestätigen (kein PIN nötig).</div>
+            <div class="step-title">Hier zurückkommen und „Erneut verbinden"</div>
+            <div class="step-hint">
+              Sobald Windows die Kopplung bestätigt hat, unten auf <em>Fertig — erneut verbinden</em> klicken.
+            </div>
           </div>
         </li>
       </ol>

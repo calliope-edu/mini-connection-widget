@@ -336,14 +336,26 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
         void readFriendlyNameViaGatt(c).then((g) => {
           if (g) updateState((s) => ({ ...s, friendlyName: g }));
         });
-        // No automatic OS-pairing probe: on Windows Chrome, touching an
-        // encrypted GATT char after connect actively poisons the bond
-        // window. The Calliope's PAIR mode closes on the first GATT
-        // connect, so by the time we'd write to UART RX the SMP exchange
-        // can't initiate — Windows says "Try later again to connect your
-        // device" and no bond is created. We instead detect missing bond
-        // at flash time (handleBleFlashError) and walk the user through
-        // OS-side pairing via the BlePairingInfoModal.
+        // No automatic OS-pairing probe.
+        //
+        // All Calliope editor builds (MakeCode, Blocks, MicroPython) require
+        // a real OS-level bond — there is no just-works fallback. So Chrome's
+        // `gatt.connect()` against a device that's currently in pair mode
+        // (just AB+Reset, advertising as pairable) silently triggers Windows
+        // SMP and creates the bond as a side effect of the link-layer
+        // encryption upgrade. That's the "auto-pair" path: no JS work
+        // needed — it just happens during connect.
+        //
+        // If the device is NOT in pair mode at connect time (typical: user
+        // re-connecting to a previously-paired device whose OS bond was
+        // wiped, or first connect without AB+Reset), Chrome falls back to
+        // a just-works session. We can't differentiate without poking an
+        // encrypted characteristic — and poking by ourselves poisons the
+        // Windows bond window because PAIR mode has already closed by the
+        // time we'd probe. Instead, the first user-initiated encrypted op
+        // (flash, scratch write) trips the security error; classifier
+        // routes it to BlePairingInfoModal, which releases the Chrome
+        // link so Windows can do the OS pairing cleanly.
       } else {
         updateState((s) => ({
           ...s,
