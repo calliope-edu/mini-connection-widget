@@ -18,6 +18,9 @@
     "src",
     "patches"
   ],
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/*.test.ts"
+  },
   "peerDependencies": {
     "@microbit/microbit-connection": "1.0.0-beta.1",
     "svelte": "^5.0.0"
