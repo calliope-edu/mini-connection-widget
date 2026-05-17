@@ -17,13 +17,33 @@ import { LogParser, type Parsed } from './log-parser';
 
 export type CommsDirection = 'tx' | 'rx';
 export type CommsTransport = 'usb' | 'ble';
+/**
+ * What kind of traffic this entry represents.
+ *
+ * - `serial`   — raw UART text (USB serialdata, BLE UART notifications). The
+ *                default; what the comms panel has always shown.
+ * - `mbitmore` — a parsed MbitMore frame (campus↔mini binary protocol used
+ *                by the blocks runtime). Decoded into a human line like
+ *                `WRITE ch=0x0100 (COMMAND) bytes=…`. Logged whenever the
+ *                widget acts as a proxy for the Scratch blocks iframe.
+ * - `scratch`  — a Scratch-VM postMessage event landing at the widget
+ *                (`calliope.write` / `calliope.read` / `calliope.notify`).
+ *                Lets the user see WHAT the blocks editor asked for, even
+ *                before it gets wrapped into a transport frame.
+ * - `gatt`     — a direct BLE GATT operation performed by the widget that
+ *                isn't carried over UART (writeValue / readValue / notify).
+ */
+export type CommsKind = 'serial' | 'mbitmore' | 'scratch' | 'gatt';
 
 export interface CommsEntry {
   id: number;
   time: number;
   direction: CommsDirection;
   transport: CommsTransport;
-  /** Raw text payload. Newline-stripped for line entries, raw for chunk entries. */
+  /** What kind of traffic this is. Defaults to `serial` for the existing
+   *  USB/BLE text taps so existing consumers see no behaviour change. */
+  kind?: CommsKind;
+  /** Human-readable summary. Newline-stripped for line entries. */
   text: string;
   /** Populated when the line was identified as a CSV / key=value row or header. */
   parsed?: Parsed;
@@ -64,6 +84,27 @@ function pushEntry(entry: Omit<CommsEntry, 'id' | 'time'>): void {
 export function pushTx(transport: CommsTransport, text: string): void {
   if (!text) return;
   pushEntry({ direction: 'tx', transport, text });
+}
+
+/**
+ * Record a structured proxy event — used by the Scratch bridge and the
+ * MbitMore frame instrumentation. Same store as serial entries; consumers
+ * can filter on `kind` to render proxy traffic differently from raw bytes.
+ *
+ * Example payloads:
+ *   pushProxy({ direction: 'tx', transport: 'usb', kind: 'mbitmore',
+ *               text: 'WRITE ch=0x0100 (COMMAND) bytes=01 02 03' });
+ *   pushProxy({ direction: 'rx', transport: 'ble', kind: 'scratch',
+ *               text: 'NOTIFY ch=0x0102 (MOTION) bytes=00 00 80 3F …' });
+ */
+export function pushProxy(entry: {
+  direction: CommsDirection;
+  transport: CommsTransport;
+  kind: CommsKind;
+  text: string;
+}): void {
+  if (!entry.text) return;
+  pushEntry(entry);
 }
 
 /** Record a received chunk. Chunks are split into lines and each line is parsed

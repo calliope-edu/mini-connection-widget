@@ -274,7 +274,12 @@
           <span class="t">{fmtTime(e.time)}</span>
           <span class="dir">{e.direction === 'tx' ? '↑' : '↓'}</span>
           <span class="tp">{e.transport.toUpperCase()}</span>
-          <span class="text">{e.text}</span>
+          <span class="text">
+            {#if e.kind && e.kind !== 'serial'}
+              <span class="kind kind-{e.kind}">{e.kind}</span>
+            {/if}
+            {e.text}
+          </span>
         </div>
       {/each}
     </div>
@@ -437,6 +442,21 @@
   .entry-ble .tp { background: #ddf4ff; color: #0969da; }
   .entry .text { color: #24292f; }
   .entry-rx .text { color: #1a7f37; }
+  .entry .kind {
+    display: inline-block;
+    font-size: 10px;
+    padding: 0 5px;
+    margin-right: 6px;
+    border-radius: 3px;
+    line-height: 14px;
+    vertical-align: 1px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    font-weight: 600;
+  }
+  .kind-scratch { background: #fff0d6; color: #8a5300; }
+  .kind-mbitmore { background: #e7e0ff; color: #4a2db4; }
+  .kind-gatt { background: #d6f1ff; color: #056399; }
 
   .rows-scroll {
     flex: 1;

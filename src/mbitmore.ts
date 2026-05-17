@@ -18,6 +18,7 @@
 import { ConnectionStatus } from '@microbit/microbit-connection';
 import { getUsbConn } from './usb';
 import { appendLog } from './log';
+import { pushProxy } from './comms';
 
 // ---- Wire format constants ------------------------------------------------
 
@@ -60,6 +61,52 @@ const CHANNEL_BY_UUID: Record<string, number> = {
   '0b500123-607f-4151-9091-7d008d6ffc5c': 0x0123, // ANALOG_IN_P3
   '0b500130-607f-4151-9091-7d008d6ffc5c': 0x0130, // DATA
 };
+
+/** Friendly names for the channels we know about. Used in comms-panel
+ *  proxy entries; unknown channels show as `0x????`. */
+const CHANNEL_NAME: Record<number, string> = {
+  0x0100: 'COMMAND',
+  0x0101: 'STATE',
+  0x0102: 'MOTION',
+  0x0110: 'PIN_EVENT',
+  0x0111: 'ACTION_EVENT',
+  0x0120: 'ANALOG_IN_P0',
+  0x0121: 'ANALOG_IN_P1',
+  0x0122: 'ANALOG_IN_P2',
+  0x0123: 'ANALOG_IN_P3',
+  0x0130: 'DATA',
+};
+
+export function channelName(channel: number): string {
+  return CHANNEL_NAME[channel] ?? `0x${channel.toString(16).padStart(4, '0')}`;
+}
+
+const REQ_NAME: Record<number, string> = {
+  [MM_REQ.READ]: 'READ',
+  [MM_REQ.WRITE]: 'WRITE',
+  [MM_REQ.WRITE_RESPONSE]: 'WRITE_RESPONSE',
+  [MM_REQ.NOTIFY_STOP]: 'NOTIFY_STOP',
+  [MM_REQ.NOTIFY_START]: 'NOTIFY_START',
+};
+
+const RES_NAME: Record<number, string> = {
+  [MM_RES.READ]: 'READ',
+  [MM_RES.WRITE_RESPONSE]: 'WRITE_RESPONSE',
+  [MM_RES.NOTIFY]: 'NOTIFY',
+};
+
+/** Format bytes as space-separated 2-digit hex, capped to keep entries short. */
+function formatBytes(data: Uint8Array, maxBytes = 32): string {
+  if (data.length === 0) return '';
+  const slice = data.slice(0, maxBytes);
+  let out = '';
+  for (let i = 0; i < slice.length; i++) {
+    if (i > 0) out += ' ';
+    out += slice[i].toString(16).padStart(2, '0').toUpperCase();
+  }
+  if (data.length > maxBytes) out += ` …(+${data.length - maxBytes})`;
+  return out;
+}
 
 /**
  * Resolve a Scratch-Link characteristic identifier (full UUID, short UUID
@@ -173,6 +220,26 @@ export async function sendMbitMoreFrameOverUsb(frame: Uint8Array): Promise<void>
   if (!usb || usb.status !== ConnectionStatus.Connected) {
     throw new Error('USB not connected');
   }
+  // Log the structured request before we hand it to the wire. Comms panel
+  // entries arrive in time order; raw `tx 0xFF 0x10 ...` bytes from the
+  // existing USB tap appear right after this one, so the user can correlate
+  // the decoded request with the byte stream.
+  if (frame.length >= 6) {
+    const type = frame[1];
+    const channel = (frame[2] << 8) | frame[3];
+    const len = frame[4];
+    const data = frame.slice(5, 5 + len);
+    const opName = REQ_NAME[type] ?? `op=0x${type.toString(16)}`;
+    const chName = channelName(channel);
+    pushProxy({
+      direction: 'tx',
+      transport: 'usb',
+      kind: 'mbitmore',
+      text: `${opName} ch=0x${channel.toString(16).padStart(4, '0')} (${chName})${
+        data.length > 0 ? ` bytes=${formatBytes(data)}` : ''
+      }`,
+    });
+  }
   let s = '';
   for (let i = 0; i < frame.length; i++) s += String.fromCharCode(frame[i]);
   await usb.serialWrite(s);
@@ -195,6 +262,7 @@ export function onMbitMoreFrameFromUsb(
     for (let i = 0; i < ev.data.length; i++) bytes[i] = ev.data.charCodeAt(i) & 0xff;
     const frames = parser.push(bytes);
     for (const f of frames) {
+      logIncomingFrame('usb', f);
       try { cb(f); } catch (err) { appendLog({ direction: 'info', text: `mbitmore handler error: ${(err as Error)?.message ?? err}` }); }
     }
   };
@@ -202,4 +270,22 @@ export function onMbitMoreFrameFromUsb(
   return () => {
     try { usb.removeEventListener('serialdata', handler); } catch { /* ignore */ }
   };
+}
+
+/**
+ * Push a decoded inbound MbitMore frame into the comms timeline so the user
+ * sees what the device sent (notification, read-result, write-ack) without
+ * having to mentally parse the raw byte tap.
+ */
+export function logIncomingFrame(transport: 'usb' | 'ble', frame: MbitMoreFrame): void {
+  const opName = RES_NAME[frame.type] ?? `op=0x${frame.type.toString(16)}`;
+  const chName = channelName(frame.channel);
+  pushProxy({
+    direction: 'rx',
+    transport,
+    kind: 'mbitmore',
+    text: `${opName} ch=0x${frame.channel.toString(16).padStart(4, '0')} (${chName})${
+      frame.data.length > 0 ? ` bytes=${formatBytes(frame.data)}` : ''
+    }`,
+  });
 }

@@ -23,6 +23,7 @@ import {
   MM_REQ,
   MM_RES,
   buildMbitMoreFrame,
+  channelName,
   characteristicToChannel,
   onMbitMoreFrameFromUsb,
   sendMbitMoreFrameOverUsb,
@@ -31,6 +32,7 @@ import { appendLog } from './log';
 import { getState, updateState } from './state';
 import { classifyBleError, isExpectedRebootWindow } from './connection-errors';
 import { showBlePairingInfo } from './pairing-info';
+import { pushProxy } from './comms';
 
 const SCRATCH_VM_SOURCE = 'calliope-scratch-vm';
 
@@ -87,6 +89,28 @@ const bleSubscriptions = new Map<string, {
 let usbUnsub: (() => void) | null = null;
 const usbReadWaiters = new Map<number, ReplyTarget & { reqId: number }>();
 const usbSubscribers = new Map<number, Set<ReplyTarget>>();
+
+/**
+ * Format an MbitMore characteristic id + payload for a comms-panel entry.
+ * Same shape as `mbitmore.ts#formatBytes` but inlined to keep `mbitmore` a
+ * leaf module (it can't import from `scratch-bridge` for layering reasons).
+ */
+function formatBytesShort(u8: Uint8Array, maxBytes = 32): string {
+  if (u8.length === 0) return '';
+  const slice = u8.subarray(0, maxBytes);
+  let out = '';
+  for (let i = 0; i < slice.length; i++) {
+    if (i > 0) out += ' ';
+    out += slice[i].toString(16).padStart(2, '0').toUpperCase();
+  }
+  if (u8.length > maxBytes) out += ` …(+${u8.length - maxBytes})`;
+  return out;
+}
+
+function describeChannel(charId: string | number): string {
+  const channel = characteristicToChannel(charId);
+  return `ch=0x${channel.toString(16).padStart(4, '0')} (${channelName(channel)})`;
+}
 
 function uint8ToBase64(u8: Uint8Array): string {
   let s = '';
@@ -201,6 +225,16 @@ function releaseUsbFrameListenerIfIdle(): void {
 
 async function handleWrite(msg: WriteMsg, _target: ReplyTarget): Promise<void> {
   const bytes = decodeMessage(msg.message, msg.encoding ?? 'base64');
+  // Iframe-level log: what did the blocks editor *ask* us to do, before any
+  // transport-specific wrapping. Mirrors the user's mental model of "I sent
+  // this from blocks" → "the device got that".
+  const proxyTransport: 'usb' | 'ble' = isUsbActive() ? 'usb' : 'ble';
+  pushProxy({
+    direction: 'tx',
+    transport: proxyTransport,
+    kind: 'scratch',
+    text: `WRITE ${describeChannel(msg.characteristicId)} bytes=${formatBytesShort(bytes)}${msg.withResponse ? ' withResponse' : ''}`,
+  });
   if (isUsbActive()) {
     const channel = characteristicToChannel(msg.characteristicId);
     try {
@@ -226,6 +260,12 @@ async function handleWrite(msg: WriteMsg, _target: ReplyTarget): Promise<void> {
 }
 
 async function handleRead(msg: ReadMsg, target: ReplyTarget): Promise<void> {
+  pushProxy({
+    direction: 'tx',
+    transport: isUsbActive() ? 'usb' : 'ble',
+    kind: 'scratch',
+    text: `READ ${describeChannel(msg.characteristicId)} (reqId=${msg.reqId})`,
+  });
   if (isUsbActive()) {
     ensureUsbFrameListener();
     const channel = characteristicToChannel(msg.characteristicId);
@@ -258,6 +298,12 @@ async function handleRead(msg: ReadMsg, target: ReplyTarget): Promise<void> {
   try {
     const dv = await ch.readValue();
     const bytes = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
+    pushProxy({
+      direction: 'rx',
+      transport: 'ble',
+      kind: 'gatt',
+      text: `READ_RESULT ${describeChannel(msg.characteristicId)} bytes=${formatBytesShort(bytes)}`,
+    });
     postReply(target, {
       type: 'calliope.readResult',
       reqId: msg.reqId,
@@ -276,6 +322,12 @@ async function handleRead(msg: ReadMsg, target: ReplyTarget): Promise<void> {
 }
 
 async function handleSubscribe(msg: SubscribeMsg, target: ReplyTarget): Promise<void> {
+  pushProxy({
+    direction: 'tx',
+    transport: isUsbActive() ? 'usb' : 'ble',
+    kind: 'scratch',
+    text: `SUBSCRIBE ${describeChannel(msg.characteristicId)}`,
+  });
   if (isUsbActive()) {
     ensureUsbFrameListener();
     const channel = characteristicToChannel(msg.characteristicId);
@@ -306,6 +358,12 @@ async function handleSubscribe(msg: SubscribeMsg, target: ReplyTarget): Promise<
     const dv = (ev.target as BluetoothRemoteGATTCharacteristic).value;
     if (!dv) return;
     const bytes = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
+    pushProxy({
+      direction: 'rx',
+      transport: 'ble',
+      kind: 'gatt',
+      text: `NOTIFY ${describeChannel(msg.characteristicId)} bytes=${formatBytesShort(bytes)}`,
+    });
     const b64 = uint8ToBase64(bytes);
     const entry = bleSubscriptions.get(key);
     if (!entry) return;
@@ -336,6 +394,12 @@ async function handleSubscribe(msg: SubscribeMsg, target: ReplyTarget): Promise<
 }
 
 async function handleUnsubscribe(msg: UnsubscribeMsg, target: ReplyTarget): Promise<void> {
+  pushProxy({
+    direction: 'tx',
+    transport: isUsbActive() ? 'usb' : 'ble',
+    kind: 'scratch',
+    text: `UNSUBSCRIBE ${describeChannel(msg.characteristicId)}`,
+  });
   if (isUsbActive()) {
     const channel = characteristicToChannel(msg.characteristicId);
     const subs = usbSubscribers.get(channel);
