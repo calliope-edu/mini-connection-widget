@@ -21,8 +21,24 @@
     /** Called when the user clicks "maximize" on the embedded CommsPanel.
      *  When omitted, the maximize button is hidden. */
     oncommsexpand?: () => void;
+    /** When set, renders a pin / unpin toggle in the header. The host owns
+     *  the pinned state (so it can switch between dropdown and floating
+     *  layouts); the panel just reflects the current value via the icon. */
+    pinned?: boolean;
+    onTogglePin?: () => void;
+    /** Optional close button shown next to the pin toggle. Used by the
+     *  floating-window layout — dropdown mode hides this and relies on its
+     *  scrim instead. */
+    onClose?: () => void;
   };
-  let { labels: labelsProp, onaction, oncommsexpand }: Props = $props();
+  let {
+    labels: labelsProp,
+    onaction,
+    oncommsexpand,
+    pinned = false,
+    onTogglePin,
+    onClose,
+  }: Props = $props();
 
   const labels = $derived(mergeLabels(labelsProp));
   const s = $derived($calliopeState);
@@ -111,6 +127,40 @@
       <div class="title">{labels.panelTitle}</div>
       <div class="subtitle">{statusLabel(s.status)}</div>
     </div>
+    {#if onTogglePin}
+      <button
+        type="button"
+        class="header-btn"
+        class:active={pinned}
+        title={pinned ? 'Wieder anhängen' : 'Als Fenster anheften'}
+        aria-label={pinned ? 'Wieder anhängen' : 'Als Fenster anheften'}
+        onclick={onTogglePin}
+      >
+        <!-- Pin icon: filled when pinned, outline when not. -->
+        {#if pinned}
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true">
+            <path d="M14 4l6 6-4 1-1 4-3-3-5 5-1-1 5-5-3-3 4-1z"/>
+          </svg>
+        {:else}
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M14 4l6 6-4 1-1 4-3-3-5 5-1-1 5-5-3-3 4-1z"/>
+          </svg>
+        {/if}
+      </button>
+    {/if}
+    {#if onClose}
+      <button
+        type="button"
+        class="header-btn"
+        title="Schließen"
+        aria-label="Schließen"
+        onclick={onClose}
+      >
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <path d="M6 6l12 12M18 6L6 18"/>
+        </svg>
+      </button>
+    {/if}
   </div>
 
   {#if s.calliopeVersion || s.boardVersion || s.usbDeviceName || s.bleDeviceName}
@@ -291,8 +341,21 @@
     &.status-connecting { background: #facc15; }
     &.status-error { background: #ef4444; }
   }
+  .panel-header-text { flex: 1; min-width: 0; }
   .panel-header-text .title { font-weight: 600; font-size: 14px; }
   .panel-header-text .subtitle { font-size: 12px; color: #666; }
+  .header-btn {
+    border: 0;
+    background: transparent;
+    color: #6b7280;
+    padding: 4px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    line-height: 0;
+    flex-shrink: 0;
+    &:hover { background: #f3f4f6; color: #1b1c1d; }
+    &.active { color: #0ea5b7; }
+  }
 
   .device-card {
     background: #f8fafc;
