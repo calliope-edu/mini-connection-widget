@@ -1,6 +1,7 @@
 import type { BoardVersion } from '@microbit/microbit-connection';
 import type { CalliopeVersion } from './helpers';
 import type { CalliopeProgramType } from './program-type';
+import type { BleSessionKind } from './ble-state';
 import { writable, type Readable } from './store';
 
 /** Physical channel carrying serial / flashing. Both can be open at once. */
@@ -42,6 +43,23 @@ export interface CalliopeState {
    *  Calliope has forgotten its whitelist (typical after USB full-flash).
    *  The fix is OS-side: forget + re-pair. */
   bleStaleBond: boolean;
+  /** Post-connect GATT-database fingerprint — what the device looks like
+   *  from Web Bluetooth's perspective after the LL link is up.
+   *
+   *  - `bond-ok`: full CODAL service set visible → encrypted link, ready
+   *    to flash.
+   *  - `partial`: auth-required services hidden → we're either in pair
+   *    mode (waiting on SMP) or unencrypted app mode (no/stale bond).
+   *    UI surfaces "Pairing-Modus erkannt" rather than the error toast.
+   *  - `dfu-bootloader`: the device rebooted into Nordic DFU and is
+   *    advertising as `DfuTarg`. Useful for diagnostic; the DFU flow
+   *    handles the actual write.
+   *  - `unknown` / undefined: classifier hasn't run yet, or no services
+   *    enumerated.
+   *
+   *  Refreshed asynchronously after every `connected` transition by the
+   *  classifier in `ble-state.ts`. */
+  bleSessionKind?: BleSessionKind;
 
   /** Browser support flags. */
   usbSupported: boolean;

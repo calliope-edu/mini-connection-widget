@@ -59,6 +59,12 @@ export type { CalliopeProgramType, CalliopeProgramInfo } from './program-type';
 export { inspectHex } from './hex-inspect';
 export type { HexFlavor, HexInspection } from './hex-inspect';
 export {
+  classifyBleSession,
+  classifyBleSessionFromDevice,
+  SERVICE_UUIDS,
+} from './ble-state';
+export type { BleSessionKind, BleSessionClassification } from './ble-state';
+export {
   MM_SFD,
   MM_REQ,
   MM_RES,

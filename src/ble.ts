@@ -35,6 +35,7 @@ import {
   classifyBleError,
   isExpectedRebootWindow,
 } from './connection-errors';
+import { classifyBleSessionFromDevice } from './ble-state';
 
 // Standard Bluetooth SIG Device Information Service — every micro:bit /
 // Calliope firmware exposes it. The Serial Number string characteristic
@@ -139,6 +140,14 @@ const EXTRA_OPTIONAL_SERVICES: BluetoothServiceUUID[] = [
   '0b50f3e4-607f-4151-9091-7d008d6ffc5c', // MbitMore (pxt-scratch blocks runtime)
   0x180a, // Device Information Service — Serial Number → friendly-name derivation
   0xfe59, // Nordic Semiconductor DFU service (buttonless in app + Secure DFU in bootloader)
+  // Partial-flash + UART are usually declared by upstream `@microbit/microbit-connection`,
+  // but we declare them ourselves too so the post-connect state classifier
+  // (see ble-state.ts) can see them via `getPrimaryServices()` regardless of
+  // which version of upstream is installed. Web Bluetooth hides services
+  // that weren't declared at requestDevice time even if the device advertises
+  // them, so omitting these would make the classifier blind.
+  'e97dd91d-251d-470a-a062-fa1922dfa9a8', // CODAL partial-flashing service
+  '6e400001-b5a3-f393-e0a9-e50e24dcca9e', // Nordic UART service (CODAL UART)
 ];
 
 function augmentRequestDeviceOptions(opts: unknown): unknown {
@@ -336,6 +345,75 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
         void readFriendlyNameViaGatt(c).then((g) => {
           if (g) updateState((s) => ({ ...s, friendlyName: g }));
         });
+        // Background: enumerate the GATT services and classify the session.
+        // `getPrimaryServices()` is read-only and does NOT trigger SMP, so
+        // this is safe to run on every connect (including auto-reconnects
+        // after a flash reboot). Result flows into `state.bleSessionKind`
+        // and downgrades `bleCanFlash` when we can tell the bond isn't
+        // there — without that the UI optimistically claims "ready" until
+        // the user's first encrypted op fails.
+        void (async () => {
+          try {
+            const device = await getBleDevice(c);
+            if (!device) return;
+            // Small delay so the lib's own GATT discovery finishes first.
+            // Otherwise getPrimaryServices() can race and return an empty
+            // list on slower Windows BT stacks.
+            await new Promise((r) => setTimeout(r, 250));
+            const result = await classifyBleSessionFromDevice(device);
+            const summary = result.services
+              .map((u) => u.length === 36 ? u.slice(0, 8) : u)
+              .join(', ');
+            appendLog({
+              direction: 'info',
+              text: `BLE state: ${result.kind} — ${result.reason}; services=[${summary}]`,
+            });
+            updateState((s) => {
+              // Don't downgrade if we're already flashing or in the middle of
+              // a state transition.
+              if (s.flashTransport === 'ble') return { ...s, bleSessionKind: result.kind };
+              if (result.kind === 'bond-ok') {
+                return {
+                  ...s,
+                  bleSessionKind: 'bond-ok',
+                  bleCanFlash: true,
+                  bleCanCommunicate: true,
+                  bleStaleBond: false,
+                  bleHasPaired: true,
+                };
+              }
+              if (result.kind === 'partial') {
+                return {
+                  ...s,
+                  bleSessionKind: 'partial',
+                  bleCanFlash: false,
+                  bleCanCommunicate: false,
+                  // Hint only — don't promote to error. Pair-mode is a
+                  // valid state the user might be in on purpose.
+                  bleErrorMessage:
+                    'Pairing-Modus erkannt — Calliope in den Bluetooth-Einstellungen koppeln.',
+                };
+              }
+              if (result.kind === 'dfu-bootloader') {
+                return {
+                  ...s,
+                  bleSessionKind: 'dfu-bootloader',
+                  bleCanFlash: false,
+                  bleCanCommunicate: false,
+                  bleErrorMessage:
+                    'Calliope ist im DFU-Bootloader. Reset drücken, um zurück in die Anwendung zu kommen.',
+                };
+              }
+              // 'unknown' → keep optimistic state; let next user op decide.
+              return { ...s, bleSessionKind: result.kind };
+            });
+          } catch (err) {
+            appendLog({
+              direction: 'info',
+              text: `BLE classify failed: ${(err as Error)?.message ?? err}`,
+            });
+          }
+        })();
         // No automatic OS-pairing probe.
         //
         // All Calliope editor builds (MakeCode, Blocks, MicroPython) require
@@ -363,6 +441,7 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
           bleCanCommunicate: false,
           bleCanFlash: false,
           bleStaleBond: false,
+          bleSessionKind: undefined,
         }));
         if (getState().usbStatus !== 'connected') stopHeartbeat();
         if (mapped === 'disconnected') appendLog({ direction: 'info', text: 'Disconnected (BLE)' });

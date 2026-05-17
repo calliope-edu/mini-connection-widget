@@ -237,7 +237,15 @@
       {@const needsPairing = bleConnected && !s.bleCanCommunicate}
       <div class="transport-row" class:connected={bleConnected} class:err={s.bleStatus === 'error'} class:warn={needsPairing}>
         <div class="transport-row-head">
-          <span class="transport-name">{labels.ble}</span>
+          <span class="transport-name">
+            {labels.ble}
+            {#if bleConnected && s.bleSessionKind && s.bleSessionKind !== 'bond-ok'}
+              <span class="session-chip session-{s.bleSessionKind}" title="GATT-Status nach Verbindung">
+                {s.bleSessionKind === 'partial' ? 'Pairing fehlt' :
+                  s.bleSessionKind === 'dfu-bootloader' ? 'Bootloader' : s.bleSessionKind}
+              </span>
+            {/if}
+          </span>
           <span class="transport-status">{capabilityText('ble')}</span>
         </div>
         {#if needsPairing}
@@ -394,7 +402,20 @@
     &.err { border-color: #fecaca; background: #fef2f2; }
   }
   .transport-row-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-  .transport-name { font-size: 13px; font-weight: 600; color: #111; }
+  .transport-name { font-size: 13px; font-weight: 600; color: #111; display: inline-flex; align-items: center; gap: 6px; }
+  .session-chip {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: none;
+    padding: 1px 6px;
+    border-radius: 10px;
+    background: #fef3c7;
+    color: #92400e;
+    letter-spacing: 0.01em;
+    vertical-align: 1px;
+  }
+  .session-chip.session-dfu-bootloader { background: #ddf4ff; color: #0969da; }
+  .session-chip.session-unknown { background: #f3f4f6; color: #6b7280; }
   .transport-status { font-size: 11px; color: #6b7280; text-align: right; }
   .transport-row.connected .transport-status { color: #166534; }
   .transport-row.warn .transport-status { color: #92400e; }
