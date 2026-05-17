@@ -12,13 +12,17 @@
   import { mergeLabels, type ConnectLabels } from './labels';
   import { extractFriendlyName } from '../friendly-name';
   import MiniNamePattern from './MiniNamePattern.svelte';
+  import CommsPanel from './CommsPanel.svelte';
 
   type Props = {
     labels?: Partial<ConnectLabels>;
     /** Called after the user clicks an action — useful to close a parent dropdown. */
     onaction?: () => void;
+    /** Called when the user clicks "maximize" on the embedded CommsPanel.
+     *  When omitted, the maximize button is hidden. */
+    oncommsexpand?: () => void;
   };
-  let { labels: labelsProp, onaction }: Props = $props();
+  let { labels: labelsProp, onaction, oncommsexpand }: Props = $props();
 
   const labels = $derived(mergeLabels(labelsProp));
   const s = $derived($calliopeState);
@@ -253,12 +257,26 @@
       </span>
     </div>
   {/if}
+
+  {#if s.status === 'connected' || s.status === 'flashing'}
+    <div class="comms-embed">
+      <CommsPanel onexpand={oncommsexpand} />
+    </div>
+  {/if}
 </div>
 
 <style lang="scss">
   .panel {
     padding: 14px;
     color: #1b1c1d;
+  }
+  .comms-embed {
+    margin-top: 14px;
+    height: 280px;
+    display: flex;
+  }
+  .comms-embed > :global(.comms) {
+    width: 100%;
   }
   .panel-header {
     display: flex;

@@ -15,9 +15,13 @@
     appearance?: 'dark' | 'light';
     /** Translation overrides; defaults are German. */
     labels?: Partial<ConnectLabels>;
+    /** Called when the user clicks the "maximize" button in the embedded
+     *  CommsPanel. Hosts wire this to opening a full-size drawer. The
+     *  dropdown closes automatically before the callback fires. */
+    oncommsexpand?: () => void;
   };
 
-  let { appearance = 'dark', labels: labelsProp }: Props = $props();
+  let { appearance = 'dark', labels: labelsProp, oncommsexpand }: Props = $props();
   const labels = $derived(mergeLabels(labelsProp));
 
   let open = $state(false);
@@ -74,7 +78,16 @@
 
   {#if open}
     <div class="popover" role="dialog" aria-label={labels.panelTitle}>
-      <ConnectionPanel labels={labelsProp} onaction={() => (open = false)} />
+      <ConnectionPanel
+        labels={labelsProp}
+        onaction={() => (open = false)}
+        oncommsexpand={oncommsexpand
+          ? () => {
+              open = false;
+              oncommsexpand?.();
+            }
+          : undefined}
+      />
     </div>
     <button class="popover-scrim" type="button" aria-label="close" onclick={() => (open = false)}></button>
   {/if}
