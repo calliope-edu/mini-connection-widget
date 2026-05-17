@@ -371,8 +371,8 @@
     flex: 1;
     min-height: 0;
     overflow: auto;
-    // ConnectionPanel's CommsPanel is `height: 280px; display: flex` — let it
-    // grow to fill the resizable container instead of staying short.
+    /* ConnectionPanel's CommsPanel is `height: 280px; display: flex` — let it
+       grow to fill the resizable container instead of staying short. */
     :global(.panel) {
       height: 100%;
       box-sizing: border-box;
