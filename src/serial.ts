@@ -7,6 +7,7 @@ import {
   bleSerialWrite,
   getBleConn,
 } from './ble';
+import { calliopeState } from './state';
 
 const HEARTBEAT_MS = 1000;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -14,6 +15,15 @@ let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 export function startHeartbeat(): void {
   if (heartbeatTimer) return;
   heartbeatTimer = setInterval(() => {
+    // Only send for the MakeCode/blocks runtime, which intercepts the 'H'
+    // in its frame handler. MicroPython's REPL would echo every byte back
+    // and flood the user's serial terminal.
+    let programType: string | undefined;
+    const unsub = calliopeState.subscribe((s) => {
+      programType = s.programType;
+    });
+    unsub();
+    if (programType !== 'blocks') return;
     // Send over whichever transport is connected. Prefer USB when both are
     // up — DAPLink's serial is more reliable than BLE UART.
     const usb = getUsbConn();
