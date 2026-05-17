@@ -8,6 +8,9 @@
   const visible = $derived($calliopeBlePairingInfo);
   const staleBond = $derived($calliopeState.bleStaleBond);
   let retrying = $state(false);
+  /** Tick-counter for the auto-reconnect poll, shown to the user so they
+   *  can see the widget is actively trying. Resets on every modal open. */
+  let pollAttempts = $state(0);
 
   // ---- Release the Chrome BLE link as soon as the modal opens -----------
   //
@@ -46,6 +49,78 @@
   // When the modal closes, allow re-arming on the next open.
   $effect(() => {
     if (!visible) releasedFor = false;
+  });
+
+  // ---- Auto-reconnect poll ----------------------------------------------
+  //
+  // After the user does OS-side pairing, the bond exists in Windows but
+  // the widget has no event to subscribe to — Web Bluetooth doesn't emit
+  // anything when the OS bond store changes. So while the modal is open,
+  // we periodically attempt a silent reconnect. The first one that
+  // succeeds and lands on `bond-ok` auto-dismisses the modal — the user
+  // never has to click "Erneut verbinden" if the OS pairing just worked.
+  //
+  // The Calliope's display tends to stick on the ✓ checkmark after a
+  // successful bond, in pair-mode, until the user presses Reset. So we
+  // also keep polling across that window: the moment the user presses
+  // Reset, the device reboots into application mode, advertises with
+  // its whitelist (now matching the OS bond), and our next poll
+  // re-establishes the encrypted link.
+  //
+  // Manual "Erneut verbinden" button is preserved as a fallback for when
+  // the user wants to force a retry immediately.
+  let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  let pollGen = 0; // increments per modal-open cycle, so stale timers no-op
+  $effect(() => {
+    if (!visible) {
+      if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+      pollAttempts = 0;
+      return;
+    }
+    pollGen += 1;
+    pollAttempts = 0;
+    const myGen = pollGen;
+    // Initial delay long enough for the user to start interacting with the
+    // OS dialog. We don't want our poll racing the OS pairing wizard.
+    const start = 6_000;
+    const interval = 3_500;
+    // Total polling budget ~3 minutes — plenty of time to walk through
+    // Settings → Add device → press Reset → wait for reboot.
+    const giveUpAfter = 180_000;
+    const deadline = Date.now() + giveUpAfter;
+    const tick = async () => {
+      if (myGen !== pollGen) return;       // modal was reopened, stale loop
+      if (Date.now() > deadline) {
+        appendLog({ direction: 'info', text: 'Pairing auto-poll giving up — user can still click Erneut verbinden.' });
+        return;
+      }
+      pollAttempts += 1;
+      try {
+        // Silent attempt: forceChooser=false so we never re-prompt the
+        // picker. If the user hasn't paired yet this fails harmlessly
+        // and we try again on the next tick.
+        await connectCalliope('ble', false);
+        // Check the post-connect classifier result. The status listener
+        // in ble.ts runs the classifier ~250ms after status flips, so
+        // we wait a beat before deciding.
+        await new Promise((r) => setTimeout(r, 500));
+        let s: typeof $calliopeState | null = null;
+        const unsub = calliopeState.subscribe((v) => { s = v; });
+        unsub();
+        if (s && (s as any).bleStatus === 'connected' && (s as any).bleSessionKind === 'bond-ok') {
+          appendLog({ direction: 'info', text: 'Pairing detected via auto-poll — dismissing modal.' });
+          dismissBlePairingInfo();
+          return;
+        }
+      } catch { /* best effort */ }
+      if (myGen === pollGen) {
+        pollTimer = setTimeout(tick, interval);
+      }
+    };
+    pollTimer = setTimeout(tick, start);
+    return () => {
+      if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+    };
   });
 
   // Platform-specific deep link into the OS Bluetooth pane.
@@ -162,13 +237,24 @@
         <li>
           <span class="num">{staleBond ? 4 : 3}</span>
           <div class="step-body">
-            <div class="step-title">Hier zurückkommen und „Erneut verbinden"</div>
+            <div class="step-title">Reset drücken, sobald das ✓ erscheint</div>
             <div class="step-hint">
-              Sobald Windows die Kopplung bestätigt hat, unten auf <em>Fertig — erneut verbinden</em> klicken.
+              Nach erfolgreicher Kopplung zeigt der Calliope ein Häkchen, bleibt aber im Pairing-Modus.
+              Kurz <strong>Reset</strong> drücken — der Calliope startet neu, und das Häkchen verschwindet.
+              Das Widget verbindet sich danach automatisch neu.
             </div>
           </div>
         </li>
       </ol>
+
+      <div class="auto-poll-hint">
+        <span class="auto-poll-spinner" aria-hidden="true"></span>
+        <span>
+          Widget prüft alle paar Sekunden, ob die Kopplung steht
+          {#if pollAttempts > 0}({pollAttempts} ×){/if}.
+          Sobald sie funktioniert, schließt sich dieses Fenster automatisch.
+        </span>
+      </div>
 
       <p class="hint">
         Tipp: Mit dem <strong>USB-Kabel</strong> brauchst du keine Kopplung.
@@ -233,6 +319,30 @@
     text-align: left;
     margin: 0 0 4px;
   }
+  .auto-poll-hint {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    margin: 8px 0 0;
+    background: #ecfeff;
+    border: 1px solid #a5f3fc;
+    border-radius: 8px;
+    color: #075985;
+    font-size: 12px;
+    text-align: left;
+    line-height: 1.4;
+  }
+  .auto-poll-spinner {
+    flex: 0 0 12px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 2px solid rgba(14, 165, 183, 0.25);
+    border-top-color: #0ea5b7;
+    animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
   .steps {
     list-style: none;
     text-align: left;
