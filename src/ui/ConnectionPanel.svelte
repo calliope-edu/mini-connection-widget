@@ -239,10 +239,14 @@
         <div class="transport-row-head">
           <span class="transport-name">
             {labels.ble}
-            {#if bleConnected && s.bleSessionKind && s.bleSessionKind !== 'bond-ok'}
-              <span class="session-chip session-{s.bleSessionKind}" title="GATT-Status nach Verbindung">
-                {s.bleSessionKind === 'partial' ? 'Pairing fehlt' :
-                  s.bleSessionKind === 'dfu-bootloader' ? 'Bootloader' : s.bleSessionKind}
+            {#if bleConnected && s.bleSessionKind === 'dfu-bootloader'}
+              <!-- Only the bootloader chip is reliable enough to show. The
+                   'partial' / 'unknown' classifications are noisy because
+                   Chrome's optionalServices filter is captured at
+                   requestDevice time and silently hides services for
+                   permissions granted under older widget versions. -->
+              <span class="session-chip session-dfu-bootloader" title="Nordic DFU bootloader erkannt">
+                Bootloader
               </span>
             {/if}
           </span>

@@ -369,9 +369,11 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
               text: `BLE state: ${result.kind} — ${result.reason}; services=[${summary}]`,
             });
             updateState((s) => {
-              // Don't downgrade if we're already flashing or in the middle of
-              // a state transition.
               if (s.flashTransport === 'ble') return { ...s, bleSessionKind: result.kind };
+              // 'bond-ok' confirms what we already optimistically set;
+              // mostly worth recording bleHasPaired:true so downstream code
+              // (auto-reconnect after flash, stale-bond detection) trusts
+              // the existing permission.
               if (result.kind === 'bond-ok') {
                 return {
                   ...s,
@@ -382,18 +384,9 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
                   bleHasPaired: true,
                 };
               }
-              if (result.kind === 'partial') {
-                return {
-                  ...s,
-                  bleSessionKind: 'partial',
-                  bleCanFlash: false,
-                  bleCanCommunicate: false,
-                  // Hint only — don't promote to error. Pair-mode is a
-                  // valid state the user might be in on purpose.
-                  bleErrorMessage:
-                    'Pairing-Modus erkannt — Calliope in den Bluetooth-Einstellungen koppeln.',
-                };
-              }
+              // 'dfu-bootloader' is the one classification we trust enough
+              // to downgrade state on: name=DfuTarg + only DFU service is a
+              // hardware-level signal, not a permission-filter artefact.
               if (result.kind === 'dfu-bootloader') {
                 return {
                   ...s,
@@ -404,7 +397,15 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
                     'Calliope ist im DFU-Bootloader. Reset drücken, um zurück in die Anwendung zu kommen.',
                 };
               }
-              // 'unknown' → keep optimistic state; let next user op decide.
+              // 'partial' / 'unknown' are diagnostically interesting but
+              // unreliable for decision-making — Chrome's `optionalServices`
+              // filter is captured at requestDevice time, so a permission
+              // granted before we declared a UUID will report the service
+              // as missing even when the device exposes it and the bond is
+              // fine. We log the classification (forensic trail) but keep
+              // the optimistic state: the first encrypted op is the only
+              // authoritative test, and our error classifier routes its
+              // failure to the pairing modal cleanly.
               return { ...s, bleSessionKind: result.kind };
             });
           } catch (err) {
