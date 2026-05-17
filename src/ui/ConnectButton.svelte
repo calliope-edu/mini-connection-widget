@@ -27,12 +27,9 @@
     appearance?: 'dark' | 'light';
     /** Translation overrides; defaults are German. */
     labels?: Partial<ConnectLabels>;
-    /** Called when the user clicks the "maximize" button in the embedded
-     *  CommsPanel. Hosts wire this to opening a full-size drawer. */
-    oncommsexpand?: () => void;
   };
 
-  let { appearance = 'dark', labels: labelsProp, oncommsexpand }: Props = $props();
+  let { appearance = 'dark', labels: labelsProp }: Props = $props();
   const labels = $derived(mergeLabels(labelsProp));
 
   const s = $derived($calliopeState);
@@ -80,11 +77,9 @@
   });
 
   function togglePin(): void {
-    pinned = !pinned;
-    // Stay open across the layout switch — the user just clicked pin/unpin,
-    // they don't want the panel to vanish.
-    open = true;
-    if (pinned) {
+    const willPin = !pinned;
+    pinned = willPin;
+    if (willPin) {
       // First pin: drop the panel near the pill so the user doesn't have to
       // hunt for it. Subsequent pins reuse the remembered position.
       try {
@@ -93,21 +88,23 @@
           pos = { x: Math.max(16, window.innerWidth - size.w - 16), y: 72 };
         }
       } catch { /* ignore */ }
+      open = true;
+    } else {
+      // Unpinning closes the floating window — same auto-close behavior as
+      // the dropdown's scrim, so the only thing left on screen is the pill.
+      open = false;
     }
     persist();
-  }
-
-  function closeFloating(): void {
-    open = false;
   }
 
   // ---- Drag (header) -----------------------------------------------------
 
   let drag = $state<{ dx: number; dy: number; pointerId: number } | null>(null);
   function onDragPointerDown(ev: PointerEvent): void {
-    const target = ev.currentTarget as HTMLElement;
-    // Buttons inside the header should still receive their own clicks.
+    // Buttons inside the header (the pin toggle) must keep receiving their
+    // own clicks — only the bare title area should initiate a drag.
     if ((ev.target as HTMLElement)?.closest('button')) return;
+    const target = ev.currentTarget as HTMLElement;
     drag = { dx: ev.clientX - pos.x, dy: ev.clientY - pos.y, pointerId: ev.pointerId };
     target.setPointerCapture(ev.pointerId);
     ev.preventDefault();
@@ -210,12 +207,6 @@
       <ConnectionPanel
         labels={labelsProp}
         onaction={() => (open = false)}
-        oncommsexpand={oncommsexpand
-          ? () => {
-              open = false;
-              oncommsexpand?.();
-            }
-          : undefined}
         {pinned}
         onTogglePin={togglePin}
       />
@@ -231,20 +222,14 @@
     aria-label={labels.panelTitle}
     style="left:{pos.x}px; top:{pos.y}px; width:{size.w}px; height:{size.h}px;"
   >
-    <div
-      class="floating-drag-handle"
-      onpointerdown={onDragPointerDown}
-      onpointermove={onDragPointerMove}
-      onpointerup={onDragPointerUp}
-      onpointercancel={onDragPointerUp}
-    ></div>
     <div class="floating-body">
       <ConnectionPanel
         labels={labelsProp}
-        {oncommsexpand}
         {pinned}
         onTogglePin={togglePin}
-        onClose={closeFloating}
+        onHeaderPointerDown={onDragPointerDown}
+        onHeaderPointerMove={onDragPointerMove}
+        onHeaderPointerUp={onDragPointerUp}
       />
     </div>
     <div
@@ -352,20 +337,6 @@
     overflow: hidden;
     /* No backdrop or scrim - the floating layout is meant to stay open while
        the user does other work in the editor. */
-  }
-  /* Invisible grab strip across the top of the floating window. Covers the
-     panel-header so the user can drag from the title bar without a separate
-     visible chrome bar. Buttons inside the header still win the pointer
-     because the drag handler early-returns on closest button. */
-  .floating-drag-handle {
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 48px;
-    cursor: move;
-    z-index: 2;
-    touch-action: none;
   }
   .floating-body {
     flex: 1;

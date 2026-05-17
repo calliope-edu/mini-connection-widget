@@ -8,7 +8,7 @@
   import { calliopeState } from '../state';
   import { connectCalliope, disconnectAndForget } from '../connect';
   import { showBlePairingInfo } from '../pairing-info';
-  import type { CalliopeStatus, CalliopeTransport } from '../state';
+  import type { CalliopeStatus } from '../state';
   import { mergeLabels, type ConnectLabels } from './labels';
   import { extractFriendlyName } from '../friendly-name';
   import MiniNamePattern from './MiniNamePattern.svelte';
@@ -18,26 +18,27 @@
     labels?: Partial<ConnectLabels>;
     /** Called after the user clicks an action — useful to close a parent dropdown. */
     onaction?: () => void;
-    /** Called when the user clicks "maximize" on the embedded CommsPanel.
-     *  When omitted, the maximize button is hidden. */
-    oncommsexpand?: () => void;
     /** When set, renders a pin / unpin toggle in the header. The host owns
      *  the pinned state (so it can switch between dropdown and floating
      *  layouts); the panel just reflects the current value via the icon. */
     pinned?: boolean;
     onTogglePin?: () => void;
-    /** Optional close button shown next to the pin toggle. Used by the
-     *  floating-window layout — dropdown mode hides this and relies on its
-     *  scrim instead. */
-    onClose?: () => void;
+    /** When provided, the panel header becomes the drag handle for the
+     *  floating-window layout. Buttons inside the header (pin toggle) keep
+     *  receiving their own clicks because the handler early-returns on
+     *  closest button. */
+    onHeaderPointerDown?: (ev: PointerEvent) => void;
+    onHeaderPointerMove?: (ev: PointerEvent) => void;
+    onHeaderPointerUp?: (ev: PointerEvent) => void;
   };
   let {
     labels: labelsProp,
     onaction,
-    oncommsexpand,
     pinned = false,
     onTogglePin,
-    onClose,
+    onHeaderPointerDown,
+    onHeaderPointerMove,
+    onHeaderPointerUp,
   }: Props = $props();
 
   const labels = $derived(mergeLabels(labelsProp));
@@ -75,26 +76,6 @@
     }
   }
 
-  function capabilityText(transport: CalliopeTransport): string {
-    if (transport === 'usb') {
-      if (s.usbStatus === 'connected') return labels.usbConnected;
-      if (s.usbStatus === 'connecting') return labels.connecting;
-      if (s.usbStatus === 'error') return s.usbErrorMessage ?? labels.error;
-      if (!s.usbSupported) return labels.notSupportedUsb;
-      return labels.notConnected;
-    }
-    if (s.bleStatus === 'connected') {
-      if (s.bleCanFlash && s.bleCanCommunicate) return labels.bleConnectedFull;
-      if (s.bleCanCommunicate) return labels.bleConnectedCommOnly;
-      if (s.bleStaleBond) return labels.bleConnectedStaleBond;
-      return labels.bleConnectedNeedsPairing;
-    }
-    if (s.bleStatus === 'connecting') return labels.connecting;
-    if (s.bleStatus === 'error') return s.bleErrorMessage ?? labels.error;
-    if (!s.bleSupported) return labels.notSupportedBle;
-    return labels.notConnected;
-  }
-
   let nowTick = $state(Date.now());
   $effect(() => {
     if (s.status !== 'connected') return;
@@ -121,7 +102,15 @@
 </script>
 
 <div class="panel">
-  <div class="panel-header">
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="panel-header"
+    class:draggable={onHeaderPointerDown}
+    onpointerdown={onHeaderPointerDown}
+    onpointermove={onHeaderPointerMove}
+    onpointerup={onHeaderPointerUp}
+    onpointercancel={onHeaderPointerUp}
+  >
     <span class="dot-lg status-{s.status}"></span>
     <div class="panel-header-text">
       <div class="title">{labels.panelTitle}</div>
@@ -146,19 +135,6 @@
             <path d="M14 4l6 6-4 1-1 4-3-3-5 5-1-1 5-5-3-3 4-1z"/>
           </svg>
         {/if}
-      </button>
-    {/if}
-    {#if onClose}
-      <button
-        type="button"
-        class="header-btn"
-        title="Schließen"
-        aria-label="Schließen"
-        onclick={onClose}
-      >
-        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
-          <path d="M6 6l12 12M18 6L6 18"/>
-        </svg>
       </button>
     {/if}
   </div>
@@ -215,9 +191,6 @@
       <div class="transport-row" class:connected={usbConnected} class:err={s.usbStatus === 'error'}>
         <div class="transport-row-head">
           <span class="transport-name">{labels.usb}</span>
-          <span class="transport-status">{capabilityText('usb')}</span>
-        </div>
-        <div class="transport-row-actions">
           {#if usbConnected}
             <button type="button" class="row-btn ghost" onclick={doForgetUsb} disabled={usbBusy}>
               {labels.disconnect}
@@ -250,17 +223,6 @@
               </span>
             {/if}
           </span>
-          <span class="transport-status">{capabilityText('ble')}</span>
-        </div>
-        {#if needsPairing}
-          <div class="transport-hint">
-            {s.bleStaleBond ? labels.staleBondHint : labels.pairingHint}
-            <button type="button" class="link-btn" onclick={doShowPairingInfo}>
-              {labels.howToPair}
-            </button>
-          </div>
-        {/if}
-        <div class="transport-row-actions">
           {#if bleConnected}
             <button type="button" class="row-btn ghost" onclick={doForgetBle} disabled={bleBusy}>
               {labels.forget}
@@ -271,6 +233,14 @@
             </button>
           {/if}
         </div>
+        {#if needsPairing}
+          <div class="transport-hint">
+            {s.bleStaleBond ? labels.staleBondHint : labels.pairingHint}
+            <button type="button" class="link-btn" onclick={doShowPairingInfo}>
+              {labels.howToPair}
+            </button>
+          </div>
+        {/if}
       </div>
     {/if}
   </div>
@@ -322,7 +292,7 @@
 
   {#if s.status === 'connected' || s.status === 'flashing'}
     <div class="comms-embed">
-      <CommsPanel onexpand={oncommsexpand} />
+      <CommsPanel />
     </div>
   {/if}
 </div>
@@ -345,6 +315,11 @@
     align-items: center;
     gap: 10px;
     margin-bottom: 12px;
+    &.draggable {
+      cursor: move;
+      touch-action: none;
+      user-select: none;
+    }
   }
   .dot-lg {
     width: 12px; height: 12px; border-radius: 50%; background: #9ca3af; flex-shrink: 0;
@@ -405,7 +380,7 @@
     &.warn { border-color: #fde68a; background: #fffbeb; }
     &.err { border-color: #fecaca; background: #fef2f2; }
   }
-  .transport-row-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  .transport-row-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .transport-name { font-size: 13px; font-weight: 600; color: #111; display: inline-flex; align-items: center; gap: 6px; }
   .session-chip {
     font-size: 10px;
@@ -420,15 +395,11 @@
   }
   .session-chip.session-dfu-bootloader { background: #ddf4ff; color: #0969da; }
   .session-chip.session-unknown { background: #f3f4f6; color: #6b7280; }
-  .transport-status { font-size: 11px; color: #6b7280; text-align: right; }
-  .transport-row.connected .transport-status { color: #166534; }
-  .transport-row.warn .transport-status { color: #92400e; }
-  .transport-row.err .transport-status { color: #991b1b; }
-  .transport-hint { font-size: 11px; color: #6b7280; line-height: 1.35; margin-top: 4px; }
-  .transport-row-actions { margin-top: 6px; display: flex; gap: 6px; }
+  .transport-hint { font-size: 11px; color: #6b7280; line-height: 1.35; margin-top: 6px; }
   .row-btn {
-    flex: 1; padding: 6px 10px; border-radius: 6px; border: 1px solid transparent;
+    padding: 5px 12px; border-radius: 6px; border: 1px solid transparent;
     font-size: 12px; font-weight: 600; cursor: pointer;
+    flex-shrink: 0;
     transition: background 0.15s, color 0.15s;
     &.primary {
       background: #1b1c1d; color: #fff;

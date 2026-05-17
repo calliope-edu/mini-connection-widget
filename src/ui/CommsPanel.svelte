@@ -18,14 +18,6 @@
     type CommsEntry,
   } from '../comms';
 
-  type Props = {
-    /** Called when the user clicks the "maximize" button. When provided, the
-     *  button is shown; when omitted (e.g. when the panel is already in a
-     *  drawer), the button stays hidden. */
-    onexpand?: () => void;
-  };
-  let { onexpand }: Props = $props();
-
   type Tab = 'stream' | 'rows' | 'graph';
   let tab: Tab = $state('stream');
 
@@ -259,9 +251,6 @@
       {paused ? '▶' : '❚❚'}
     </button>
     <button class="btn-icon" title="Leeren" onclick={() => clearComms()}>✕</button>
-    {#if onexpand}
-      <button class="btn-icon" title="Maximieren" onclick={onexpand}>↗</button>
-    {/if}
   </div>
 
   {#if tab === 'stream'}
