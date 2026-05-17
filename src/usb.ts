@@ -20,6 +20,7 @@ import { appendLog } from './log';
 import { detectCalliopeVersion, stripMakeCodeMetadata } from './helpers';
 import { friendlyNameFromDeviceId } from './friendly-name';
 import { startHeartbeat, stopHeartbeat } from './serial';
+import { classifyUsbError, isExpectedRebootWindow } from './connection-errors';
 
 let usbConn: MicrobitUSBConnection | null = null;
 let usbInitPromise: Promise<MicrobitUSBConnection> | null = null;
@@ -130,10 +131,25 @@ export async function getUsbConnection(): Promise<MicrobitUSBConnection> {
     });
     c.addEventListener('backgrounderror', (ev) => {
       const msg = ev.error.message;
+      // Reboots, pairing-mode entries and DFU triggers all cause expected
+      // USB transferOut errors. Log to comms but don't surface a toast —
+      // the retry path in `runFlashWithTransferRetry` or the natural
+      // reconnect handles recovery.
+      if (isExpectedRebootWindow()) {
+        appendLog({ direction: 'info', text: `USB background (expected reboot): ${msg}` });
+        return;
+      }
+      const classified = classifyUsbError(ev.error);
+      // 'transfer-transient' errors are still in flight for retry in the
+      // flash dispatcher — surface as info only.
+      if (classified.kind === 'transfer-transient') {
+        appendLog({ direction: 'info', text: `USB transient: ${msg}` });
+        return;
+      }
       updateState((s) => ({
         ...s,
         usbStatus: 'error',
-        usbErrorMessage: msg,
+        usbErrorMessage: classified.userMessage,
         flashProgress: s.flashTransport === 'usb' ? undefined : s.flashProgress,
       }));
       appendLog({ direction: 'error', text: msg });
@@ -172,6 +188,24 @@ export async function connectWithRetry(c: MicrobitUSBConnection, tries = 2): Pro
   throw lastErr;
 }
 
+/**
+ * Wait until the USB connection actually reports `Connected`. Upstream
+ * `c.connect()` resolves before the status event fires, so calling
+ * `c.flash()` immediately after triggers "Must be connected now". Poll the
+ * status field with a short interval — once the lib settles into Connected,
+ * resolve. If `timeoutMs` elapses, resolve anyway and let the caller try
+ * (the lib's own error will surface).
+ */
+async function waitForUsbConnected(c: MicrobitUSBConnection, timeoutMs = 2_000): Promise<void> {
+  const isConnected = (): boolean => (c.status as ConnectionStatus) === ConnectionStatus.Connected;
+  if (isConnected()) return;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 50));
+    if (isConnected()) return;
+  }
+}
+
 export async function flashCalliopeViaUsb(hex: string, name: string): Promise<void> {
   if (!SUPPORT.usb) {
     updateState((s) => ({ ...s, usbStatus: 'error', usbErrorMessage: 'WebUSB not supported — flashing requires USB' }));
@@ -188,15 +222,19 @@ export async function flashCalliopeViaUsb(hex: string, name: string): Promise<vo
     try {
       await connectWithRetry(c);
     } catch (err) {
-      const code = err instanceof DeviceError ? err.code : '';
-      if (code === 'no-device-selected' || code === 'aborted') {
+      const classified = classifyUsbError(err);
+      if (classified.kind === 'no-device') {
         updateState((s) => ({ ...s, usbStatus: 'disconnected' }));
         return;
       }
-      updateState((s) => ({ ...s, usbStatus: 'error', usbErrorMessage: (err as Error).message }));
+      updateState((s) => ({ ...s, usbStatus: 'error', usbErrorMessage: classified.userMessage }));
       return;
     }
   }
+  // `c.connect()` resolves before the lib's internal status flips to
+  // Connected. Calling flash() in that window yields "Must be connected now".
+  // Wait for the status to actually settle.
+  await waitForUsbConnected(c);
 
   updateState((s) => ({
     ...s,
@@ -234,11 +272,12 @@ export async function flashCalliopeViaUsb(hex: string, name: string): Promise<vo
     // USB connection persists across flash (the lib reinitialises serial
     // automatically) — no manual reconnect needed.
   } catch (err) {
+    const classified = classifyUsbError(err);
     updateState((s) => ({
       ...s,
       flashTransport: undefined,
       usbStatus: 'error',
-      usbErrorMessage: (err as Error).message,
+      usbErrorMessage: classified.userMessage,
       flashProgress: undefined,
       flashPhase: undefined,
     }));
@@ -284,6 +323,11 @@ async function runFlashWithTransferRetry(
         `USB transfer error; reconnect failed: ${(reconnectErr as Error).message}`,
       );
     }
+    // Same race as in `flashCalliopeViaUsb`: `c.connect()` returns before
+    // status flips to Connected. Without the wait, the lib's flash() throws
+    // "Must be connected now" and we'd surface that instead of the original
+    // transferOut error.
+    await waitForUsbConnected(c);
     // Reset the UI flash phase — the lib starts the second attempt from
     // scratch ("FindingDevice" → ...), so the progress bar would jump
     // backwards if we left the previous percentage on screen.
@@ -302,6 +346,44 @@ function isTransientUsbTransferError(err: unknown): boolean {
   return (
     /transferOut/i.test(msg) && /transfer error/i.test(msg)
   ) || /transferIn/i.test(msg) && /transfer error/i.test(msg);
+}
+
+/**
+ * After a USB flash the Calliope reboots into the freshly-flashed app. If
+ * that app is the blocks (MbitMore) runtime, it auto-broadcasts STATE/MOTION
+ * frames every ~40 ms — but only once the runtime's main loop is actually
+ * running. Older blocks builds also wait for the first serial-write before
+ * powering up notifications.
+ *
+ * `primeBlocksRuntimeProbe` is a best-effort kick to shorten the time between
+ * "flash done" and "blocks runtime detected":
+ *
+ *  1. Wait briefly for the USB serial endpoint to re-enumerate after reboot.
+ *  2. Send a single 'H\n' heartbeat. The blocks runtime intercepts H in its
+ *     frame handler; non-blocks programs ignore it.
+ *  3. Return — the auto-refresh hook in `program-type.ts` will pick up the
+ *     frames from there.
+ *
+ * Safe to call when USB isn't connected (no-op). Never throws.
+ */
+export async function primeBlocksRuntimeProbe(): Promise<void> {
+  const c = usbConn;
+  if (!c) return;
+  const isConnected = (): boolean => (c.status as ConnectionStatus) === ConnectionStatus.Connected;
+  // Wait up to ~3 s for the post-flash device to come back. Calliope reboots
+  // in well under 2 s once the flash completes; the lib's auto-reconnect
+  // kicks the status back to Connected.
+  const deadline = Date.now() + 3_000;
+  while (!isConnected() && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  if (!isConnected()) return;
+  try {
+    await c.serialWrite('H\n');
+    appendLog({ direction: 'info', text: 'Blocks-runtime probe primed (H over USB)' });
+  } catch {
+    /* ignore — best-effort */
+  }
 }
 
 export async function disconnectUsb(): Promise<void> {

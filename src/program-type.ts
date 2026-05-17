@@ -140,6 +140,13 @@ function probeUsb(timeoutMs: number): Promise<CalliopeProgramInfo | null> {
       finish(null);
       return;
     }
+    // Older blocks builds wait for the first incoming heartbeat before
+    // powering up the MbitMore broadcast loop. Tickle the serial line
+    // mid-probe so a freshly-flashed device speaks up even before
+    // `startHeartbeat()` flips the gate.
+    void (async () => {
+      try { await conn.serialWrite('H\n'); } catch { /* ignore */ }
+    })();
     const timer = setTimeout(() => finish(null), timeoutMs);
   });
 }
@@ -189,12 +196,18 @@ export async function getRunningProgramType(
 
 let probeTimer: ReturnType<typeof setTimeout> | null = null;
 let lastConnectedKey = '<init>';
+let lastFlashAtSeen = 0;
 
 if (typeof window !== 'undefined') {
   calliopeState.subscribe((s) => {
     const key = `${s.usbStatus === 'connected' ? 'u' : ''}${s.bleStatus === 'connected' ? 'b' : ''}`;
-    if (key === lastConnectedKey) return;
+    // Re-probe whenever transports change OR a flash just completed
+    // (`lastFlashAt` advances). Post-flash the device runs a different
+    // program — the previous probe result is stale.
+    const flashEdge = s.lastFlashAt && s.lastFlashAt !== lastFlashAtSeen;
+    if (key === lastConnectedKey && !flashEdge) return;
     lastConnectedKey = key;
+    if (s.lastFlashAt) lastFlashAtSeen = s.lastFlashAt;
 
     if (probeTimer) {
       clearTimeout(probeTimer);
@@ -207,13 +220,16 @@ if (typeof window !== 'undefined') {
       return;
     }
 
-    // Give GATT/service discovery a moment to settle, then probe.
+    // Give GATT/service discovery (or the post-flash reboot) a moment to
+    // settle, then probe. Post-flash needs longer because the device is
+    // still in the bootloader→app handover.
+    const settleDelay = flashEdge ? 1_500 : 500;
     probeTimer = setTimeout(() => {
       probeTimer = null;
       void (async () => {
-        const info = await getRunningProgramType();
+        const info = await getRunningProgramType(2_500);
         updateState((st) => (st.programType === info.type ? st : { ...st, programType: info.type }));
       })();
-    }, 500);
+    }, settleDelay);
   });
 }

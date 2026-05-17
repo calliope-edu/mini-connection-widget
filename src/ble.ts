@@ -31,6 +31,10 @@ import {
 } from './ble-dfu-web';
 import { extractFriendlyName, friendlyNameFromDeviceId } from './friendly-name';
 import { showBlePairingInfo } from './pairing-info';
+import {
+  classifyBleError,
+  isExpectedRebootWindow,
+} from './connection-errors';
 
 // Standard Bluetooth SIG Device Information Service — every micro:bit /
 // Calliope firmware exposes it. The Serial Number string characteristic
@@ -354,7 +358,23 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
     });
     c.addEventListener('backgrounderror', (ev) => {
       const msg = ev.error.message;
-      updateState((s) => ({ ...s, bleStatus: 'error', bleErrorMessage: msg }));
+      // During an expected device reboot (post-flash, pairing-mode switch,
+      // DFU enter) the GATT drops as part of normal operation. Log it as
+      // info so power-users still see it in the comms panel, but don't
+      // promote it to a user-facing error toast.
+      if (isExpectedRebootWindow()) {
+        appendLog({ direction: 'info', text: `BLE background (expected reboot): ${msg}` });
+        return;
+      }
+      const classified = classifyBleError(ev.error, getState().bleHasPaired);
+      if (classified.kind === 'aborted') return;
+      updateState((s) => ({
+        ...s,
+        bleStatus: 'error',
+        bleStaleBond: classified.staleBond,
+        bleErrorMessage: classified.userMessage,
+      }));
+      if (classified.showPairingModal) showBlePairingInfo();
       appendLog({ direction: 'error', text: msg });
     });
     // UART data — upstream gives us a Uint8Array per notification. Buffer and
@@ -652,7 +672,13 @@ export async function flashCalliopeViaBleDfu(hex: string, name: string): Promise
 }
 
 function handleBleFlashError(err: unknown): void {
+  // Local flash-specific error types come first — these carry domain
+  // semantics ("DAL mismatch", "service missing") that the generic
+  // classifier doesn't see. Everything else routes through the classifier
+  // so we get one consistent BLE-error story.
   let userMsg: string;
+  let updateStaleBond = false;
+  let showModal = false;
   if (err instanceof BluetoothPartialFlashDalMismatchError) {
     userMsg = 'Runtime auf dem Calliope passt nicht zum Programm — bitte einmal per USB voll flashen.';
     updateState((s) => ({ ...s, bleCanFlash: false }));
@@ -663,43 +689,32 @@ function handleBleFlashError(err: unknown): void {
     userMsg = 'Dieses Programm kann nicht über BLE geflasht werden (kein MakeCode-Marker).';
   } else if (err instanceof DOMException && err.name === 'AbortError') {
     userMsg = 'Flash abgebrochen.';
-  } else if (err instanceof DeviceError) {
-    switch (err.code) {
-      case 'pairing-information-lost':
-        userMsg = 'OS-Pairing veraltet — Calliope in den OS-Bluetooth-Einstellungen entkoppeln und neu pairen.';
-        updateState((s) => ({ ...s, bleStaleBond: true, bleCanFlash: false }));
-        // Surface the pairing modal right away — without this the user
-        // only sees a terse error message and has to retry the flash to
-        // get the explainer.
-        showBlePairingInfo();
-        break;
-      case 'firmware-update-required':
-        userMsg = 'Runtime auf dem Calliope passt nicht zum Programm — bitte einmal per USB voll flashen.';
-        updateState((s) => ({ ...s, bleCanFlash: false }));
-        break;
-      case 'no-device-selected':
-      case 'aborted':
-        userMsg = 'Flash abgebrochen.';
-        break;
-      case 'permission-denied':
-        userMsg = 'Bluetooth-Pairing fehlt: Calliope einmal in den OS-Bluetooth-Einstellungen koppeln, oder per USB anschließen.';
-        updateState((s) => ({ ...s, bleCanFlash: false }));
-        showBlePairingInfo();
-        break;
-      default:
-        userMsg = err.message || `BLE flash error: ${err.code}`;
-    }
+  } else if (err instanceof DeviceError && err.code === 'firmware-update-required') {
+    userMsg = 'Runtime auf dem Calliope passt nicht zum Programm — bitte einmal per USB voll flashen.';
+    updateState((s) => ({ ...s, bleCanFlash: false }));
   } else {
-    userMsg = (err as Error)?.message ?? String(err);
+    const classified = classifyBleError(err, getState().bleHasPaired);
+    if (classified.kind === 'aborted') {
+      userMsg = 'Flash abgebrochen.';
+    } else {
+      userMsg = classified.userMessage;
+      updateStaleBond = classified.staleBond;
+      showModal = classified.showPairingModal;
+      if (classified.kind === 'stale-bond' || classified.kind === 'pairing-missing') {
+        updateState((s) => ({ ...s, bleCanFlash: false }));
+      }
+    }
   }
   updateState((s) => ({
     ...s,
     flashTransport: undefined,
     bleStatus: 'error',
+    bleStaleBond: updateStaleBond || s.bleStaleBond,
     bleErrorMessage: userMsg,
     flashProgress: undefined,
     flashPhase: undefined,
   }));
+  if (showModal) showBlePairingInfo();
   appendLog({ direction: 'error', text: `BLE flash failed: ${userMsg}` });
 }
 

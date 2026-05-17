@@ -56,6 +56,8 @@ export {
 export { getConnectedBleDevice } from './ble';
 export { getRunningProgramType } from './program-type';
 export type { CalliopeProgramType, CalliopeProgramInfo } from './program-type';
+export { inspectHex } from './hex-inspect';
+export type { HexFlavor, HexInspection } from './hex-inspect';
 export {
   MM_SFD,
   MM_REQ,

@@ -1,4 +1,3 @@
-import { DeviceError } from '@microbit/microbit-connection';
 import { getState, updateState, SUPPORT, type CalliopeTransport } from './state';
 import { appendLog } from './log';
 import {
@@ -14,6 +13,7 @@ import {
   getUsbConnection,
 } from './usb';
 import { showBlePairingInfo } from './pairing-info';
+import { classifyBleError, classifyUsbError } from './connection-errors';
 
 /**
  * Connect to a Calliope on the chosen transport. Always tries the silent
@@ -62,41 +62,31 @@ export async function connectCalliope(
       await connectWithRetry(c);
     }
   } catch (err) {
-    const code = err instanceof DeviceError ? err.code : '';
-    if (code === 'no-device-selected' || code === 'aborted') {
-      updateState((s) => transport === 'ble'
-        ? { ...s, bleStatus: 'disconnected', bleErrorMessage: undefined }
-        : { ...s, usbStatus: 'disconnected', usbErrorMessage: undefined });
-      return;
-    }
     if (transport === 'ble') {
-      // Stale-bond heuristic: upstream only emits `pairing-information-lost`
-      // on the native (Capacitor) path. On web, BLE connect failures after
-      // the device-side whitelist was wiped (typical: a USB flash since
-      // the last pairing) just surface as generic `connection-error` /
-      // "Connection attempt failed" / "GATT Server is disconnected". If
-      // the user has paired before, treat any non-user-abort connect
-      // failure as a stale bond and walk them through re-pairing.
-      const wasPaired = getState().bleHasPaired || code === 'pairing-information-lost';
-      if (wasPaired) {
-        appendLog({
-          direction: 'info',
-          text: `BLE connect failed after previous pairing — assuming stale bond (code=${code || 'none'}).`,
-        });
-        updateState((s) => ({
-          ...s,
-          bleStatus: 'error',
-          bleStaleBond: true,
-          bleErrorMessage: 'OS-Pairing veraltet — Calliope in den OS-Bluetooth-Einstellungen entkoppeln und neu pairen.',
-        }));
-        showBlePairingInfo();
+      const classified = classifyBleError(err, getState().bleHasPaired);
+      if (classified.kind === 'aborted') {
+        updateState((s) => ({ ...s, bleStatus: 'disconnected', bleErrorMessage: undefined }));
         return;
       }
+      appendLog({
+        direction: 'info',
+        text: `BLE connect failed (kind=${classified.kind}): ${(err as Error)?.message ?? err}`,
+      });
+      updateState((s) => ({
+        ...s,
+        bleStatus: 'error',
+        bleStaleBond: classified.staleBond,
+        bleErrorMessage: classified.userMessage,
+      }));
+      if (classified.showPairingModal) showBlePairingInfo();
+      return;
     }
-    const message = (err as Error)?.message ?? String(err);
-    updateState((s) => transport === 'ble'
-      ? { ...s, bleStatus: 'error', bleErrorMessage: message }
-      : { ...s, usbStatus: 'error', usbErrorMessage: message });
+    const classified = classifyUsbError(err);
+    if (classified.kind === 'no-device') {
+      updateState((s) => ({ ...s, usbStatus: 'disconnected', usbErrorMessage: undefined }));
+      return;
+    }
+    updateState((s) => ({ ...s, usbStatus: 'error', usbErrorMessage: classified.userMessage }));
   }
 }
 

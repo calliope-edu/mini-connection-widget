@@ -28,6 +28,9 @@ import {
   sendMbitMoreFrameOverUsb,
 } from './mbitmore';
 import { appendLog } from './log';
+import { getState, updateState } from './state';
+import { classifyBleError, isExpectedRebootWindow } from './connection-errors';
+import { showBlePairingInfo } from './pairing-info';
 
 const SCRATCH_VM_SOURCE = 'calliope-scratch-vm';
 
@@ -114,6 +117,29 @@ function isUsbActive(): boolean {
   return !!(usb && usb.status === ConnectionStatus.Connected);
 }
 
+/**
+ * Route a BLE-side GATT failure through the classifier so a stale bond
+ * doesn't just silently nuke the Scratch session — the user sees the same
+ * pairing-info modal they'd get from any other BLE error path.
+ */
+function reportScratchBleFailure(e: unknown, where: string): void {
+  // Expected churn during a flash-induced reboot — keep quiet.
+  if (isExpectedRebootWindow()) {
+    appendLog({ direction: 'info', text: `scratch-bridge ${where} (expected reboot): ${(e as Error)?.message ?? e}` });
+    return;
+  }
+  const classified = classifyBleError(e, getState().bleHasPaired);
+  if (classified.kind === 'stale-bond' || classified.kind === 'pairing-missing') {
+    updateState((s) => ({
+      ...s,
+      bleStaleBond: classified.staleBond || s.bleStaleBond,
+      bleErrorMessage: classified.userMessage,
+    }));
+    if (classified.showPairingModal) showBlePairingInfo();
+  }
+  appendLog({ direction: 'info', text: `scratch-bridge ${where}: ${(e as Error)?.message ?? e}` });
+}
+
 async function getMbitMoreCharacteristic(
   charId: string | number,
 ): Promise<BluetoothRemoteGATTCharacteristic | null> {
@@ -124,7 +150,7 @@ async function getMbitMoreCharacteristic(
     const lookup = typeof charId === 'string' ? charId.toLowerCase() : charId;
     return await service.getCharacteristic(lookup as BluetoothCharacteristicUUID);
   } catch (e) {
-    appendLog({ direction: 'info', text: `scratch-bridge getCharacteristic failed: ${(e as Error)?.message ?? e}` });
+    reportScratchBleFailure(e, 'getCharacteristic');
     return null;
   }
 }
@@ -195,7 +221,7 @@ async function handleWrite(msg: WriteMsg, _target: ReplyTarget): Promise<void> {
       await ch.writeValue(bytes);
     }
   } catch (e) {
-    appendLog({ direction: 'info', text: `scratch-bridge BLE write failed: ${(e as Error)?.message ?? e}` });
+    reportScratchBleFailure(e, 'BLE write');
   }
 }
 
@@ -245,7 +271,7 @@ async function handleRead(msg: ReadMsg, target: ReplyTarget): Promise<void> {
       message: '',
       encoding: 'base64',
     });
-    appendLog({ direction: 'info', text: `scratch-bridge BLE read failed: ${(e as Error)?.message ?? e}` });
+    reportScratchBleFailure(e, 'BLE read');
   }
 }
 
@@ -298,7 +324,7 @@ async function handleSubscribe(msg: SubscribeMsg, target: ReplyTarget): Promise<
     await ch.startNotifications();
   } catch (e) {
     ch.removeEventListener('characteristicvaluechanged', handler);
-    appendLog({ direction: 'info', text: `scratch-bridge BLE subscribe failed: ${(e as Error)?.message ?? e}` });
+    reportScratchBleFailure(e, 'BLE subscribe');
     return;
   }
   bleSubscriptions.set(key, {

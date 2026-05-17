@@ -11,13 +11,15 @@ import {
   getBleConn,
   getBleConnection,
 } from './ble';
-import { flashCalliopeViaUsb, getUsbConn } from './usb';
+import { flashCalliopeViaUsb, getUsbConn, primeBlocksRuntimeProbe } from './usb';
 import {
   BluetoothPartialFlashDalMismatchError,
   BluetoothPartialFlashInvalidHexError,
   BluetoothPartialFlashServiceMissingError,
 } from './ble-flash-web';
 import { BluetoothDfuServiceMissingError } from './ble-dfu-web';
+import { inspectHex, type HexFlavor } from './hex-inspect';
+import { clearExpectedReboot, markExpectedReboot } from './connection-errors';
 
 /**
  * If a pending flash sits unfulfilled for longer than this, clear it on the
@@ -49,6 +51,18 @@ export async function flashCalliope(hex: string, name: string = 'project'): Prom
       text: `Flash bereits aktiv — zusätzlicher Versuch ignoriert (${name}).`,
     });
     return;
+  }
+
+  // Classify the hex up front. MicroPython firmware can't be partial-flashed
+  // (no MakeCode marker) — go straight to BLE-DFU or USB so the user doesn't
+  // see the partial-flash failure flicker. Mirrors the iOS/Android apps,
+  // which check the magic bytes before opening any GATT writes.
+  const flavor: HexFlavor = inspectHex(hex).flavor;
+  if (flavor === 'micropython') {
+    appendLog({
+      direction: 'info',
+      text: `Hex erkannt als MicroPython — überspringe BLE-Partial-Flash.`,
+    });
   }
 
   // Silent BLE reconnect: if BLE was previously paired but is now down
@@ -99,8 +113,27 @@ export async function flashCalliope(hex: string, name: string = 'project'): Prom
     clearPendingFlash();
   }
 
-  if (s.bleStatus === 'connected' && s.bleCanFlash) {
+  // MicroPython firmware: no MakeCode marker → partial flash can't work.
+  // Skip directly to BLE-DFU when BLE is connected (the iOS/Android apps
+  // also route MicroPython through Nordic DFU), else USB.
+  if (flavor === 'micropython' && s.bleStatus === 'connected') {
     try {
+      markExpectedReboot(45_000);
+      await flashCalliopeViaBleDfu(hex, name);
+      await scheduleBleReconnect();
+      return;
+    } catch (dfuErr) {
+      appendLog({
+        direction: 'info',
+        text: `BLE-DFU für MicroPython fehlgeschlagen (${(dfuErr as Error)?.message ?? dfuErr}) — fallback auf USB.`,
+      });
+      // Drop through to USB / hybrid path below.
+    }
+  }
+
+  if (s.bleStatus === 'connected' && s.bleCanFlash && flavor !== 'micropython') {
+    try {
+      markExpectedReboot(20_000);
       await flashCalliopeViaBle(hex, name);
       await scheduleBleReconnect();
       return;
@@ -129,6 +162,7 @@ export async function flashCalliope(hex: string, name: string = 'project'): Prom
         text: `BLE partial flash impossible (${reason}) — trying full BLE-DFU flash.`,
       });
       try {
+        markExpectedReboot(45_000);
         await flashCalliopeViaBleDfu(hex, name);
         await scheduleBleReconnect();
         return;
@@ -146,7 +180,9 @@ export async function flashCalliope(hex: string, name: string = 'project'): Prom
         }
         const sNow = getState();
         if (sNow.usbStatus === 'connected') {
+          markExpectedReboot(20_000);
           await flashCalliopeViaUsb(hex, name);
+          await primeBlocksRuntimeProbe();
           await scheduleBleReconnect();
           return;
         }
@@ -172,7 +208,9 @@ export async function flashCalliope(hex: string, name: string = 'project'): Prom
         text: 'USB-Flash überschreibt das BLE-Pairing. Nach dem Flashen bitte erneut über BLE verbinden.',
       });
     }
+    markExpectedReboot(20_000);
     await flashCalliopeViaUsb(hex, name);
+    await primeBlocksRuntimeProbe();
     if (wasBleConnected) await scheduleBleReconnect();
     return;
   }
@@ -347,6 +385,7 @@ async function scheduleBleReconnect(): Promise<void> {
       const c = await getBleConnection();
       await c.connect({ bondMode: 'application' });
       updateState((st) => ({ ...st, bleHasPaired: true }));
+      clearExpectedReboot();
       appendLog({ direction: 'info', text: 'Auto-reconnect succeeded' });
       return;
     } catch (err) {
@@ -357,6 +396,7 @@ async function scheduleBleReconnect(): Promise<void> {
     }
   }
   appendLog({ direction: 'info', text: 'Auto-reconnect gave up after retries' });
+  clearExpectedReboot();
 }
 
 /**
@@ -383,5 +423,7 @@ async function flashCalliopeHybrid(hex: string, name: string): Promise<void> {
   }
   // Touch usb conn ref so the type checker sees we use it (lint-only).
   void getUsbConn;
+  markExpectedReboot(20_000);
   await flashCalliopeViaUsb(hex, name);
+  await primeBlocksRuntimeProbe();
 }
