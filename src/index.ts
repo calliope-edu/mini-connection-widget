@@ -18,11 +18,12 @@
  */
 
 import { connectCalliope } from './connect';
-import { getUsbConnection } from './usb';
-import { getBleConnection, refreshPairedBleStatus } from './ble';
+import { getUsbConn, getUsbConnection } from './usb';
+import { addBleRawSubscriber, getBleConnection, refreshPairedBleStatus } from './ble';
 import { updateState } from './state';
 import { appendLog } from './log';
 import { initScratchBridge } from './scratch-bridge';
+import { attachCommsFeeds } from './comms';
 
 // ---- Public API ------------------------------------------------------------
 
@@ -80,10 +81,22 @@ export type {
 
 export { default as ConnectButton } from './ui/ConnectButton.svelte';
 export { default as ConnectionPanel } from './ui/ConnectionPanel.svelte';
+export { default as CommsPanel } from './ui/CommsPanel.svelte';
 export { default as UsbPlugRequestModal } from './ui/UsbPlugRequestModal.svelte';
 export { default as ConnectionChoiceModal } from './ui/ConnectionChoiceModal.svelte';
 export { default as BlePairingInfoModal } from './ui/BlePairingInfoModal.svelte';
 export { default as MiniNamePattern } from './ui/MiniNamePattern.svelte';
+
+export {
+  commsEntries,
+  commsPaused,
+  clearComms,
+  setCommsPaused,
+  resetCommsParser,
+} from './comms';
+export type { CommsEntry, CommsDirection, CommsTransport } from './comms';
+export { LogParser } from './log-parser';
+export type { Parsed, ParsedHeader, ParsedRow, ParsedSeparator } from './log-parser';
 export { extractFriendlyName, friendlyNameToPattern, friendlyNameFromDeviceId } from './friendly-name';
 export { DEFAULT_LABELS, mergeLabels } from './ui/labels';
 export type { ConnectLabels } from './ui/labels';
@@ -102,6 +115,7 @@ export function initializeCalliopeConnection(): void {
   if (initialized) return;
   initialized = true;
   if (typeof window === 'undefined') return;
+  attachCommsFeeds(addBleRawSubscriber, getUsbConn);
   initScratchBridge();
   // Brief delay so the page has time to settle before we fire WebUSB calls.
   setTimeout(() => {

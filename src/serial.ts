@@ -8,6 +8,7 @@ import {
   getBleConn,
 } from './ble';
 import { calliopeState } from './state';
+import { pushTx, pushRx } from './comms';
 
 const HEARTBEAT_MS = 1000;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -54,15 +55,19 @@ export async function sendSerialLine(line: string): Promise<void> {
   const out = line.endsWith('\n') ? line : line + '\n';
   try {
     const usb = getUsbConn();
+    let transport: 'usb' | 'ble' | null = null;
     if (usb?.status === ConnectionStatus.Connected) {
       await usb.serialWrite(out);
+      transport = 'usb';
     } else {
       const ble = getBleConn();
       if (ble?.status !== ConnectionStatus.Connected) return;
       await bleSerialWrite(out);
+      transport = 'ble';
     }
     if (line.trim() !== 'H') {
       appendLog({ direction: 'tx', text: line.replace(/\n$/, '') });
+      if (transport) pushTx(transport, line.replace(/\n$/, ''));
     }
   } catch {
     /* ignore — caller may be in a tight loop */
@@ -80,11 +85,13 @@ export async function sendSerialData(data: string): Promise<void> {
     const usb = getUsbConn();
     if (usb?.status === ConnectionStatus.Connected) {
       await usb.serialWrite(data);
+      pushTx('usb', data);
       return;
     }
     const ble = getBleConn();
     if (ble?.status !== ConnectionStatus.Connected) return;
     await bleSerialWrite(data);
+    pushTx('ble', data);
   } catch {
     /* ignore — caller may be in a tight loop */
   }
