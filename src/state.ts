@@ -79,7 +79,7 @@ export interface CalliopeState {
 
   /**
    * Latest result of the program-type probe. `'blocks'` when the running
-   * hex is the pxt-blocks / MbitMore runtime (real handlers wired up);
+   * hex is the pxt-blocks runtime (real handlers wired up);
    * `'unknown'` when a non-blocks program is running; `'disconnected'`
    * when no transport is connected. Refreshed automatically whenever a
    * transport flips into/out of `'connected'` — see `program-type.ts`.

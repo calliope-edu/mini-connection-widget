@@ -1,5 +1,5 @@
 /**
- * MbitMore protocol helpers for the pxt-scratch blocks runtime.
+ * Blocks wire-protocol helpers for the pxt-blocks runtime.
  *
  * Two transports speak the same protocol over the wire:
  *   - BLE GATT — service `0b50f3e4-…-5c`, characteristic UUIDs `0b50_XXXX_…`,
@@ -8,11 +8,10 @@
  *     `[req_type, ch_hi, ch_lo, len, ...data, chksum]`. Both ends of the
  *     link broadcast the same channel content on this frame format.
  *
- * The frame logic here matches scratch-vm/extensions/calliopeMini/serial-web.js
- * verbatim so the firmware doesn't care which transport we use. Embedded
- * mode (controller=2 iframe) needs this because Scratch's BLE driver always
- * speaks ScratchLink JSON-RPC, but the host may have only USB connected —
- * the proxy translates JSON-RPC to/from MbitMore serial frames.
+ * The frame logic mirrors what the firmware (pxt-blocks BlocksSerial.cpp)
+ * speaks, so the device doesn't care which transport we use. The embedded
+ * blocks editor iframe always sends BLE-style UUIDs to the host; the host
+ * translates them into either GATT calls or USB serial frames here.
  */
 
 import { ConnectionStatus } from '@microbit/microbit-connection';
@@ -22,11 +21,11 @@ import { pushProxy } from './comms';
 
 // ---- Wire format constants ------------------------------------------------
 
-/** Start-of-frame delimiter — must precede every MbitMore serial frame. */
-export const MM_SFD = 0xff;
+/** Start-of-frame delimiter — must precede every Blocks serial frame. */
+export const BLOCKS_SFD = 0xff;
 
 /** Request types we put in `frame[1]` when writing TO the device. */
-export const MM_REQ = {
+export const BLOCKS_REQ = {
   READ: 0x01,
   WRITE: 0x10,
   WRITE_RESPONSE: 0x11,
@@ -35,19 +34,19 @@ export const MM_REQ = {
 } as const;
 
 /** Response types the device puts in `frame[1]` when writing back to us. */
-export const MM_RES = {
+export const BLOCKS_RES = {
   READ: 0x01,
   WRITE_RESPONSE: 0x11,
   NOTIFY: 0x21,
 } as const;
 
 /** Service UUID — same as the BLE service. */
-export const MBIT_MORE_SERVICE_UUID = '0b50f3e4-607f-4151-9091-7d008d6ffc5c';
+export const BLOCKS_SERVICE_UUID = '0b50f3e4-607f-4151-9091-7d008d6ffc5c';
 
 /**
- * Map full 128-bit characteristic UUIDs (what Scratch-Link RPC carries) to
- * 16-bit channel IDs (what MbitMore serial frames carry). The middle 16
- * bits of the UUID encode the channel — extract them or use this table.
+ * Map full 128-bit characteristic UUIDs (what the iframe carries) to the
+ * 16-bit channel IDs (what Blocks serial frames carry). The middle 16 bits
+ * of the UUID encode the channel — extract them or use this table.
  */
 const CHANNEL_BY_UUID: Record<string, number> = {
   '0b500100-607f-4151-9091-7d008d6ffc5c': 0x0100, // COMMAND
@@ -82,17 +81,17 @@ export function channelName(channel: number): string {
 }
 
 const REQ_NAME: Record<number, string> = {
-  [MM_REQ.READ]: 'READ',
-  [MM_REQ.WRITE]: 'WRITE',
-  [MM_REQ.WRITE_RESPONSE]: 'WRITE_RESPONSE',
-  [MM_REQ.NOTIFY_STOP]: 'NOTIFY_STOP',
-  [MM_REQ.NOTIFY_START]: 'NOTIFY_START',
+  [BLOCKS_REQ.READ]: 'READ',
+  [BLOCKS_REQ.WRITE]: 'WRITE',
+  [BLOCKS_REQ.WRITE_RESPONSE]: 'WRITE_RESPONSE',
+  [BLOCKS_REQ.NOTIFY_STOP]: 'NOTIFY_STOP',
+  [BLOCKS_REQ.NOTIFY_START]: 'NOTIFY_START',
 };
 
 const RES_NAME: Record<number, string> = {
-  [MM_RES.READ]: 'READ',
-  [MM_RES.WRITE_RESPONSE]: 'WRITE_RESPONSE',
-  [MM_RES.NOTIFY]: 'NOTIFY',
+  [BLOCKS_RES.READ]: 'READ',
+  [BLOCKS_RES.WRITE_RESPONSE]: 'WRITE_RESPONSE',
+  [BLOCKS_RES.NOTIFY]: 'NOTIFY',
 };
 
 /** Format bytes as space-separated 2-digit hex, capped to keep entries short. */
@@ -109,8 +108,8 @@ function formatBytes(data: Uint8Array, maxBytes = 32): string {
 }
 
 /**
- * Resolve a Scratch-Link characteristic identifier (full UUID, short UUID
- * number, or raw 16-bit) into the MbitMore channel byte pair.
+ * Resolve an iframe-supplied characteristic identifier (full UUID, short
+ * UUID number, or raw 16-bit) into the Blocks channel byte pair.
  */
 export function characteristicToChannel(id: number | string): number {
   if (typeof id === 'number') return id & 0xffff;
@@ -133,14 +132,14 @@ function chksum8(bytes: ArrayLike<number>, len: number): number {
 }
 
 /** Build a TX frame to write to the wire: `[SFD, type, ch_hi, ch_lo, len, ...data, chk]`. */
-export function buildMbitMoreFrame(
+export function buildBlocksFrame(
   type: number,
   channel: number,
   data: Uint8Array = new Uint8Array(0),
 ): Uint8Array {
   const len = data.byteLength;
   const frame = new Uint8Array(6 + len);
-  frame[0] = MM_SFD;
+  frame[0] = BLOCKS_SFD;
   frame[1] = type;
   frame[2] = (channel >> 8) & 0xff;
   frame[3] = channel & 0xff;
@@ -150,7 +149,7 @@ export function buildMbitMoreFrame(
   return frame;
 }
 
-export interface MbitMoreFrame {
+export interface BlocksFrame {
   /** Response type byte (RES_READ / RES_WRITE_RESPONSE / RES_NOTIFY). */
   type: number;
   /** 16-bit channel id. */
@@ -163,19 +162,19 @@ export interface MbitMoreFrame {
  * Stateful streaming parser — feed bytes in any chunking, get back zero or
  * more complete frames. Invalid checksums and out-of-range types are dropped.
  */
-export class MbitMoreFrameParser {
+export class BlocksFrameParser {
   private buf: number[] = [];
 
-  push(bytes: Iterable<number>): MbitMoreFrame[] {
+  push(bytes: Iterable<number>): BlocksFrame[] {
     for (const b of bytes) this.buf.push(b & 0xff);
     return this.drain();
   }
 
-  private drain(): MbitMoreFrame[] {
-    const out: MbitMoreFrame[] = [];
+  private drain(): BlocksFrame[] {
+    const out: BlocksFrame[] = [];
     while (this.buf.length > 0) {
       // Resync on SFD.
-      const sfdIdx = this.buf.indexOf(MM_SFD);
+      const sfdIdx = this.buf.indexOf(BLOCKS_SFD);
       if (sfdIdx === -1) {
         this.buf.length = 0;
         return out;
@@ -183,7 +182,7 @@ export class MbitMoreFrameParser {
       if (sfdIdx > 0) this.buf.splice(0, sfdIdx);
       if (this.buf.length < 5) return out;
       const type = this.buf[1];
-      const validType = type === MM_RES.READ || type === MM_RES.WRITE_RESPONSE || type === MM_RES.NOTIFY;
+      const validType = type === BLOCKS_RES.READ || type === BLOCKS_RES.WRITE_RESPONSE || type === BLOCKS_RES.NOTIFY;
       if (!validType) {
         // Drop this SFD candidate, scan for next.
         this.buf.shift();
@@ -211,11 +210,11 @@ export class MbitMoreFrameParser {
 // ---- USB transport --------------------------------------------------------
 
 /**
- * Write an MbitMore frame to the connected USB Calliope. Upstream's
+ * Write a Blocks frame to the connected USB Calliope. Upstream's
  * `serialWrite` accepts a string (one char per byte); we convert here so
  * binary bytes (0xFF etc) survive the trip.
  */
-export async function sendMbitMoreFrameOverUsb(frame: Uint8Array): Promise<void> {
+export async function sendBlocksFrameOverUsb(frame: Uint8Array): Promise<void> {
   const usb = getUsbConn();
   if (!usb || usb.status !== ConnectionStatus.Connected) {
     throw new Error('USB not connected');
@@ -234,7 +233,7 @@ export async function sendMbitMoreFrameOverUsb(frame: Uint8Array): Promise<void>
     pushProxy({
       direction: 'tx',
       transport: 'usb',
-      kind: 'mbitmore',
+      kind: 'blocks',
       text: `${opName} ch=0x${channel.toString(16).padStart(4, '0')} (${chName})${
         data.length > 0 ? ` bytes=${formatBytes(data)}` : ''
       }`,
@@ -246,16 +245,16 @@ export async function sendMbitMoreFrameOverUsb(frame: Uint8Array): Promise<void>
 }
 
 /**
- * Subscribe to MbitMore frames arriving over USB. Returns an unsubscribe
+ * Subscribe to Blocks frames arriving over USB. Returns an unsubscribe
  * function. Multiple subscribers may coexist; each gets a copy of every
  * parsed frame.
  */
-export function onMbitMoreFrameFromUsb(
-  cb: (frame: MbitMoreFrame) => void,
+export function onBlocksFrameFromUsb(
+  cb: (frame: BlocksFrame) => void,
 ): () => void {
   const usb = getUsbConn();
   if (!usb) return () => {};
-  const parser = new MbitMoreFrameParser();
+  const parser = new BlocksFrameParser();
   const handler = (ev: { data: string }) => {
     if (!ev?.data) return;
     const bytes: number[] = new Array(ev.data.length);
@@ -263,7 +262,7 @@ export function onMbitMoreFrameFromUsb(
     const frames = parser.push(bytes);
     for (const f of frames) {
       logIncomingFrame('usb', f);
-      try { cb(f); } catch (err) { appendLog({ direction: 'info', text: `mbitmore handler error: ${(err as Error)?.message ?? err}` }); }
+      try { cb(f); } catch (err) { appendLog({ direction: 'info', text: `blocks handler error: ${(err as Error)?.message ?? err}` }); }
     }
   };
   usb.addEventListener('serialdata', handler);
@@ -273,17 +272,17 @@ export function onMbitMoreFrameFromUsb(
 }
 
 /**
- * Push a decoded inbound MbitMore frame into the comms timeline so the user
+ * Push a decoded inbound Blocks frame into the comms timeline so the user
  * sees what the device sent (notification, read-result, write-ack) without
  * having to mentally parse the raw byte tap.
  */
-export function logIncomingFrame(transport: 'usb' | 'ble', frame: MbitMoreFrame): void {
+export function logIncomingFrame(transport: 'usb' | 'ble', frame: BlocksFrame): void {
   const opName = RES_NAME[frame.type] ?? `op=0x${frame.type.toString(16)}`;
   const chName = channelName(frame.channel);
   pushProxy({
     direction: 'rx',
     transport,
-    kind: 'mbitmore',
+    kind: 'blocks',
     text: `${opName} ch=0x${frame.channel.toString(16).padStart(4, '0')} (${chName})${
       frame.data.length > 0 ? ` bytes=${formatBytes(frame.data)}` : ''
     }`,

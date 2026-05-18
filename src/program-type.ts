@@ -4,27 +4,26 @@
  *
  * Two probes run in parallel — whichever confirms first wins:
  *
- *   1. BLE: read the MbitMore GATT service (UUID
+ *   1. BLE: read the Blocks GATT service (UUID
  *      `0b50f3e4-607f-4151-9091-7d008d6ffc5c`). Service present ⇒ blocks.
  *      Note: the widget's `requestDevice` intercept declares this UUID in
  *      `optionalServices`, so the browser actually exposes it — without
  *      that, this probe would always fail with "Service not found".
  *
- *   2. USB: sniff the serial stream for MbitMore frame headers. Blocks
- *      firmware auto-broadcasts STATE/MOTION every ~40ms as
- *      `[0xFF (SFD), 0x01 (RES_READ), ch_hi, ch_lo, len, ...data, chksum]`.
- *      Seeing a few `0xFF 0x01` pairs within ~1s is a positive match.
+ *   2. USB: send a Blocks `REQ_READ on 0x0100` frame and watch for the
+ *      `[0xFF (SFD), 0x01 (RES_READ), …]` reply. The handshake also kicks
+ *      the firmware's STATE/MOTION broadcaster, so subsequent block I/O
+ *      over USB actually flows. Two SFD+RES pairs within `timeoutMs`
+ *      confirm.
  *
  * Returns 'disconnected' when neither transport is connected. Returns
  * 'unknown' if both probes fail to identify blocks within `timeoutMs`.
- *
- * No firmware change required for BLE. USB detection works against the
- * unmodified blocks runtime because it broadcasts continuously.
  */
 
 import { getConnectedBleDevice } from './ble';
 import { getUsbConn } from './usb';
 import { calliopeState, updateState } from './state';
+import { buildBlocksFrame, BLOCKS_REQ } from './blocks-protocol';
 
 export type CalliopeProgramType = 'blocks' | 'unknown' | 'disconnected';
 
@@ -32,21 +31,21 @@ export interface CalliopeProgramInfo {
   type: CalliopeProgramType;
   /** Which transport confirmed the match. */
   via?: 'usb' | 'ble';
-  /** MbitMore protocol version reported by STATE characteristic (BLE only). */
+  /** Blocks protocol version reported by STATE characteristic (BLE only). */
   protocolVersion?: number;
-  /** MbitMore hardware version byte (BLE only). */
+  /** Blocks hardware version byte (BLE only). */
   hardwareVersion?: number;
 }
 
 // ---- BLE constants --------------------------------------------------------
 
-const MBIT_MORE_SERVICE_UUID = '0b50f3e4-607f-4151-9091-7d008d6ffc5c';
-const MBIT_MORE_STATE_CHAR_UUID = '0b500101-607f-4151-9091-7d008d6ffc5c';
+const BLOCKS_BLE_SERVICE_UUID = '0b50f3e4-607f-4151-9091-7d008d6ffc5c';
+const BLOCKS_BLE_STATE_CHAR_UUID = '0b500101-607f-4151-9091-7d008d6ffc5c';
 
 // ---- USB constants --------------------------------------------------------
 
-const MM_SFD = 0xff;
-// MbitMore response types: 0x01 (read), 0x11 (write ack), 0x21 (notify).
+const BLOCKS_USB_SFD = 0xff;
+// Blocks response types: 0x01 (read), 0x11 (write ack), 0x21 (notify).
 // Seeing SFD followed by one of these is a strong signal.
 const VALID_RES = new Set([0x01, 0x11, 0x21]);
 // Confirm after this many valid frame headers in a row.
@@ -73,7 +72,7 @@ async function probeBle(): Promise<CalliopeProgramInfo | null> {
     return null;
   }
   try {
-    const service = await server.getPrimaryService(MBIT_MORE_SERVICE_UUID);
+    const service = await server.getPrimaryService(BLOCKS_BLE_SERVICE_UUID);
     // Service presence is no longer enough — the CODAL stub registers it
     // unconditionally so partial-flash DAL hashes line up. Discriminate by
     // reading STATE: real runtime continuously fills it with sensor data
@@ -81,7 +80,7 @@ async function probeBle(): Promise<CalliopeProgramInfo | null> {
     // buffer stays all-zero. Any non-zero byte → real runtime.
     let isReal = false;
     try {
-      const ch = await service.getCharacteristic(MBIT_MORE_STATE_CHAR_UUID);
+      const ch = await service.getCharacteristic(BLOCKS_BLE_STATE_CHAR_UUID);
       const v = await ch.readValue();
       for (let i = 0; i < v.byteLength; i++) {
         if (v.getUint8(i) !== 0) { isReal = true; break; }
@@ -122,7 +121,7 @@ function probeUsb(timeoutMs: number): Promise<CalliopeProgramInfo | null> {
       if (!s) return;
       for (let i = 0; i < s.length; i++) {
         const b = s.charCodeAt(i) & 0xff;
-        if (prevByte === MM_SFD && VALID_RES.has(b)) {
+        if (prevByte === BLOCKS_USB_SFD && VALID_RES.has(b)) {
           hits++;
           if (hits >= USB_CONFIRM_HITS) {
             finish({ type: 'blocks', via: 'usb' });
@@ -140,12 +139,22 @@ function probeUsb(timeoutMs: number): Promise<CalliopeProgramInfo | null> {
       finish(null);
       return;
     }
-    // Older blocks builds wait for the first incoming heartbeat before
-    // powering up the MbitMore broadcast loop. Tickle the serial line
-    // mid-probe so a freshly-flashed device speaks up even before
-    // `startHeartbeat()` flips the gate.
+    // Wake the firmware's serial broadcaster by sending a real Blocks
+    // `REQ_READ on ch 0x0100` frame. The pxt-blocks runtime only starts
+    // its STATE/MOTION fiber after seeing this exact handshake
+    // (BlocksSerial.cpp `startSerialReceiving`) — a plain 'H\n' is ignored.
+    // Side-effects we rely on:
+    //   1. Device replies with `RES_READ on 0x0100` → the first SFD+0x01
+    //      pair the handler sees, so detection is fast.
+    //   2. Broadcaster fiber starts, so subsequent block I/O over USB
+    //      (subscribes / reads on STATE, MOTION, etc.) actually flows.
     void (async () => {
-      try { await conn.serialWrite('H\n'); } catch { /* ignore */ }
+      try {
+        const frame = buildBlocksFrame(BLOCKS_REQ.READ, 0x0100);
+        let s = '';
+        for (let i = 0; i < frame.length; i++) s += String.fromCharCode(frame[i]);
+        await conn.serialWrite(s);
+      } catch { /* ignore */ }
     })();
     const timer = setTimeout(() => finish(null), timeoutMs);
   });

@@ -9,7 +9,7 @@ test('full CODAL service set → bond-ok', () => {
       SERVICE_UUIDS.uart,
       SERVICE_UUIDS.partialFlash,
       SERVICE_UUIDS.nordicDfu,
-      SERVICE_UUIDS.mbitMore,
+      SERVICE_UUIDS.blocks,
     ],
     deviceName: 'Calliope mini [tipov]',
     connected: true,

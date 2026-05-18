@@ -22,7 +22,6 @@ import { getUsbConn, getUsbConnection } from './usb';
 import { addBleRawSubscriber, getBleConnection, refreshPairedBleStatus } from './ble';
 import { updateState } from './state';
 import { appendLog } from './log';
-import { initScratchBridge } from './scratch-bridge';
 import { attachCommsFeeds } from './comms';
 
 // ---- Public API ------------------------------------------------------------
@@ -67,18 +66,17 @@ export {
 } from './ble-state';
 export type { BleSessionKind, BleSessionClassification } from './ble-state';
 export {
-  MM_SFD,
-  MM_REQ,
-  MM_RES,
-  MBIT_MORE_SERVICE_UUID,
-  MbitMoreFrameParser,
-  buildMbitMoreFrame,
+  BLOCKS_SFD,
+  BLOCKS_REQ,
+  BLOCKS_RES,
+  BLOCKS_SERVICE_UUID,
+  BlocksFrameParser,
+  buildBlocksFrame,
   characteristicToChannel,
-  sendMbitMoreFrameOverUsb,
-  onMbitMoreFrameFromUsb,
-} from './mbitmore';
-export type { MbitMoreFrame } from './mbitmore';
-export { initScratchBridge } from './scratch-bridge';
+  sendBlocksFrameOverUsb,
+  onBlocksFrameFromUsb,
+} from './blocks-protocol';
+export type { BlocksFrame } from './blocks-protocol';
 export { ensureBlocksRuntime } from './blocks-runtime';
 export type {
   EnsureBlocksRuntimeOptions,
@@ -127,7 +125,6 @@ export function initializeCalliopeConnection(): void {
   initialized = true;
   if (typeof window === 'undefined') return;
   attachCommsFeeds(addBleRawSubscriber, getUsbConn);
-  initScratchBridge();
   // Brief delay so the page has time to settle before we fire WebUSB calls.
   setTimeout(() => {
     void tryAutoReconnectUsb();

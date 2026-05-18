@@ -1,5 +1,5 @@
 /**
- * Ensure the connected Calliope is running the blocks (MbitMore) runtime.
+ * Ensure the connected Calliope is running the blocks runtime.
  *
  * Call `ensureBlocksRuntime()` from the host when the user opens the blocks
  * editor. If the mini already reports blocks via `getRunningProgramType`,

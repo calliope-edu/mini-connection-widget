@@ -443,8 +443,7 @@
     letter-spacing: 0.03em;
     font-weight: 600;
   }
-  .kind-scratch { background: #fff0d6; color: #8a5300; }
-  .kind-mbitmore { background: #e7e0ff; color: #4a2db4; }
+  .kind-blocks { background: #e7e0ff; color: rgb(65, 200, 200); }
   .kind-gatt { background: #d6f1ff; color: #056399; }
 
   .rows-scroll {

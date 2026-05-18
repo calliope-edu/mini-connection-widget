@@ -127,9 +127,9 @@ const trackedDevices = new Map<string, BluetoothDevice>();
  * Web Bluetooth hides services not listed in `optionalServices`/`filters`
  * at request time — even if the device advertises them. Upstream
  * `@microbit/microbit-connection` lists the standard micro:bit profile;
- * we add the Calliope-specific MbitMore service so the blocks runtime is
+ * we add the Calliope-specific Blocks service so the blocks runtime is
  * visible to:
- *   - Scratch's BLE bridge (see WidgetScratchLinkSocket)
+ *   - the campus blocks-editor bridge (see CalliopeRemoteHost)
  *   - the blocks-runtime detector (program-type.ts)
  * without making the embedder re-prompt the user.
  *
@@ -137,7 +137,7 @@ const trackedDevices = new Map<string, BluetoothDevice>();
  * prompt on some platforms.
  */
 const EXTRA_OPTIONAL_SERVICES: BluetoothServiceUUID[] = [
-  '0b50f3e4-607f-4151-9091-7d008d6ffc5c', // MbitMore (pxt-scratch blocks runtime)
+  '0b50f3e4-607f-4151-9091-7d008d6ffc5c', // Blocks service (pxt-blocks runtime)
   0x180a, // Device Information Service — Serial Number → friendly-name derivation
   0xfe59, // Nordic Semiconductor DFU service (buttonless in app + Secure DFU in bootloader)
   // Partial-flash + UART are usually declared by upstream `@microbit/microbit-connection`,
@@ -232,7 +232,7 @@ export function clearBleConn(): void {
 /**
  * Return the raw `BluetoothDevice` for the currently-connected Calliope, or
  * null if BLE isn't connected. Exposed so embedders can drive GATT services
- * directly (e.g. Scratch's MbitMore service over the same connection used
+ * directly (e.g. the Blocks service over the same connection used
  * for flashing) without opening a second `requestDevice` prompt.
  */
 export async function getConnectedBleDevice(): Promise<BluetoothDevice | null> {
@@ -432,7 +432,7 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
         // encrypted characteristic — and poking by ourselves poisons the
         // Windows bond window because PAIR mode has already closed by the
         // time we'd probe. Instead, the first user-initiated encrypted op
-        // (flash, scratch write) trips the security error; classifier
+        // (flash, blocks write) trips the security error; classifier
         // routes it to BlePairingInfoModal, which releases the Chrome
         // link so Windows can do the OS pairing cleanly.
       } else {

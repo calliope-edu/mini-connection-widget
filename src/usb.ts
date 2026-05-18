@@ -364,7 +364,7 @@ function isTransientUsbTransferError(err: unknown): boolean {
 
 /**
  * After a USB flash the Calliope reboots into the freshly-flashed app. If
- * that app is the blocks (MbitMore) runtime, it auto-broadcasts STATE/MOTION
+ * that app is the blocks runtime, it auto-broadcasts STATE/MOTION
  * frames every ~40 ms — but only once the runtime's main loop is actually
  * running. Older blocks builds also wait for the first serial-write before
  * powering up notifications.

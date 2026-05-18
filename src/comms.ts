@@ -20,20 +20,16 @@ export type CommsTransport = 'usb' | 'ble';
 /**
  * What kind of traffic this entry represents.
  *
- * - `serial`   — raw UART text (USB serialdata, BLE UART notifications). The
- *                default; what the comms panel has always shown.
- * - `mbitmore` — a parsed MbitMore frame (campus↔mini binary protocol used
- *                by the blocks runtime). Decoded into a human line like
- *                `WRITE ch=0x0100 (COMMAND) bytes=…`. Logged whenever the
- *                widget acts as a proxy for the Scratch blocks iframe.
- * - `scratch`  — a Scratch-VM postMessage event landing at the widget
- *                (`calliope.write` / `calliope.read` / `calliope.notify`).
- *                Lets the user see WHAT the blocks editor asked for, even
- *                before it gets wrapped into a transport frame.
- * - `gatt`     — a direct BLE GATT operation performed by the widget that
- *                isn't carried over UART (writeValue / readValue / notify).
+ * - `serial` — raw UART text (USB serialdata, BLE UART notifications). The
+ *              default; what the comms panel has always shown.
+ * - `blocks` — a parsed Blocks-protocol frame (campus↔mini binary protocol
+ *              used by the blocks runtime). Decoded into a human line like
+ *              `WRITE ch=0x0100 (COMMAND) bytes=…`. Logged whenever the
+ *              widget acts as a proxy for the blocks editor iframe.
+ * - `gatt`   — a direct BLE GATT operation performed by the widget that
+ *              isn't carried over UART (writeValue / readValue / notify).
  */
-export type CommsKind = 'serial' | 'mbitmore' | 'scratch' | 'gatt';
+export type CommsKind = 'serial' | 'blocks' | 'gatt';
 
 export interface CommsEntry {
   id: number;
@@ -87,14 +83,14 @@ export function pushTx(transport: CommsTransport, text: string): void {
 }
 
 /**
- * Record a structured proxy event — used by the Scratch bridge and the
- * MbitMore frame instrumentation. Same store as serial entries; consumers
- * can filter on `kind` to render proxy traffic differently from raw bytes.
+ * Record a structured proxy event — used by the Blocks frame
+ * instrumentation. Same store as serial entries; consumers can filter on
+ * `kind` to render proxy traffic differently from raw bytes.
  *
  * Example payloads:
- *   pushProxy({ direction: 'tx', transport: 'usb', kind: 'mbitmore',
+ *   pushProxy({ direction: 'tx', transport: 'usb', kind: 'blocks',
  *               text: 'WRITE ch=0x0100 (COMMAND) bytes=01 02 03' });
- *   pushProxy({ direction: 'rx', transport: 'ble', kind: 'scratch',
+ *   pushProxy({ direction: 'rx', transport: 'ble', kind: 'blocks',
  *               text: 'NOTIFY ch=0x0102 (MOTION) bytes=00 00 80 3F …' });
  */
 export function pushProxy(entry: {

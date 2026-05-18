@@ -48,7 +48,7 @@ export const SERVICE_UUIDS = {
   nordicDfu: '0000fe59-0000-1000-8000-00805f9b34fb',
   uart: '6e400001-b5a3-f393-e0a9-e50e24dcca9e',
   deviceInfo: '0000180a-0000-1000-8000-00805f9b34fb',
-  mbitMore: '0b50f3e4-607f-4151-9091-7d008d6ffc5c',
+  blocks: '0b50f3e4-607f-4151-9091-7d008d6ffc5c',
 } as const;
 
 /** Pure classification — feed in what we observe, get back a verdict. */
