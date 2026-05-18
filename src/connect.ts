@@ -13,6 +13,7 @@ import {
   getUsbConnection,
 } from './usb';
 import { showBlePairingInfo } from './pairing-info';
+import { showUsbErrorInfo } from './usb-error-info';
 import { classifyBleError, classifyUsbError } from './connection-errors';
 
 /**
@@ -87,6 +88,14 @@ export async function connectCalliope(
       return;
     }
     updateState((s) => ({ ...s, usbStatus: 'error', usbErrorMessage: classified.userMessage }));
+    // Raw Chromium messages like "Unable to claim interface" / "The device
+    // was disconnected" mean nothing to a kid. Pop the recovery modal so
+    // they get numbered steps + a one-click retry instead.
+    if (classified.kind === 'device-in-use') {
+      showUsbErrorInfo('in-use', (err as Error)?.message ?? String(err ?? ''));
+    } else if (classified.kind === 'device-disconnected') {
+      showUsbErrorInfo('disconnected', (err as Error)?.message ?? String(err ?? ''));
+    }
   }
 }
 

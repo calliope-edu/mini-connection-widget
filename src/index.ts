@@ -36,6 +36,7 @@ export type {
 export type { CalliopeVersion } from './helpers';
 export type { CalliopeLogEntry } from './log';
 export type { UsbPlugRequest } from './usb-plug';
+export type { UsbErrorInfo, UsbErrorInfoKind } from './usb-error-info';
 export type { ConnectionChoice, ConnectionChoiceRequest } from './connection-choice';
 export type { Readable, Writable, Subscriber, Unsubscriber } from './store';
 
@@ -43,6 +44,7 @@ export { calliopeState } from './state';
 export { calliopeLog, clearCalliopeLog } from './log';
 export { calliopeBlePairingInfo, dismissBlePairingInfo, showBlePairingInfo } from './pairing-info';
 export { calliopeUsbPlugRequest } from './usb-plug';
+export { calliopeUsbErrorInfo, dismissUsbErrorInfo } from './usb-error-info';
 export { calliopeConnectionChoiceRequest } from './connection-choice';
 
 export { connectCalliope, disconnectAndForget } from './connect';
@@ -91,6 +93,7 @@ export { default as ConnectButton } from './ui/ConnectButton.svelte';
 export { default as ConnectionPanel } from './ui/ConnectionPanel.svelte';
 export { default as CommsPanel } from './ui/CommsPanel.svelte';
 export { default as UsbPlugRequestModal } from './ui/UsbPlugRequestModal.svelte';
+export { default as UsbErrorModal } from './ui/UsbErrorModal.svelte';
 export { default as ConnectionChoiceModal } from './ui/ConnectionChoiceModal.svelte';
 export { default as BlePairingInfoModal } from './ui/BlePairingInfoModal.svelte';
 export { default as MiniNamePattern } from './ui/MiniNamePattern.svelte';

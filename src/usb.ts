@@ -21,6 +21,7 @@ import { detectCalliopeVersion, stripMakeCodeMetadata } from './helpers';
 import { friendlyNameFromDeviceId } from './friendly-name';
 import { startHeartbeat, stopHeartbeat } from './serial';
 import { classifyUsbError, isExpectedRebootWindow } from './connection-errors';
+import { showUsbErrorInfo } from './usb-error-info';
 
 let usbConn: MicrobitUSBConnection | null = null;
 let usbInitPromise: Promise<MicrobitUSBConnection> | null = null;
@@ -181,8 +182,16 @@ export async function connectWithRetry(c: MicrobitUSBConnection, tries = 2): Pro
       lastErr = err;
       const code = err instanceof DeviceError ? err.code : '';
       if (code === 'no-device-selected' || code === 'aborted' || code === 'unsupported') throw err;
+      // Another tab/process holds the DAPLink — retrying immediately would
+      // just hit the same lock. Surface the recovery modal and stop.
+      if (code === 'device-in-use') throw err;
       appendLog({ direction: 'info', text: `Connect attempt ${i + 1} failed: ${(err as Error).message}` });
-      await new Promise((r) => setTimeout(r, 400));
+      // `device-disconnected` from open() is the Windows-side race after a
+      // previous disconnect — the kernel hasn't released the interface yet
+      // by the time we re-claim it. A longer settle window resolves it
+      // most of the time without the user noticing.
+      const settleMs = code === 'device-disconnected' ? 900 : 400;
+      await new Promise((r) => setTimeout(r, settleMs));
     }
   }
   throw lastErr;
@@ -228,6 +237,11 @@ export async function flashCalliopeViaUsb(hex: string, name: string): Promise<vo
         return;
       }
       updateState((s) => ({ ...s, usbStatus: 'error', usbErrorMessage: classified.userMessage }));
+      if (classified.kind === 'device-in-use') {
+        showUsbErrorInfo('in-use', (err as Error)?.message ?? String(err ?? ''));
+      } else if (classified.kind === 'device-disconnected') {
+        showUsbErrorInfo('disconnected', (err as Error)?.message ?? String(err ?? ''));
+      }
       return;
     }
   }

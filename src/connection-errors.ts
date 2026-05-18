@@ -41,6 +41,8 @@ export type BleErrorKind =
 export type UsbErrorKind =
   | 'transfer-transient' // bounce-and-retry territory
   | 'not-connected-yet'  // race: flash() before connect() resolved
+  | 'device-in-use'      // another tab/process is holding the DAPLink
+  | 'device-disconnected'// USBDevice handle is stale (post-disconnect race or unplug)
   | 'no-device'          // user dismissed the picker
   | 'unsupported'        // no WebUSB
   | 'unknown';
@@ -167,9 +169,34 @@ export function classifyUsbError(err: unknown): ClassifiedUsbError {
         return { kind: 'no-device', userMessage: '' };
       case 'unsupported':
         return { kind: 'unsupported', userMessage: 'WebUSB wird in diesem Browser nicht unterstützt.' };
+      case 'device-in-use':
+        return {
+          kind: 'device-in-use',
+          userMessage: 'Calliope wird gerade von einem anderen Tab oder Programm benutzt.',
+        };
+      case 'device-disconnected':
+        return {
+          kind: 'device-disconnected',
+          userMessage: 'USB-Verbindung war kurz unterbrochen — bitte erneut verbinden.',
+        };
     }
   }
   const msg = (err as Error)?.message ?? String(err ?? '');
+  // Upstream's enrichedError sets DeviceError.code; the raw-string branches
+  // here are a safety net in case the error slipped past enrichment (e.g.
+  // a transferOut error reclassified later in the pipeline).
+  if (/Unable to claim interface/i.test(msg)) {
+    return {
+      kind: 'device-in-use',
+      userMessage: 'Calliope wird gerade von einem anderen Tab oder Programm benutzt.',
+    };
+  }
+  if (/device was disconnected/i.test(msg)) {
+    return {
+      kind: 'device-disconnected',
+      userMessage: 'USB-Verbindung war kurz unterbrochen — bitte erneut verbinden.',
+    };
+  }
   if (/transferOut|transferIn/i.test(msg) && /transfer error/i.test(msg)) {
     return {
       kind: 'transfer-transient',
