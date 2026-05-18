@@ -150,10 +150,11 @@ function probeUsb(timeoutMs: number): Promise<CalliopeProgramInfo | null> {
     //      (subscribes / reads on STATE, MOTION, etc.) actually flows.
     void (async () => {
       try {
-        const frame = buildBlocksFrame(BLOCKS_REQ.READ, 0x0100);
-        let s = '';
-        for (let i = 0; i < frame.length; i++) s += String.fromCharCode(frame[i]);
-        await conn.serialWrite(s);
+        // Pass the Uint8Array straight through — the widget's patched
+        // serialWrite preserves bytes ≥ 0x80, which the stock library
+        // would UTF-8-encode into multi-byte sequences and silently
+        // corrupt the SFD/header.
+        await conn.serialWrite(buildBlocksFrame(BLOCKS_REQ.READ, 0x0100));
       } catch { /* ignore */ }
     })();
     const timer = setTimeout(() => finish(null), timeoutMs);

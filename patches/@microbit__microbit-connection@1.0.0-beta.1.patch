@@ -1,5 +1,5 @@
 diff --git a/build/cjs/bluetooth/connection.js b/build/cjs/bluetooth/connection.js
-index bd3d0ed49a2062a55d257e85657ec849b7ea724f..13bdbee3dd26c890ad0a33158b5c64a4d8f7cd02 100644
+index bd3d0ed49a2062a55d257e85657ec849b7ea724f..fc985ff59697c2ceeb3e700bc659efd76ace150d 100644
 --- a/build/cjs/bluetooth/connection.js
 +++ b/build/cjs/bluetooth/connection.js
 @@ -276,9 +276,12 @@ class MicrobitBluetoothConnectionImpl extends events_js_1.TypedEventTarget {
@@ -30,7 +30,7 @@ index bd3d0ed49a2062a55d257e85657ec849b7ea724f..13bdbee3dd26c890ad0a33158b5c64a4
          // Temporarily patch navigator.bluetooth.requestDevice to support multiple
          // name prefix filters. The capacitor-ble plugin only supports a single
 diff --git a/build/cjs/bluetooth/services/device-information-service.js b/build/cjs/bluetooth/services/device-information-service.js
-index 8c3da78c27a79bc9759dd9af9b3079cfe245bcc6..32d947f721a39e7f038715ba088f05622a1b2113 100644
+index 8c3da78c27a79bc9759dd9af9b3079cfe245bcc6..817dc719d7736eb8a045c3e862c4a6d51fa7eade 100644
 --- a/build/cjs/bluetooth/services/device-information-service.js
 +++ b/build/cjs/bluetooth/services/device-information-service.js
 @@ -16,13 +16,21 @@ class DeviceInformationService {
@@ -58,8 +58,21 @@ index 8c3da78c27a79bc9759dd9af9b3079cfe245bcc6..32d947f721a39e7f038715ba088f0562
      }
  }
  exports.DeviceInformationService = DeviceInformationService;
+diff --git a/build/cjs/usb/connection.d.ts b/build/cjs/usb/connection.d.ts
+index 5d63b9ce50c3c80907ff33444c2898f118379e32..013b6b4aa80b9d2b318963b915179852401d0cc6 100644
+--- a/build/cjs/usb/connection.d.ts
++++ b/build/cjs/usb/connection.d.ts
+@@ -58,7 +58,7 @@ export interface MicrobitUSBConnection extends DeviceConnection {
+      * @returns A promise that resolves when the write is complete.
+      * @throws {DeviceError} with code `not-connected` if there is no connection.
+      */
+-    serialWrite(data: string): Promise<void>;
++    serialWrite(data: string | Uint8Array): Promise<void>;
+     /**
+      * Gets micro:bit deviceId.
+      *
 diff --git a/build/cjs/usb/connection.js b/build/cjs/usb/connection.js
-index e04b8bfd599dbe03b3d8c5adb0d63f1a780a4b59..8d560bd960aa673661c2269c0a95435cad31053a 100644
+index e04b8bfd599dbe03b3d8c5adb0d63f1a780a4b59..fa723e3b1d21e2e265cf6794d9e329eee770a93d 100644
 --- a/build/cjs/usb/connection.js
 +++ b/build/cjs/usb/connection.js
 @@ -15,7 +15,16 @@ const promise_queue_js_1 = require("./promise-queue.js");
@@ -80,8 +93,26 @@ index e04b8bfd599dbe03b3d8c5adb0d63f1a780a4b59..8d560bd960aa673661c2269c0a95435c
  exports.DeviceSelectionMode = {
      /**
       * Attempts to connect to known device, otherwise asks which device to
+diff --git a/build/cjs/usb/daplink.js b/build/cjs/usb/daplink.js
+index 39d7da6871f850ac8eedd516a381740ebff55550..7d872f50a02a7446481660dfb83f36e62f34e06e 100644
+--- a/build/cjs/usb/daplink.js
++++ b/build/cjs/usb/daplink.js
+@@ -92,7 +92,12 @@ class DapLinkSerial {
+         return new TextDecoder().decode(bytes);
+     }
+     async write(data) {
+-        const encoded = new TextEncoder().encode(data);
++        // Patched by @calliope-edu/mini-connection-widget: accept either a
++        // string (UTF-8 encoded for legacy callers that pass text) or a
++        // Uint8Array (raw bytes, used for the Blocks wire protocol where
++        // 0xFF SFD and other high bytes MUST survive the trip without UTF-8
++        // mangling them into multi-byte sequences).
++        const encoded = data instanceof Uint8Array ? data : new TextEncoder().encode(data);
+         const payload = new Uint8Array(encoded.length + 1);
+         payload[0] = encoded.length;
+         payload.set(encoded, 1);
 diff --git a/build/esm/bluetooth/connection.js b/build/esm/bluetooth/connection.js
-index 6ee75313cf8ee01d1a986112c6d101289e95eef2..c492280c951ab1282e66aa311d25358d2852d622 100644
+index 6ee75313cf8ee01d1a986112c6d101289e95eef2..1828d0427707cbe6614b84512a12e97b006ff694 100644
 --- a/build/esm/bluetooth/connection.js
 +++ b/build/esm/bluetooth/connection.js
 @@ -246,9 +246,12 @@ class MicrobitBluetoothConnectionImpl extends TypedEventTarget {
@@ -112,7 +143,7 @@ index 6ee75313cf8ee01d1a986112c6d101289e95eef2..c492280c951ab1282e66aa311d25358d
          // Temporarily patch navigator.bluetooth.requestDevice to support multiple
          // name prefix filters. The capacitor-ble plugin only supports a single
 diff --git a/build/esm/bluetooth/services/device-information-service.js b/build/esm/bluetooth/services/device-information-service.js
-index 496d40d498fbbe95895f48646c77f71c5f5a669c..77d2a629db695e260facca8fae6e315dfbbd22cb 100644
+index 496d40d498fbbe95895f48646c77f71c5f5a669c..31dbc2ad36849f54445416495cda6b4f62b12308 100644
 --- a/build/esm/bluetooth/services/device-information-service.js
 +++ b/build/esm/bluetooth/services/device-information-service.js
 @@ -13,13 +13,21 @@ export class DeviceInformationService {
@@ -141,8 +172,21 @@ index 496d40d498fbbe95895f48646c77f71c5f5a669c..77d2a629db695e260facca8fae6e315d
  }
  //# sourceMappingURL=device-information-service.js.map
 \ No newline at end of file
+diff --git a/build/esm/usb/connection.d.ts b/build/esm/usb/connection.d.ts
+index 5d63b9ce50c3c80907ff33444c2898f118379e32..013b6b4aa80b9d2b318963b915179852401d0cc6 100644
+--- a/build/esm/usb/connection.d.ts
++++ b/build/esm/usb/connection.d.ts
+@@ -58,7 +58,7 @@ export interface MicrobitUSBConnection extends DeviceConnection {
+      * @returns A promise that resolves when the write is complete.
+      * @throws {DeviceError} with code `not-connected` if there is no connection.
+      */
+-    serialWrite(data: string): Promise<void>;
++    serialWrite(data: string | Uint8Array): Promise<void>;
+     /**
+      * Gets micro:bit deviceId.
+      *
 diff --git a/build/esm/usb/connection.js b/build/esm/usb/connection.js
-index f685da48a3bcab4dfcd4a13667efc2ff902dfb51..eefada6fd62059253c57fc93721a7929bdc7b523 100644
+index f685da48a3bcab4dfcd4a13667efc2ff902dfb51..a490252bb91b6181fc6fec9b5c60ab25293931e7 100644
 --- a/build/esm/usb/connection.js
 +++ b/build/esm/usb/connection.js
 @@ -12,7 +12,16 @@ import { PromiseQueue } from "./promise-queue.js";
@@ -163,3 +207,21 @@ index f685da48a3bcab4dfcd4a13667efc2ff902dfb51..eefada6fd62059253c57fc93721a7929
  export const DeviceSelectionMode = {
      /**
       * Attempts to connect to known device, otherwise asks which device to
+diff --git a/build/esm/usb/daplink.js b/build/esm/usb/daplink.js
+index 50c5a21add13678ef49e1857b380bfaad2b0e82d..35b3bbb29a07682174444689349ba8293817187d 100644
+--- a/build/esm/usb/daplink.js
++++ b/build/esm/usb/daplink.js
+@@ -86,7 +86,12 @@ export class DapLinkSerial {
+         return new TextDecoder().decode(bytes);
+     }
+     async write(data) {
+-        const encoded = new TextEncoder().encode(data);
++        // Patched by @calliope-edu/mini-connection-widget: accept either a
++        // string (UTF-8 encoded for legacy callers that pass text) or a
++        // Uint8Array (raw bytes, used for the Blocks wire protocol where
++        // 0xFF SFD and other high bytes MUST survive the trip without UTF-8
++        // mangling them into multi-byte sequences).
++        const encoded = data instanceof Uint8Array ? data : new TextEncoder().encode(data);
+         const payload = new Uint8Array(encoded.length + 1);
+         payload[0] = encoded.length;
+         payload.set(encoded, 1);

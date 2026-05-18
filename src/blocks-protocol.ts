@@ -210,9 +210,13 @@ export class BlocksFrameParser {
 // ---- USB transport --------------------------------------------------------
 
 /**
- * Write a Blocks frame to the connected USB Calliope. Upstream's
- * `serialWrite` accepts a string (one char per byte); we convert here so
- * binary bytes (0xFF etc) survive the trip.
+ * Write a Blocks frame to the connected USB Calliope.
+ *
+ * Hands the raw Uint8Array straight to `serialWrite`. The widget's patched
+ * `@microbit/microbit-connection` accepts Uint8Array on the DAPLink serial
+ * path; the stock library only takes strings and UTF-8-encodes them, which
+ * mangles every byte ≥ 0x80 (the 0xFF SFD becomes `0xC3 0xBF`). Without
+ * the patch the firmware never sees a valid frame on USB.
  */
 export async function sendBlocksFrameOverUsb(frame: Uint8Array): Promise<void> {
   const usb = getUsbConn();
@@ -239,9 +243,7 @@ export async function sendBlocksFrameOverUsb(frame: Uint8Array): Promise<void> {
       }`,
     });
   }
-  let s = '';
-  for (let i = 0; i < frame.length; i++) s += String.fromCharCode(frame[i]);
-  await usb.serialWrite(s);
+  await usb.serialWrite(frame);
 }
 
 /**
