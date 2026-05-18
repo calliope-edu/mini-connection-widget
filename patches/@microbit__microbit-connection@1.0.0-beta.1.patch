@@ -94,11 +94,23 @@ index e04b8bfd599dbe03b3d8c5adb0d63f1a780a4b59..fa723e3b1d21e2e265cf6794d9e329ee
      /**
       * Attempts to connect to known device, otherwise asks which device to
 diff --git a/build/cjs/usb/daplink.js b/build/cjs/usb/daplink.js
-index 39d7da6871f850ac8eedd516a381740ebff55550..7d872f50a02a7446481660dfb83f36e62f34e06e 100644
+index 39d7da6871f850ac8eedd516a381740ebff55550..45e78ea6ef99d0a06a01561c5614e87398c72357 100644
 --- a/build/cjs/usb/daplink.js
 +++ b/build/cjs/usb/daplink.js
-@@ -92,7 +92,12 @@ class DapLinkSerial {
-         return new TextDecoder().decode(bytes);
+@@ -89,10 +89,23 @@ class DapLinkSerial {
+         if (length === 0)
+             return undefined;
+         const bytes = new Uint8Array(result.buffer, 2, length);
+-        return new TextDecoder().decode(bytes);
++        // Patched by @calliope-edu/mini-connection-widget: decode as
++        // ISO-8859-1 (Latin-1) so every byte 0..255 maps one-for-one to a
++        // code unit. UTF-8 decoding (the upstream default) replaces 0xFF
++        // and other byte ≥ 0x80 with the replacement char U+FFFD, which
++        // destroys the SFD in incoming Blocks frames and makes the
++        // BlocksFrameParser blind. Callers that want printable text can
++        // still read via String.fromCharCode roundtrip — only display of
++        // non-ASCII UTF-8 firmware logs changes (rare).
++        return new TextDecoder("iso-8859-1").decode(bytes);
      }
      async write(data) {
 -        const encoded = new TextEncoder().encode(data);
@@ -208,11 +220,23 @@ index f685da48a3bcab4dfcd4a13667efc2ff902dfb51..a490252bb91b6181fc6fec9b5c60ab25
      /**
       * Attempts to connect to known device, otherwise asks which device to
 diff --git a/build/esm/usb/daplink.js b/build/esm/usb/daplink.js
-index 50c5a21add13678ef49e1857b380bfaad2b0e82d..35b3bbb29a07682174444689349ba8293817187d 100644
+index 50c5a21add13678ef49e1857b380bfaad2b0e82d..822052a9fab11e22e477070da17f6f9e70b7869c 100644
 --- a/build/esm/usb/daplink.js
 +++ b/build/esm/usb/daplink.js
-@@ -86,7 +86,12 @@ export class DapLinkSerial {
-         return new TextDecoder().decode(bytes);
+@@ -83,10 +83,23 @@ export class DapLinkSerial {
+         if (length === 0)
+             return undefined;
+         const bytes = new Uint8Array(result.buffer, 2, length);
+-        return new TextDecoder().decode(bytes);
++        // Patched by @calliope-edu/mini-connection-widget: decode as
++        // ISO-8859-1 (Latin-1) so every byte 0..255 maps one-for-one to a
++        // code unit. UTF-8 decoding (the upstream default) replaces 0xFF
++        // and other byte ≥ 0x80 with the replacement char U+FFFD, which
++        // destroys the SFD in incoming Blocks frames and makes the
++        // BlocksFrameParser blind. Callers that want printable text can
++        // still read via String.fromCharCode roundtrip — only display of
++        // non-ASCII UTF-8 firmware logs changes (rare).
++        return new TextDecoder("iso-8859-1").decode(bytes);
      }
      async write(data) {
 -        const encoded = new TextEncoder().encode(data);

@@ -6,7 +6,7 @@ settings:
 
 patchedDependencies:
   '@microbit/microbit-connection@1.0.0-beta.1':
-    hash: 65df701fb8f96abb98728dd5695b76152abe116fb6408466eab92123d8c42ed5
+    hash: 629cc5127f66563036859fdf74ad7c5a40cc16a0a0de6c0cb365f5416adccb43
     path: patches/@microbit__microbit-connection@1.0.0-beta.1.patch
 
 importers:
@@ -34,7 +34,7 @@ importers:
         version: 7.0.0-microbit.4(@capacitor/core@7.6.2)
       '@microbit/microbit-connection':
         specifier: 1.0.0-beta.1
-        version: 1.0.0-beta.1(patch_hash=65df701fb8f96abb98728dd5695b76152abe116fb6408466eab92123d8c42ed5)(@capacitor-community/bluetooth-le@7.3.2(@capacitor/core@7.6.2))(@capacitor/core@7.6.2)(@capacitor/filesystem@7.1.8(@capacitor/core@7.6.2))(@microbit/capacitor-community-nordic-dfu@7.0.0-microbit.4(@capacitor/core@7.6.2))(tslib@2.8.1)
+        version: 1.0.0-beta.1(patch_hash=629cc5127f66563036859fdf74ad7c5a40cc16a0a0de6c0cb365f5416adccb43)(@capacitor-community/bluetooth-le@7.3.2(@capacitor/core@7.6.2))(@capacitor/core@7.6.2)(@capacitor/filesystem@7.1.8(@capacitor/core@7.6.2))(@microbit/capacitor-community-nordic-dfu@7.0.0-microbit.4(@capacitor/core@7.6.2))(tslib@2.8.1)
       '@types/w3c-web-usb':
         specifier: ^1.0.14
         version: 1.0.14
@@ -219,7 +219,7 @@ snapshots:
     dependencies:
       '@capacitor/core': 7.6.2
 
-  '@microbit/microbit-connection@1.0.0-beta.1(patch_hash=65df701fb8f96abb98728dd5695b76152abe116fb6408466eab92123d8c42ed5)(@capacitor-community/bluetooth-le@7.3.2(@capacitor/core@7.6.2))(@capacitor/core@7.6.2)(@capacitor/filesystem@7.1.8(@capacitor/core@7.6.2))(@microbit/capacitor-community-nordic-dfu@7.0.0-microbit.4(@capacitor/core@7.6.2))(tslib@2.8.1)':
+  '@microbit/microbit-connection@1.0.0-beta.1(patch_hash=629cc5127f66563036859fdf74ad7c5a40cc16a0a0de6c0cb365f5416adccb43)(@capacitor-community/bluetooth-le@7.3.2(@capacitor/core@7.6.2))(@capacitor/core@7.6.2)(@capacitor/filesystem@7.1.8(@capacitor/core@7.6.2))(@microbit/capacitor-community-nordic-dfu@7.0.0-microbit.4(@capacitor/core@7.6.2))(tslib@2.8.1)':
     dependencies:
       '@capacitor-community/bluetooth-le': 7.3.2(@capacitor/core@7.6.2)
       '@capacitor/core': 7.6.2
