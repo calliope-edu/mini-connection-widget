@@ -26,6 +26,15 @@
  *    when `flash()` runs before `connect()` resolved. We retry once with
  *    a status-event wait in `usb.ts`; only surface as a hard error if the
  *    wait times out.
+ *
+ * Open-mode firmware caveat: when `state.bleSessionKind === 'bond-ok'` the
+ * caller passes `authVerified: true`. The classifier then refuses to route
+ * any error to the OS-pairing modal — partial-flash + UART being visible
+ * means either we have a working bond OR the device runs in
+ * `MICROBIT_BLE_OPEN=1` mode (no SMP gate at all), and in both cases pushing
+ * the user toward Windows Bluetooth settings would be misleading. The error
+ * is downgraded to `gatt-transient` so the UI surfaces it as a generic
+ * "verbinden Sie erneut" rather than a pair-me instruction.
  */
 
 import { DeviceError } from '@microbit/microbit-connection';
@@ -73,12 +82,27 @@ const CONNECTION_FAILED_RE = /Connection attempt failed|GATT operation failed|Fa
 const SERVICE_NOT_FOUND_RE = /No Services matching UUID|Service is not in the device|getPrimaryService/i;
 const SECURITY_ERR_RE = /security|encryption|authentication|insufficient/i;
 
-export function classifyBleError(err: unknown, hadPaired: boolean): ClassifiedBleError {
+export function classifyBleError(
+  err: unknown,
+  hadPaired: boolean,
+  authVerified = false,
+): ClassifiedBleError {
   // Upstream lib's DeviceError gives us canonical codes — prefer those when
   // present so we don't second-guess the lib's classification.
   if (err instanceof DeviceError) {
     switch (err.code) {
       case 'pairing-information-lost':
+        // Open-mode firmware never emits this (there is no bond to lose), so
+        // when authVerified is true we treat it as a generic transient instead
+        // of pushing the user to OS pairing.
+        if (authVerified) {
+          return {
+            kind: 'gatt-transient',
+            userMessage: 'Bluetooth-Verbindung verloren — bitte erneut verbinden.',
+            showPairingModal: false,
+            staleBond: false,
+          };
+        }
         return {
           kind: 'stale-bond',
           userMessage: 'OS-Pairing veraltet — Calliope in den OS-Bluetooth-Einstellungen entkoppeln und neu pairen.',
@@ -86,6 +110,14 @@ export function classifyBleError(err: unknown, hadPaired: boolean): ClassifiedBl
           staleBond: true,
         };
       case 'permission-denied':
+        if (authVerified) {
+          return {
+            kind: 'gatt-transient',
+            userMessage: 'Bluetooth-Verbindung verloren — bitte erneut verbinden.',
+            showPairingModal: false,
+            staleBond: false,
+          };
+        }
         return {
           kind: 'pairing-missing',
           userMessage: 'Bluetooth-Pairing fehlt: Calliope in den OS-Bluetooth-Einstellungen koppeln, oder per USB anschließen.',
@@ -108,7 +140,19 @@ export function classifyBleError(err: unknown, hadPaired: boolean): ClassifiedBl
   // GATT disconnect mid-operation + had a bond before → stale bond. This is
   // the regressed-on-the-17th symptom the user reported: "GATT Server is
   // disconnected" instead of the bond-deletion modal.
+  //
+  // authVerified short-circuits all the paired-mode routing below: a
+  // disconnect on a session we've already classified as bond-ok / open-mode
+  // is just a transport hiccup, not a pairing problem.
   if (GATT_DISCONNECT_RE.test(msg) || SERVICE_NOT_FOUND_RE.test(msg)) {
+    if (authVerified) {
+      return {
+        kind: 'gatt-transient',
+        userMessage: 'Bluetooth-Verbindung verloren — bitte erneut verbinden.',
+        showPairingModal: false,
+        staleBond: false,
+      };
+    }
     if (hadPaired) {
       return {
         kind: 'stale-bond',
@@ -128,6 +172,14 @@ export function classifyBleError(err: unknown, hadPaired: boolean): ClassifiedBl
   }
   // Generic "Connection attempt failed" — same routing as GATT disconnect.
   if (CONNECTION_FAILED_RE.test(msg)) {
+    if (authVerified) {
+      return {
+        kind: 'gatt-transient',
+        userMessage: 'Bluetooth-Verbindung fehlgeschlagen — bitte erneut verbinden.',
+        showPairingModal: false,
+        staleBond: false,
+      };
+    }
     if (hadPaired) {
       return {
         kind: 'stale-bond',
@@ -144,7 +196,9 @@ export function classifyBleError(err: unknown, hadPaired: boolean): ClassifiedBl
     };
   }
   // Security/encryption errors are unambiguous stale-bond signals when we
-  // had paired before.
+  // had paired before. authVerified can't co-exist with a security error
+  // (the bond-ok verdict was wrong if it does), so we still route it as
+  // stale-bond — better to over-prompt than to silently fail flashing.
   if (SECURITY_ERR_RE.test(msg) && hadPaired) {
     return {
       kind: 'stale-bond',

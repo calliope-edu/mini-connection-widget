@@ -12,12 +12,21 @@
  * have. The classifier is split from the GATT call so the decision logic is
  * unit-testable without a real device.
  *
- * Caveat: on some CODAL builds, auth-required services are hidden from the
- * unencrypted GATT view. If true, `pair-mode` (in-pairing, unencrypted) and
- * `unencrypted-app-mode` (no/stale bond) produce the same fingerprint —
- * `partial`. In that case we can't tell them apart from service enumeration
- * alone; the next user action (flash → encrypted op) is the signal that
- * separates them, and our existing error classifier routes accordingly.
+ * Caveat: on paired-mode CODAL builds (whitelist=1 + security_mode=2),
+ * auth-required services are hidden from the unencrypted GATT view.
+ * `pair-mode` (in-pairing, unencrypted) and `unencrypted-app-mode` (no/stale
+ * bond) then produce the same fingerprint — `partial`. We can't tell them
+ * apart from service enumeration alone; the next user action (flash →
+ * encrypted op) is the signal that separates them, and our existing error
+ * classifier routes accordingly.
+ *
+ * Open-mode firmware (rc07 campus-open, `MICROBIT_BLE_OPEN=1`) collapses
+ * the auth gate entirely — every characteristic is SEC_OPEN, so the
+ * classifier always sees partial-flash + UART and verdicts `bond-ok` on
+ * the first connect. Downstream code (`connection-errors.ts`,
+ * `flash.ts`) treats `bond-ok` as "auth verified" and suppresses the
+ * OS-pairing modal, since pushing the user toward Windows Bluetooth
+ * settings on an open-mode device would be misleading.
  */
 
 export type BleSessionKind =

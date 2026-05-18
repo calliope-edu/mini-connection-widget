@@ -79,3 +79,40 @@ test('expected-reboot window opens and closes on demand', () => {
   clearExpectedReboot();
   assert.equal(isExpectedRebootWindow(), false);
 });
+
+// ---- authVerified gate (rc07 campus-open / MICROBIT_BLE_OPEN=1 firmware) ----
+
+test('authVerified suppresses GATT-disconnect → pairing-modal', () => {
+  const err = new Error('GATT Server is disconnected.');
+  const c = classifyBleError(err, /*hadPaired*/ true, /*authVerified*/ true);
+  assert.equal(c.kind, 'gatt-transient');
+  assert.equal(c.showPairingModal, false);
+  assert.equal(c.staleBond, false);
+});
+
+test('authVerified downgrades pairing-information-lost to transient', () => {
+  const err = new DeviceError({ code: 'pairing-information-lost', message: 'lost' });
+  const c = classifyBleError(err, /*hadPaired*/ true, /*authVerified*/ true);
+  assert.equal(c.kind, 'gatt-transient');
+  assert.equal(c.showPairingModal, false);
+});
+
+test('authVerified downgrades permission-denied to transient', () => {
+  const err = new DeviceError({ code: 'permission-denied', message: 'no' });
+  const c = classifyBleError(err, /*hadPaired*/ false, /*authVerified*/ true);
+  assert.equal(c.kind, 'gatt-transient');
+  assert.equal(c.showPairingModal, false);
+});
+
+test('authVerified downgrades "Connection attempt failed" to transient', () => {
+  const err = new Error('Connection attempt failed');
+  const c = classifyBleError(err, /*hadPaired*/ true, /*authVerified*/ true);
+  assert.equal(c.kind, 'gatt-transient');
+  assert.equal(c.showPairingModal, false);
+});
+
+test('authVerified does NOT mask aborted', () => {
+  const err = new DeviceError({ code: 'aborted', message: 'cancel' });
+  const c = classifyBleError(err, false, /*authVerified*/ true);
+  assert.equal(c.kind, 'aborted');
+});

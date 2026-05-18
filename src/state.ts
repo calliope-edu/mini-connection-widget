@@ -41,16 +41,26 @@ export interface CalliopeState {
   /** Connected over BLE to a previously-paired device but authenticated
    *  services are inaccessible — i.e. OS still holds a bond, but the
    *  Calliope has forgotten its whitelist (typical after USB full-flash).
-   *  The fix is OS-side: forget + re-pair. */
+   *  The fix is OS-side: forget + re-pair.
+   *
+   *  Stays `false` for `MICROBIT_BLE_OPEN=1` firmware (rc07 campus-open):
+   *  there is no bond to go stale. The error classifier downgrades any
+   *  potential stale-bond signal to a generic transient when
+   *  `bleSessionKind === 'bond-ok'`. */
   bleStaleBond: boolean;
   /** Post-connect GATT-database fingerprint — what the device looks like
    *  from Web Bluetooth's perspective after the LL link is up.
    *
-   *  - `bond-ok`: full CODAL service set visible → encrypted link, ready
-   *    to flash.
-   *  - `partial`: auth-required services hidden → we're either in pair
-   *    mode (waiting on SMP) or unencrypted app mode (no/stale bond).
-   *    UI surfaces "Pairing-Modus erkannt" rather than the error toast.
+   *  - `bond-ok`: full CODAL service set visible → ready to flash.
+   *    Doubles as the "auth verified" signal: either we have a working
+   *    bond (paired-mode firmware) or the device is running open-mode
+   *    firmware (`MICROBIT_BLE_OPEN=1`) with no auth gate. Either way
+   *    the error classifier suppresses the OS-pairing modal — it would
+   *    be misleading in both cases.
+   *  - `partial`: auth-required services hidden → on paired-mode
+   *    firmware we're either in pair mode (waiting on SMP) or
+   *    unencrypted app mode (no/stale bond). Cannot occur on open-mode
+   *    firmware (which always reaches bond-ok).
    *  - `dfu-bootloader`: the device rebooted into Nordic DFU and is
    *    advertising as `DfuTarg`. Useful for diagnostic; the DFU flow
    *    handles the actual write.

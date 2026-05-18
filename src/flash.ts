@@ -191,7 +191,10 @@ export async function flashCalliope(hex: string, name: string = 'project'): Prom
           await scheduleBleReconnect();
           return;
         }
-        showBlePairingInfo();
+        // Suppress the pairing-info modal when the device's classifier
+        // verdict is bond-ok / open-mode — its "entkoppeln + neu pairen"
+        // copy is misleading there. The status message alone is enough.
+        if (s.bleSessionKind !== 'bond-ok') showBlePairingInfo();
         updateState((st) => ({
           ...st,
           bleErrorMessage:
@@ -215,11 +218,16 @@ export async function flashCalliope(hex: string, name: string = 'project'): Prom
     return;
   }
   if (s.bleStatus === 'connected' && !s.bleCanFlash) {
-    showBlePairingInfo();
+    // In open-mode firmware (bond-ok at connect) bleCanFlash is set true
+    // immediately and we shouldn't be here. If we are despite that, the
+    // partial-flash service is genuinely missing — don't push OS pairing.
+    const authVerified = s.bleSessionKind === 'bond-ok';
+    if (!authVerified) showBlePairingInfo();
     updateState((st) => ({
       ...st,
-      bleErrorMessage:
-        'Zum Flashen über Bluetooth muss der Calliope einmal im Betriebssystem gekoppelt werden — oder schließe ihn per USB an.',
+      bleErrorMessage: authVerified
+        ? 'Flashen über Bluetooth ist gerade nicht möglich — bitte per USB anschließen.'
+        : 'Zum Flashen über Bluetooth muss der Calliope einmal im Betriebssystem gekoppelt werden — oder schließe ihn per USB an.',
     }));
     return;
   }

@@ -415,15 +415,15 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
             });
           }
         })();
-        // No automatic OS-pairing probe.
+        // No active OS-pairing probe at connect time.
         //
-        // All Calliope editor builds (MakeCode, Blocks, MicroPython) require
-        // a real OS-level bond — there is no just-works fallback. So Chrome's
-        // `gatt.connect()` against a device that's currently in pair mode
-        // (just AB+Reset, advertising as pairable) silently triggers Windows
-        // SMP and creates the bond as a side effect of the link-layer
-        // encryption upgrade. That's the "auto-pair" path: no JS work
-        // needed — it just happens during connect.
+        // Paired-mode editor builds (MakeCode + Blocks + MicroPython on
+        // pre-rc07 firmware) require a real OS-level bond — there is no
+        // just-works fallback. Chrome's `gatt.connect()` against a device
+        // that's currently in pair mode (just AB+Reset, advertising as
+        // pairable) silently triggers Windows SMP and creates the bond as
+        // a side effect of the link-layer encryption upgrade. That's the
+        // "auto-pair" path: no JS work needed.
         //
         // If the device is NOT in pair mode at connect time (typical: user
         // re-connecting to a previously-paired device whose OS bond was
@@ -431,10 +431,21 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
         // a just-works session. We can't differentiate without poking an
         // encrypted characteristic — and poking by ourselves poisons the
         // Windows bond window because PAIR mode has already closed by the
-        // time we'd probe. Instead, the first user-initiated encrypted op
-        // (flash, blocks write) trips the security error; classifier
-        // routes it to BlePairingInfoModal, which releases the Chrome
-        // link so Windows can do the OS pairing cleanly.
+        // time we'd probe.
+        //
+        // The classifier below picks up the difference passively: when
+        // partial-flash + UART are visible we're either (a) bonded
+        // (paired-mode + good bond) or (b) running open-mode firmware
+        // (MICROBIT_BLE_OPEN=1 from rc07 campus-open) where there is no
+        // SMP gate at all. Both verdict as `bond-ok`, and downstream code
+        // gates the pairing modal on that verdict so we never push open-
+        // mode users toward OS Bluetooth settings.
+        //
+        // For genuine paired-mode + no-bond sessions the first user-
+        // initiated encrypted op (flash, blocks write) still trips the
+        // security error; classifier routes it to BlePairingInfoModal,
+        // which releases the Chrome link so Windows can do the OS pairing
+        // cleanly.
       } else {
         updateState((s) => ({
           ...s,
@@ -458,7 +469,8 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
         appendLog({ direction: 'info', text: `BLE background (expected reboot): ${msg}` });
         return;
       }
-      const classified = classifyBleError(ev.error, getState().bleHasPaired);
+      const st = getState();
+      const classified = classifyBleError(ev.error, st.bleHasPaired, st.bleSessionKind === 'bond-ok');
       if (classified.kind === 'aborted') return;
       updateState((s) => ({
         ...s,
@@ -785,7 +797,8 @@ function handleBleFlashError(err: unknown): void {
     userMsg = 'Runtime auf dem Calliope passt nicht zum Programm — bitte einmal per USB voll flashen.';
     updateState((s) => ({ ...s, bleCanFlash: false }));
   } else {
-    const classified = classifyBleError(err, getState().bleHasPaired);
+    const st = getState();
+    const classified = classifyBleError(err, st.bleHasPaired, st.bleSessionKind === 'bond-ok');
     if (classified.kind === 'aborted') {
       userMsg = 'Flash abgebrochen.';
     } else {

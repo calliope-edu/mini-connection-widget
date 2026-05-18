@@ -48,6 +48,10 @@ export async function connectCalliope(
       // the device in app mode — not pairing mode. Flash() handles its own
       // pairing-mode switch when the time comes. Ignored on web; only the
       // native (Capacitor) path looks at this.
+      //
+      // On `MICROBIT_BLE_OPEN=1` firmware (rc07 campus-open) no bonding ever
+      // happens regardless — every characteristic is SEC_OPEN, so bondMode
+      // is effectively a no-op even on native.
       await c.connect({ bondMode: 'application' });
       // Reflect the just-paired state. On web `connect()` succeeds means the
       // browser now remembers the device.
@@ -64,7 +68,8 @@ export async function connectCalliope(
     }
   } catch (err) {
     if (transport === 'ble') {
-      const classified = classifyBleError(err, getState().bleHasPaired);
+      const st = getState();
+      const classified = classifyBleError(err, st.bleHasPaired, st.bleSessionKind === 'bond-ok');
       if (classified.kind === 'aborted') {
         updateState((s) => ({ ...s, bleStatus: 'disconnected', bleErrorMessage: undefined }));
         return;
