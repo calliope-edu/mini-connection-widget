@@ -192,9 +192,10 @@ export async function flashCalliope(hex: string, name: string = 'project'): Prom
           return;
         }
         // Suppress the pairing-info modal when the device's classifier
-        // verdict is bond-ok / open-mode — its "entkoppeln + neu pairen"
-        // copy is misleading there. The status message alone is enough.
-        if (s.bleSessionKind !== 'bond-ok') showBlePairingInfo();
+        // verdict is bond-ok / open-mode (or once was, this session) —
+        // its "entkoppeln + neu pairen" copy is misleading there.
+        const authOk = s.bleSessionKind === 'bond-ok' || s.bleAuthEverVerified;
+        if (!authOk) showBlePairingInfo();
         updateState((st) => ({
           ...st,
           bleErrorMessage:
@@ -221,7 +222,7 @@ export async function flashCalliope(hex: string, name: string = 'project'): Prom
     // In open-mode firmware (bond-ok at connect) bleCanFlash is set true
     // immediately and we shouldn't be here. If we are despite that, the
     // partial-flash service is genuinely missing — don't push OS pairing.
-    const authVerified = s.bleSessionKind === 'bond-ok';
+    const authVerified = s.bleSessionKind === 'bond-ok' || s.bleAuthEverVerified;
     if (!authVerified) showBlePairingInfo();
     updateState((st) => ({
       ...st,

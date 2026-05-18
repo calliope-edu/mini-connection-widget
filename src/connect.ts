@@ -69,7 +69,11 @@ export async function connectCalliope(
   } catch (err) {
     if (transport === 'ble') {
       const st = getState();
-      const classified = classifyBleError(err, st.bleHasPaired, st.bleSessionKind === 'bond-ok');
+      const classified = classifyBleError(
+        err,
+        st.bleHasPaired,
+        st.bleSessionKind === 'bond-ok' || st.bleAuthEverVerified,
+      );
       if (classified.kind === 'aborted') {
         updateState((s) => ({ ...s, bleStatus: 'disconnected', bleErrorMessage: undefined }));
         return;
@@ -133,6 +137,9 @@ export async function disconnectAndForget(transport: CalliopeTransport): Promise
     bleDeviceName: undefined,
     bleErrorMessage: undefined,
     bleHasPaired: false,
+    // Reset the sticky auth-verified flag — the user explicitly
+    // forgetting the device implies they want the fresh-pair flow back.
+    bleAuthEverVerified: false,
     bleCanFlash: false,
     bleCanCommunicate: false,
     bleStaleBond: false,

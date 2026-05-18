@@ -416,7 +416,24 @@ async function enterBootloader(
   // The buttonless characteristic uses **indications** (not notifications) on
   // Nordic SDK 17 builds. Either way, Chrome's `startNotifications()` handles
   // both — the characteristic descriptor determines the flavour.
-  await withTimeout(buttonless.startNotifications(), 3000, 'buttonless startNotifications');
+  //
+  // This is the most common failure point on open-mode firmware: Nordic SDK's
+  // `ble_dfu_buttonless_init` registers the 8EC90004 CCCD with SEC_JUST_WORKS
+  // (encryption required) regardless of `MICROBIT_BLE_OPEN` — the security
+  // setting is baked in by the SDK config flag `NRF_DFU_BLE_REQUIRES_BONDS`,
+  // not by CODAL's global mode. So `startNotifications()` will fail here
+  // with a security error when there is no OS bond. To make BLE-DFU work
+  // without a bond you have to rebuild the firmware with
+  // `NRF_DFU_BLE_REQUIRES_BONDS=0` (which also flips the buttonless
+  // characteristic UUID to 8EC90003 — the widget already tries that as a
+  // fallback in the getCharacteristic loop above).
+  try {
+    await withTimeout(buttonless.startNotifications(), 3000, 'buttonless startNotifications');
+    trace('buttonless notifications enabled');
+  } catch (e) {
+    trace(`buttonless startNotifications failed: ${(e as Error).message} — likely SDK enforces encrypted CCCD even under MICROBIT_BLE_OPEN`);
+    throw e;
+  }
 
   // Subscribe to the buttonless response, then write 0x01 (Enter Bootloader).
   // We don't actually need the response to succeed — the device disconnects
@@ -442,6 +459,7 @@ async function enterBootloader(
   // and disconnects shortly after.
   const waitForDisconnect = oneShotEvent(device, 'gattserverdisconnected', 12000);
   try {
+    trace('writing 0x01 to buttonless characteristic (enter-bootloader)');
     try {
       await withTimeout(buttonless.writeValue(new Uint8Array([0x01])), 3000, 'enter-bootloader write');
       trace('enter-bootloader command written');

@@ -382,6 +382,9 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
                   bleCanCommunicate: true,
                   bleStaleBond: false,
                   bleHasPaired: true,
+                  // Sticky across reconnects within a session — see
+                  // classifyBleError(authVerified) for the rationale.
+                  bleAuthEverVerified: true,
                 };
               }
               // 'dfu-bootloader' is the one classification we trust enough
@@ -470,7 +473,11 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
         return;
       }
       const st = getState();
-      const classified = classifyBleError(ev.error, st.bleHasPaired, st.bleSessionKind === 'bond-ok');
+      const classified = classifyBleError(
+        ev.error,
+        st.bleHasPaired,
+        st.bleSessionKind === 'bond-ok' || st.bleAuthEverVerified,
+      );
       if (classified.kind === 'aborted') return;
       updateState((s) => ({
         ...s,
@@ -798,7 +805,11 @@ function handleBleFlashError(err: unknown): void {
     updateState((s) => ({ ...s, bleCanFlash: false }));
   } else {
     const st = getState();
-    const classified = classifyBleError(err, st.bleHasPaired, st.bleSessionKind === 'bond-ok');
+    const classified = classifyBleError(
+      err,
+      st.bleHasPaired,
+      st.bleSessionKind === 'bond-ok' || st.bleAuthEverVerified,
+    );
     if (classified.kind === 'aborted') {
       userMsg = 'Flash abgebrochen.';
     } else {

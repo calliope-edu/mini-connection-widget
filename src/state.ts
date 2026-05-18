@@ -34,6 +34,14 @@ export interface CalliopeState {
   bleErrorMessage?: string;
   /** Browser remembers a previously-permitted BLE device for this origin. */
   bleHasPaired: boolean;
+  /** Sticky "we have observed bond-ok / open-mode on this device at least
+   *  once this session". Survives transient disconnect → reconnect cycles
+   *  so that a NetworkError on the reconnect attempt (when bleSessionKind
+   *  is back to undefined) doesn't misroute to the OS-pairing modal.
+   *
+   *  Reset only by `disconnectAndForget` — the user explicitly choosing
+   *  to forget the device implies they want the fresh-pair flow back. */
+  bleAuthEverVerified: boolean;
   /** Partial-flashing service exposed by the running hex (BLE flash possible). */
   bleCanFlash: boolean;
   /** UART service exposed (BLE serial communication possible). */
@@ -148,6 +156,7 @@ const initial: CalliopeState = recomputeOverall({
   usbStatus: usbSupported ? 'disconnected' : 'unsupported',
   bleStatus: bleSupported ? 'disconnected' : 'unsupported',
   bleHasPaired: false,
+  bleAuthEverVerified: false,
   bleCanFlash: false,
   bleCanCommunicate: false,
   bleStaleBond: false,
