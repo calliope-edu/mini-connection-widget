@@ -197,10 +197,17 @@ export function classifyUsbError(err: unknown): ClassifiedUsbError {
       userMessage: 'USB-Verbindung war kurz unterbrochen — bitte erneut verbinden.',
     };
   }
-  if (/transferOut|transferIn/i.test(msg) && /transfer error/i.test(msg)) {
+  if (
+    /transferOut|transferIn/i.test(msg)
+    && (/transfer error/i.test(msg) || /was cancelled|was canceled|aborted/i.test(msg))
+  ) {
     return {
       kind: 'transfer-transient',
-      userMessage: 'USB-Übertragungsfehler — wird automatisch erneut versucht.',
+      // Shown only if the caller already exhausted automatic retries (the
+      // dispatcher in usb.ts) — so the action item is on the user, not "we'll
+      // retry". Background-error usages silently log this kind without ever
+      // surfacing the message.
+      userMessage: 'USB-Übertragung wiederholt fehlgeschlagen — bitte USB-Kabel kurz abziehen und neu einstecken.',
     };
   }
   if (/Must be connected/i.test(msg) || /not connected/i.test(msg)) {

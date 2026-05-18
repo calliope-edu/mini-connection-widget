@@ -300,66 +300,91 @@ export async function flashCalliopeViaUsb(hex: string, name: string): Promise<vo
 }
 
 /**
- * WebUSB occasionally throws "Failed to execute 'transferOut' on
- * 'USBDevice': A transfer error has occurred" mid-flash — a stale
- * endpoint state on the host side, typically after a previous session
- * left the DAPLink interface in an inconsistent state. The standard
- * recovery is: bounce the connection (`disconnect` → `connect`) which
- * makes the lib re-claim the interface and reset the endpoint, then
- * retry the flash once.
+ * WebUSB throws several recoverable error variants mid-flash:
  *
- * Without this the user has to click "Verbinden" again manually and
- * lose the original flash request.
+ *  - "Failed to execute 'transferOut' on 'USBDevice': A transfer error
+ *    has occurred" — stale endpoint state after a previous session.
+ *  - "Failed to execute 'transferOut' on 'USBDevice': The transfer was
+ *    cancelled" (AbortError) — pending USB transfer aborted because the
+ *    transport was closed mid-flight by upstream's own
+ *    `withEnrichedErrors` disconnect. Hits especially hard with a chatty
+ *    runtime (Blocks/MbitMore) where serial frames pile up in DAPLink's
+ *    CDC buffer and confuse the DAP transfer state machine on the
+ *    pre-flash reconnect.
+ *
+ * Recovery: bounce the connection (`disconnect` → wait → `connect`) so
+ * upstream re-opens the interface fresh, then retry the flash. With a
+ * chatty runtime the race can repeat once or twice — give up to 2
+ * retries (3 total attempts) before surfacing.
+ *
+ * Without this the user clicks Übertragen, sees the progress bar twitch,
+ * and the flash silently fails — they have to physically unplug and
+ * replug to recover.
  */
 async function runFlashWithTransferRetry(
   c: MicrobitUSBConnection,
   dataSource: FlashDataSource,
   progress: ProgressCallback,
 ): Promise<void> {
-  try {
-    await c.flash(dataSource, { partial: true, progress, minimumProgressIncrement: 0.05 });
-    return;
-  } catch (err) {
-    if (!isTransientUsbTransferError(err)) throw err;
-    appendLog({
-      direction: 'info',
-      text: 'USB transferOut error — bouncing the connection and retrying once',
-    });
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      await c.disconnect();
-    } catch { /* ignore — we're about to reconnect anyway */ }
-    // Give the host a moment to free the endpoint before re-claiming.
-    await new Promise((r) => setTimeout(r, 400));
-    try {
-      await c.connect();
-    } catch (reconnectErr) {
-      throw new Error(
-        `USB transfer error; reconnect failed: ${(reconnectErr as Error).message}`,
-      );
+      await c.flash(dataSource, { partial: true, progress, minimumProgressIncrement: 0.05 });
+      return;
+    } catch (err) {
+      if (!isTransientUsbTransferError(err) || attempt === maxAttempts) throw err;
+      appendLog({
+        direction: 'info',
+        text: `USB transfer error (${(err as Error).message}) — bouncing connection, retry ${attempt}/${maxAttempts - 1}`,
+      });
+      try {
+        await c.disconnect();
+      } catch { /* ignore — we're about to reconnect anyway */ }
+      // Longer settle on each retry. The Windows USB stack needs ~800ms
+      // to fully release the DAPLink endpoint; jumping back in too fast
+      // gives us the same cancelled-transferOut again.
+      await new Promise((r) => setTimeout(r, 400 + attempt * 400));
+      try {
+        await c.connect();
+      } catch (reconnectErr) {
+        throw new Error(
+          `USB transfer error; reconnect failed: ${(reconnectErr as Error).message}`,
+        );
+      }
+      // Same race as in `flashCalliopeViaUsb`: `c.connect()` returns before
+      // status flips to Connected. Without the wait, the lib's flash() throws
+      // "Must be connected now" and we'd surface that instead of the original
+      // transferOut error.
+      await waitForUsbConnected(c);
+      // Reset the UI flash phase — the lib starts the next attempt from
+      // scratch ("FindingDevice" → ...), so the progress bar would jump
+      // backwards if we left the previous percentage on screen.
+      updateState((s) => ({ ...s, flashPhase: 'check', flashProgress: undefined }));
     }
-    // Same race as in `flashCalliopeViaUsb`: `c.connect()` returns before
-    // status flips to Connected. Without the wait, the lib's flash() throws
-    // "Must be connected now" and we'd surface that instead of the original
-    // transferOut error.
-    await waitForUsbConnected(c);
-    // Reset the UI flash phase — the lib starts the second attempt from
-    // scratch ("FindingDevice" → ...), so the progress bar would jump
-    // backwards if we left the previous percentage on screen.
-    updateState((s) => ({ ...s, flashPhase: 'check', flashProgress: undefined }));
-    await c.flash(dataSource, { partial: true, progress, minimumProgressIncrement: 0.05 });
   }
 }
 
 /**
- * Match the specific WebUSB transferOut errors we know are recoverable
- * by bouncing the connection. Other USB errors (device unplugged,
- * permission revoked, no DAPLink) need user attention.
+ * Match the WebUSB transfer errors we know are recoverable by bouncing
+ * the connection. Two families:
+ *
+ *  - "A transfer error has occurred" — stale endpoint state.
+ *  - "The transfer was cancelled" (AbortError) — transport closed
+ *    mid-flight, typically by upstream's own disconnect in
+ *    `withEnrichedErrors` after a stale DAP response.
+ *
+ * Other USB errors (device unplugged, permission revoked, no DAPLink)
+ * need user attention and stay non-recoverable.
  */
 function isTransientUsbTransferError(err: unknown): boolean {
   const msg = (err as Error)?.message ?? '';
+  const name = (err as Error)?.name ?? '';
+  if (!/transferOut|transferIn/i.test(msg)) return false;
   return (
-    /transferOut/i.test(msg) && /transfer error/i.test(msg)
-  ) || /transferIn/i.test(msg) && /transfer error/i.test(msg);
+    /transfer error/i.test(msg)
+    || /was cancelled|was canceled|aborted/i.test(msg)
+    || name === 'AbortError'
+  );
 }
 
 /**
