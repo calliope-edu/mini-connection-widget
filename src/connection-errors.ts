@@ -210,6 +210,26 @@ export function classifyUsbError(err: unknown): ClassifiedUsbError {
       userMessage: 'USB-Übertragung wiederholt fehlgeschlagen — bitte USB-Kabel kurz abziehen und neu einstecken.',
     };
   }
+  // adi.disconnect's dap.close racing with the polling loop. Same
+  // recovery path as a stale handle — user clicks the modal's Retry
+  // (inside a user gesture) and we wipe + reconnect cleanly.
+  if (/operation that changes the device state is in progress/i.test(msg)) {
+    return {
+      kind: 'device-disconnected',
+      userMessage: 'USB-Verbindung war kurz unterbrochen — bitte erneut verbinden.',
+    };
+  }
+  // Chrome refuses `requestDevice()` without a user gesture. Happens
+  // when an OS-level USB disconnect wiped `usbDevice` and upstream's
+  // auto-reconnect fell through to the picker outside of a click
+  // handler. Same modal-driven recovery — the Retry button IS a user
+  // gesture, so requestDevice works from there.
+  if (/Must be handling a user gesture/i.test(msg)) {
+    return {
+      kind: 'device-disconnected',
+      userMessage: 'USB-Sitzung verloren — bitte erneut verbinden.',
+    };
+  }
   if (/Must be connected/i.test(msg) || /not connected/i.test(msg)) {
     return {
       kind: 'not-connected-yet',

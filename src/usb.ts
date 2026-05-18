@@ -296,6 +296,14 @@ export async function flashCalliopeViaUsb(hex: string, name: string): Promise<vo
       flashPhase: undefined,
     }));
     appendLog({ direction: 'error', text: `Flash failed: ${(err as Error).message}` });
+    // Mirror the connect-path routing: the modal's Retry button is a
+    // real user gesture, so it can run `requestDevice` if the session
+    // was wiped.
+    if (classified.kind === 'device-in-use') {
+      showUsbErrorInfo('in-use', (err as Error)?.message ?? String(err ?? ''));
+    } else if (classified.kind === 'device-disconnected') {
+      showUsbErrorInfo('disconnected', (err as Error)?.message ?? String(err ?? ''));
+    }
   }
 }
 
@@ -303,75 +311,83 @@ export async function flashCalliopeViaUsb(hex: string, name: string): Promise<vo
  * WebUSB throws several recoverable error variants mid-flash:
  *
  *  - "Failed to execute 'transferOut' on 'USBDevice': A transfer error
- *    has occurred" — stale endpoint state after a previous session.
+ *    has occurred" — stale endpoint state on the host side.
  *  - "Failed to execute 'transferOut' on 'USBDevice': The transfer was
  *    cancelled" (AbortError) — pending USB transfer aborted because the
  *    transport was closed mid-flight by upstream's own
- *    `withEnrichedErrors` disconnect. Hits especially hard with a chatty
- *    runtime (Blocks/MbitMore) where serial frames pile up in DAPLink's
- *    CDC buffer and confuse the DAP transfer state machine on the
- *    pre-flash reconnect.
+ *    `withEnrichedErrors` disconnect.
+ *  - "Failed to execute 'close' on 'USBDevice': An operation that
+ *    changes the device state is in progress" — adi.disconnect's
+ *    dap.close races with an in-flight transferOut from the polling
+ *    loop (the chatty-runtime case).
  *
- * Recovery: bounce the connection (`disconnect` → wait → `connect`) so
- * upstream re-opens the interface fresh, then retry the flash. With a
- * chatty runtime the race can repeat once or twice — give up to 2
- * retries (3 total attempts) before surfacing.
- *
- * Without this the user clicks Übertragen, sees the progress bar twitch,
- * and the flash silently fails — they have to physically unplug and
- * replug to recover.
+ * Recovery: ONE retry. Bounce only if upstream still has its
+ * `usbDevice` (status not yet flipped to NoAuthorizedDevice). When the
+ * cancelled transferOut causes the OS to fire `usb.disconnect`,
+ * upstream wipes `usbDevice` and any auto-reconnect would call
+ * `requestDevice` — Chrome rejects that with `SecurityError: Must be
+ * handling a user gesture`. In that case we surface the modal so the
+ * user clicks Retry inside a gesture context.
  */
 async function runFlashWithTransferRetry(
   c: MicrobitUSBConnection,
   dataSource: FlashDataSource,
   progress: ProgressCallback,
 ): Promise<void> {
-  const maxAttempts = 3;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+  try {
+    await c.flash(dataSource, { partial: true, progress, minimumProgressIncrement: 0.05 });
+    return;
+  } catch (err) {
+    if (!isTransientUsbTransferError(err)) throw err;
+    // If upstream's `usb.disconnect` event already fired (OS-level USB
+    // reset triggered by the cancellation), `getDevice()` returns
+    // undefined. Re-connecting from here would need a user gesture
+    // (`requestDevice`), which we don't have inside a flash() callback.
+    // Skip the auto-retry and let the surrounding modal handle it.
+    if (!c.getDevice()) throw err;
+    appendLog({
+      direction: 'info',
+      text: `USB transfer error (${(err as Error).message}) — bouncing connection and retrying once`,
+    });
     try {
-      await c.flash(dataSource, { partial: true, progress, minimumProgressIncrement: 0.05 });
-      return;
-    } catch (err) {
-      if (!isTransientUsbTransferError(err) || attempt === maxAttempts) throw err;
-      appendLog({
-        direction: 'info',
-        text: `USB transfer error (${(err as Error).message}) — bouncing connection, retry ${attempt}/${maxAttempts - 1}`,
-      });
-      try {
-        await c.disconnect();
-      } catch { /* ignore — we're about to reconnect anyway */ }
-      // Longer settle on each retry. The Windows USB stack needs ~800ms
-      // to fully release the DAPLink endpoint; jumping back in too fast
-      // gives us the same cancelled-transferOut again.
-      await new Promise((r) => setTimeout(r, 400 + attempt * 400));
-      try {
-        await c.connect();
-      } catch (reconnectErr) {
-        throw new Error(
-          `USB transfer error; reconnect failed: ${(reconnectErr as Error).message}`,
-        );
-      }
-      // Same race as in `flashCalliopeViaUsb`: `c.connect()` returns before
-      // status flips to Connected. Without the wait, the lib's flash() throws
-      // "Must be connected now" and we'd surface that instead of the original
-      // transferOut error.
-      await waitForUsbConnected(c);
-      // Reset the UI flash phase — the lib starts the next attempt from
-      // scratch ("FindingDevice" → ...), so the progress bar would jump
-      // backwards if we left the previous percentage on screen.
-      updateState((s) => ({ ...s, flashPhase: 'check', flashProgress: undefined }));
+      await c.disconnect();
+    } catch { /* ignore — we're about to reconnect anyway */ }
+    // Windows USB stack needs ~800ms to fully release the DAPLink
+    // endpoint after a cancellation. Coming back too fast hits the same
+    // cancelled-transferOut again.
+    await new Promise((r) => setTimeout(r, 800));
+    try {
+      await c.connect();
+    } catch (reconnectErr) {
+      throw new Error(
+        `USB transfer error; reconnect failed: ${(reconnectErr as Error).message}`,
+      );
     }
+    // Same race as in `flashCalliopeViaUsb`: `c.connect()` returns before
+    // status flips to Connected. Without the wait, the lib's flash() throws
+    // "Must be connected now" and we'd surface that instead of the original
+    // transferOut error.
+    await waitForUsbConnected(c);
+    // Reset the UI flash phase — the lib starts the second attempt from
+    // scratch ("FindingDevice" → ...), so the progress bar would jump
+    // backwards if we left the previous percentage on screen.
+    updateState((s) => ({ ...s, flashPhase: 'check', flashProgress: undefined }));
+    await c.flash(dataSource, { partial: true, progress, minimumProgressIncrement: 0.05 });
   }
 }
 
 /**
  * Match the WebUSB transfer errors we know are recoverable by bouncing
- * the connection. Two families:
+ * the connection. Three families:
  *
- *  - "A transfer error has occurred" — stale endpoint state.
- *  - "The transfer was cancelled" (AbortError) — transport closed
- *    mid-flight, typically by upstream's own disconnect in
- *    `withEnrichedErrors` after a stale DAP response.
+ *  - "transferOut|transferIn: A transfer error has occurred" — stale
+ *    endpoint state.
+ *  - "transferOut|transferIn: The transfer was cancelled" (AbortError)
+ *    — transport closed mid-flight, typically by upstream's own
+ *    `withEnrichedErrors` disconnect after a stale DAP response.
+ *  - "close: An operation that changes the device state is in progress"
+ *    — adi.disconnect's dap.close races with an in-flight transferOut
+ *    from the polling loop while a chatty runtime is streaming serial.
  *
  * Other USB errors (device unplugged, permission revoked, no DAPLink)
  * need user attention and stay non-recoverable.
@@ -379,6 +395,7 @@ async function runFlashWithTransferRetry(
 function isTransientUsbTransferError(err: unknown): boolean {
   const msg = (err as Error)?.message ?? '';
   const name = (err as Error)?.name ?? '';
+  if (/operation that changes the device state is in progress/i.test(msg)) return true;
   if (!/transferOut|transferIn/i.test(msg)) return false;
   return (
     /transfer error/i.test(msg)
