@@ -29,7 +29,101 @@ let rxBuffer = '';
 
 /** Internal accessor — used by serial.ts/connect.ts/flash.ts. */
 export function getUsbConn(): MicrobitUSBConnection | null { return usbConn; }
-export function clearUsbConn(): void { usbConn = null; usbInitPromise = null; }
+export function clearUsbConn(): void {
+  usbConn = null;
+  usbInitPromise = null;
+  // Drop the registry along with the connection — the listeners were
+  // attached to that specific MicrobitUSBConnection instance. A fresh
+  // getUsbConnection() rebuilds the connection from scratch, and any
+  // re-subscribers (comms feeds, scratch bridge) re-register through
+  // registerSerialDataListener() on the new instance.
+  serialListeners.clear();
+  serialPaused = false;
+}
+
+// ---------------------------------------------------------------------------
+// Serial-data listener registry + pause/resume
+// ---------------------------------------------------------------------------
+//
+// Upstream's `MicrobitUSBConnection` auto-starts a polling loop the moment
+// it sees a `serialdata` listener (`eventActivated`), and only stops it
+// when the last listener is removed (`eventDeactivated`). With a chatty
+// Blocks/MbitMore runtime in the picture, that polling shares the DAP
+// `sendQueue` with the flash control commands — and `adi.disconnect`'s
+// `dap.close()` racing with an in-flight `transferOut(SERIAL_READ)` is
+// what produces "operation that changes the device state is in progress"
+// / "AbortError: transferOut was cancelled" mid-flash.
+//
+// To kill the race cleanly we funnel ALL serialdata subscriptions through
+// this registry instead of `usb.addEventListener` directly. `pauseSerialDataPolling`
+// then removes them all in one shot — upstream sees `hasSerialEventListeners()`
+// become false and stops polling. We wait briefly for the in-flight read
+// to drain, then run the flash on a quiet `sendQueue`. After the flash
+// `resumeSerialDataPolling` re-attaches the registered handlers, which
+// triggers `eventActivated` and starts polling again. Net effect: zero
+// concurrent USB traffic during the flash window without changing any
+// public subscriber APIs.
+type SerialDataHandler = (ev: { data: string }) => void;
+
+const serialListeners = new Set<SerialDataHandler>();
+let serialPaused = false;
+
+/**
+ * Subscribe a serialdata handler. Replaces direct
+ * `usbConn.addEventListener('serialdata', handler)` calls so the registry
+ * can pause/resume polling at flash boundaries. Returns a teardown
+ * function.
+ */
+export function registerSerialDataListener(handler: SerialDataHandler): () => void {
+  serialListeners.add(handler);
+  if (!serialPaused && usbConn) {
+    usbConn.addEventListener('serialdata', handler);
+  }
+  return () => {
+    serialListeners.delete(handler);
+    if (usbConn) {
+      try { usbConn.removeEventListener('serialdata', handler); } catch { /* ignore */ }
+    }
+  };
+}
+
+/**
+ * Detach every registered serialdata handler from upstream. Upstream's
+ * `eventDeactivated` fires when the last listener leaves and calls
+ * `stopSerialInternal`, which sets `polling = false`. The currently
+ * in-flight read (if any) still has to drain — so we sleep briefly
+ * before returning. ~150 ms is comfortably more than the 1 ms
+ * `serialDelay` upstream uses + one full DAP round-trip.
+ *
+ * Calling pause when already paused is a no-op. The waiting sleep still
+ * runs so callers can rely on "after pause(), no serial polling is
+ * happening for at least settleMs ms".
+ */
+export async function pauseSerialDataPolling(settleMs = 150): Promise<void> {
+  if (!serialPaused) {
+    serialPaused = true;
+    if (usbConn) {
+      for (const h of serialListeners) {
+        try { usbConn.removeEventListener('serialdata', h); } catch { /* ignore */ }
+      }
+    }
+  }
+  await new Promise((r) => setTimeout(r, settleMs));
+}
+
+/**
+ * Re-attach every registered serialdata handler. Upstream's
+ * `eventActivated` fires when the first listener arrives and starts
+ * polling again.
+ */
+export function resumeSerialDataPolling(): void {
+  if (!serialPaused) return;
+  serialPaused = false;
+  if (!usbConn) return;
+  for (const h of serialListeners) {
+    try { usbConn.addEventListener('serialdata', h); } catch { /* ignore */ }
+  }
+}
 
 /** Map upstream's PascalCase status enum onto our lowercase API. */
 function mapStatus(s: ConnectionStatus): CalliopeStatus {
@@ -155,7 +249,12 @@ export async function getUsbConnection(): Promise<MicrobitUSBConnection> {
       }));
       appendLog({ direction: 'error', text: msg });
     });
-    c.addEventListener('serialdata', (data) => {
+    usbConn = c;
+    // Wire the rxBuffer line parser through the registry so it gets
+    // detached during flash pause along with every other subscriber.
+    // `usbConn` must already be set when registerSerialDataListener
+    // tries to attach to the connection.
+    registerSerialDataListener((data) => {
       // `SerialData.data` is a string chunk of bytes. Buffer at the emitter
       // and emit whole lines.
       rxBuffer += data.data;
@@ -166,7 +265,6 @@ export async function getUsbConnection(): Promise<MicrobitUSBConnection> {
         if (line) appendLog({ direction: 'rx', text: line });
       }
     });
-    usbConn = c;
     return c;
   })();
   return usbInitPromise;
@@ -272,6 +370,14 @@ export async function flashCalliopeViaUsb(hex: string, name: string): Promise<vo
   const dataSource: FlashDataSource = async () => cleanHex;
   const progress: ProgressCallback = applyFlashProgress;
 
+  // Pull every serialdata subscriber off the connection before flashing.
+  // Without this the polling loop keeps the DAP sendQueue busy and races
+  // adi.disconnect's dap.close → "operation that changes the device state
+  // is in progress" / cancelled-transferOut. The pause sleeps long enough
+  // for the in-flight read to finish draining, so flash sees a quiet bus.
+  appendLog({ direction: 'info', text: 'Pausing serial polling for flash' });
+  await pauseSerialDataPolling();
+
   try {
     await runFlashWithTransferRetry(c, dataSource, progress);
     updateState((s) => ({
@@ -304,6 +410,14 @@ export async function flashCalliopeViaUsb(hex: string, name: string): Promise<vo
     } else if (classified.kind === 'device-disconnected') {
       showUsbErrorInfo('disconnected', (err as Error)?.message ?? String(err ?? ''));
     }
+  } finally {
+    // Re-attach every subscriber. Upstream's eventActivated fires on the
+    // first listener and starts polling again. Safe to call even when
+    // the connection was wiped — `usbConn` may now be null and resume
+    // becomes a no-op; the next getUsbConnection() will replay the
+    // subscriptions via registerSerialDataListener.
+    resumeSerialDataPolling();
+    appendLog({ direction: 'info', text: 'Serial polling resumed' });
   }
 }
 

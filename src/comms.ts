@@ -141,29 +141,23 @@ export function resetCommsParser(): void {
  * Wire the per-transport RX subscribers so every byte arriving from USB or
  * BLE lands in {@link commsEntries}. Idempotent. Called once from
  * `initializeCalliopeConnection`.
+ *
+ * `registerUsb` should be `registerSerialDataListener` from usb.ts —
+ * passed in to keep this file framework-agnostic. Going through the
+ * registry means the comms feed is paused along with everything else
+ * during a USB flash, so we don't keep DAPLink busy in the background.
  */
 let feedsAttached = false;
 export function attachCommsFeeds(
   addBleRaw: (cb: (chunk: string) => void) => () => void,
-  getUsb: () => { addEventListener(type: 'serialdata', cb: (ev: { data: string }) => void): void } | null,
+  registerUsb: (handler: (ev: { data: string }) => void) => () => void,
 ): void {
   if (feedsAttached) return;
   feedsAttached = true;
 
   addBleRaw((chunk) => pushRx('ble', chunk));
 
-  const usbHandler = (ev: { data: string }) => {
+  registerUsb((ev) => {
     if (ev.data) pushRx('usb', ev.data);
-  };
-  // USB conn may not exist yet on init — poll until it does, then attach
-  // once. Subsequent reconnects reuse the same conn instance.
-  const tryAttach = () => {
-    const usb = getUsb();
-    if (usb) {
-      usb.addEventListener('serialdata', usbHandler);
-      return;
-    }
-    setTimeout(tryAttach, 250);
-  };
-  tryAttach();
+  });
 }

@@ -21,7 +21,7 @@
  */
 
 import { getConnectedBleDevice } from './ble';
-import { getUsbConn } from './usb';
+import { getUsbConn, registerSerialDataListener } from './usb';
 import { calliopeState, updateState } from './state';
 import { buildBlocksFrame, BLOCKS_REQ } from './blocks-protocol';
 
@@ -106,17 +106,15 @@ function probeUsb(timeoutMs: number): Promise<CalliopeProgramInfo | null> {
     let hits = 0;
     let prevByte = -1;
     let settled = false;
+    let unsubscribe: (() => void) | null = null;
     const finish = (val: CalliopeProgramInfo | null) => {
       if (settled) return;
       settled = true;
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (conn as any).removeEventListener?.('serialdata', handler);
-      } catch { /* ignore */ }
+      try { unsubscribe?.(); } catch { /* ignore */ }
       clearTimeout(timer);
       resolve(val);
     };
-    const handler = (ev: { data: string }) => {
+    unsubscribe = registerSerialDataListener((ev) => {
       const s = ev?.data;
       if (!s) return;
       for (let i = 0; i < s.length; i++) {
@@ -130,15 +128,7 @@ function probeUsb(timeoutMs: number): Promise<CalliopeProgramInfo | null> {
         }
         prevByte = b;
       }
-    };
-    try {
-      // The widget's USB connection mirrors EventTarget for `serialdata`.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (conn as any).addEventListener('serialdata', handler);
-    } catch {
-      finish(null);
-      return;
-    }
+    });
     // Wake the firmware's serial broadcaster by sending a real Blocks
     // `REQ_READ on ch 0x0100` frame. The pxt-blocks runtime only starts
     // its STATE/MOTION fiber after seeing this exact handshake

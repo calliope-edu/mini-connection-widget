@@ -1,6 +1,6 @@
 import { ConnectionStatus } from '@microbit/microbit-connection';
 import { appendLog } from './log';
-import { getUsbConn } from './usb';
+import { getUsbConn, registerSerialDataListener } from './usb';
 import {
   addBleLineSubscriber,
   addBleRawSubscriber,
@@ -8,7 +8,7 @@ import {
   getBleConn,
 } from './ble';
 import { calliopeState } from './state';
-import { pushTx, pushRx } from './comms';
+import { pushTx } from './comms';
 
 const HEARTBEAT_MS = 1000;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -104,26 +104,13 @@ export async function sendSerialData(data: string): Promise<void> {
  * REPL.
  */
 export function onSerialData(cb: (chunk: string) => void): () => void {
-  const usbHandler = (ev: { data: string }) => {
-    if (ev.data) cb(ev.data);
-  };
   const unsubBle = addBleRawSubscriber(cb);
-  let disposed = false;
-  const tryAttach = () => {
-    if (disposed) return;
-    const usb = getUsbConn();
-    if (usb) {
-      usb.addEventListener('serialdata', usbHandler);
-      return;
-    }
-    setTimeout(tryAttach, 250);
-  };
-  tryAttach();
+  const unsubUsb = registerSerialDataListener((ev) => {
+    if (ev.data) cb(ev.data);
+  });
   return () => {
-    disposed = true;
     unsubBle();
-    const usb = getUsbConn();
-    if (usb) usb.removeEventListener('serialdata', usbHandler);
+    unsubUsb();
   };
 }
 
@@ -135,7 +122,8 @@ export function onSerialData(cb: (chunk: string) => void): () => void {
  */
 export function onSerialLine(cb: (line: string) => void): () => void {
   let usbBuf = '';
-  const usbHandler = (ev: { data: string }) => {
+  const unsubBle = addBleLineSubscriber(cb);
+  const unsubUsb = registerSerialDataListener((ev) => {
     usbBuf += ev.data;
     let idx: number;
     while ((idx = usbBuf.indexOf('\n')) >= 0) {
@@ -143,25 +131,9 @@ export function onSerialLine(cb: (line: string) => void): () => void {
       usbBuf = usbBuf.slice(idx + 1);
       if (line) cb(line);
     }
-  };
-  const unsubBle = addBleLineSubscriber(cb);
-  let disposed = false;
-  // USB connection may not exist yet on subscribe — retry until it does or
-  // the subscription is disposed.
-  const tryAttach = () => {
-    if (disposed) return;
-    const usb = getUsbConn();
-    if (usb) {
-      usb.addEventListener('serialdata', usbHandler);
-      return;
-    }
-    setTimeout(tryAttach, 250);
-  };
-  tryAttach();
+  });
   return () => {
-    disposed = true;
     unsubBle();
-    const usb = getUsbConn();
-    if (usb) usb.removeEventListener('serialdata', usbHandler);
+    unsubUsb();
   };
 }

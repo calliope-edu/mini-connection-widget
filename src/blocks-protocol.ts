@@ -15,7 +15,7 @@
  */
 
 import { ConnectionStatus } from '@microbit/microbit-connection';
-import { getUsbConn } from './usb';
+import { getUsbConn, registerSerialDataListener } from './usb';
 import { appendLog } from './log';
 import { pushProxy } from './comms';
 
@@ -254,10 +254,8 @@ export async function sendBlocksFrameOverUsb(frame: Uint8Array): Promise<void> {
 export function onBlocksFrameFromUsb(
   cb: (frame: BlocksFrame) => void,
 ): () => void {
-  const usb = getUsbConn();
-  if (!usb) return () => {};
   const parser = new BlocksFrameParser();
-  const handler = (ev: { data: string }) => {
+  return registerSerialDataListener((ev) => {
     if (!ev?.data) return;
     const bytes: number[] = new Array(ev.data.length);
     for (let i = 0; i < ev.data.length; i++) bytes[i] = ev.data.charCodeAt(i) & 0xff;
@@ -266,11 +264,7 @@ export function onBlocksFrameFromUsb(
       logIncomingFrame('usb', f);
       try { cb(f); } catch (err) { appendLog({ direction: 'info', text: `blocks handler error: ${(err as Error)?.message ?? err}` }); }
     }
-  };
-  usb.addEventListener('serialdata', handler);
-  return () => {
-    try { usb.removeEventListener('serialdata', handler); } catch { /* ignore */ }
-  };
+  });
 }
 
 /**

@@ -18,7 +18,7 @@
  */
 
 import { connectCalliope } from './connect';
-import { getUsbConn, getUsbConnection } from './usb';
+import { getUsbConnection, registerSerialDataListener } from './usb';
 import { addBleRawSubscriber, getBleConnection, refreshPairedBleStatus } from './ble';
 import { updateState } from './state';
 import { appendLog } from './log';
@@ -124,7 +124,7 @@ export function initializeCalliopeConnection(): void {
   if (initialized) return;
   initialized = true;
   if (typeof window === 'undefined') return;
-  attachCommsFeeds(addBleRawSubscriber, getUsbConn);
+  attachCommsFeeds(addBleRawSubscriber, registerSerialDataListener);
   // Brief delay so the page has time to settle before we fire WebUSB calls.
   setTimeout(() => {
     void tryAutoReconnectUsb();
