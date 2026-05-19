@@ -128,29 +128,34 @@ const Res = {
 /**
  * Per-packet payload sizes we'll try when the bootloader doesn't expose
  * MTU via `MTU_GET (0x07)` — the Calliope v2-bootloader rejects that
- * opcode the same way it rejects Abort. We start at the largest and step
- * down on chunk-1 failure (see `sendDataObjectStream`'s first-chunk
- * retry):
+ * opcode the same way it rejects Abort.
  *
- *   - 244: Standard BLE 5 MTU-247 payload — the value Chrome on Windows
- *     and macOS typically negotiates. ~10× faster than the safe legacy.
- *   - 182: Conservative MTU-185 fallback (some older Android/Linux stacks).
- *   - 20:  Legacy MTU-23 baseline. Works everywhere; ~2 KB/s.
+ * 20 ONLY. Confirmed empirically (rc07 campus-open debugging session
+ * 2026-05-19) against the Calliope mini v2-bootloader using native
+ * bleak/Python on Windows: the bootloader negotiates ATT MTU 23 even
+ * though the OS reports `max_write_without_response_size=244`. Any
+ * write >20 bytes to the Packet characteristic (8EC90002) succeeds at
+ * the host's BLE stack but is silently dropped at the bootloader's
+ * ATT layer — no PRN fires, the bootloader's offset stays at zero.
+ * After enough silent drops, Windows tries to upgrade encryption
+ * "just-works" thinking it'll help; the bonded bootloader rejects
+ * the pairing → "X" on the LED matrix and the device is wedged until
+ * reset.
  *
- * 500-byte writes (MTU 517) used to head this list, but Chrome on Windows
- * negotiates MTU 247 not 517 on the bootloader link — the 500-byte write
- * is rejected by Chrome's BLE stack with a generic "GATT operation
- * failed" AND the bootloader closes the link as a side effect, so the
- * step-down ladder can't recover. 244 is the practical max and never
- * disconnects the link if it fails.
+ * iOS Nordic DFU works because Apple's library hardcodes 20-byte
+ * writes per Nordic Secure DFU recommendations — we do the same.
  *
- * On chunk-1 failure (`InvalidLengthError` or CRC/offset mismatch from
- * Chrome silently fragmenting an oversized write), the dispatcher
- * advances to the next index and retries the chunk. Worst-case overhead
- * is one failed chunk attempt per step (~2 s each) — two steps × ~2 s
- * = ~4 s lost on the fallback path.
+ * Trade-off: ~4 KB/s wire speed. 180 KB firmware = ~45 s. Slow but
+ * reliable. Larger payloads can be revisited once the firmware
+ * properly exposes MTU exchange (probably needs SDK_CONFIG change in
+ * v3-bootloader's nrf_dfu_ble.c — Nordic SDK 17's BLE manager
+ * normally responds to MTU exchange but maybe the Calliope build
+ * has it disabled or the GATT MTU is hardcoded).
+ *
+ * The fallback ladder is kept so we still have a defensive step-down
+ * if the single 20-byte step fails; in practice it's never hit.
  */
-const PACKET_PAYLOAD_STEPS: readonly number[] = [244, 182, 20];
+const PACKET_PAYLOAD_STEPS: readonly number[] = [20];
 const PACKET_PAYLOAD_SAFE = PACKET_PAYLOAD_STEPS[PACKET_PAYLOAD_STEPS.length - 1];
 const PACKET_PAYLOAD_MAX = PACKET_PAYLOAD_STEPS[0];
 
@@ -358,21 +363,16 @@ export async function flashOverNordicDfuWeb(opts: FlashOverNordicDfuOptions): Pr
   // i.e. ~100 s for a 180 KB firmware. With MTU 247 (Chrome's normal
   // negotiated value on modern desktops/phones) we can write 244 bytes
   // per BLE transaction instead, cutting the wire-time by ~10×.
+  // MtuGet is informational only now — see PACKET_PAYLOAD_STEPS comment for
+  // why we hardcode 20-byte writes on the bootloader Packet characteristic.
+  // The bootloader's actual ATT MTU is 23 (max payload 20) regardless of
+  // what the host's BLE stack reports.
   const mtu = await mtuGet(ctx);
-  if (mtu !== null && mtu > 23) {
-    ctx.payloadSize = Math.min(PACKET_PAYLOAD_MAX, Math.max(PACKET_PAYLOAD_SAFE, mtu - 3));
-    trace(`bootloader MTU=${mtu}, using ${ctx.payloadSize}-byte packet writes`);
+  ctx.payloadSize = PACKET_PAYLOAD_MAX; // == 20
+  if (mtu !== null) {
+    trace(`bootloader reports MTU=${mtu}; using ${ctx.payloadSize}-byte writes anyway (see ble-dfu-web.ts PACKET_PAYLOAD_STEPS comment)`);
   } else {
-    // Bootloader doesn't support MTU_GET (Calliope's v2-bootloader rejects
-    // opcode 0x07 the same way it rejects Abort). Try the optimistic max
-    // payload anyway — if Chrome's negotiated MTU permits 244-byte writes
-    // we get ~10× faster data transfer, and if it doesn't the first chunk
-    // fails fast (InvalidLengthError or CRC/offset mismatch) and the
-    // sendDataObjectStream first-chunk retry below falls back to the
-    // safe `PACKET_PAYLOAD_SAFE` size. Cost on the failure path: one
-    // wasted chunk attempt (~2 s).
-    ctx.payloadSize = PACKET_PAYLOAD_MAX;
-    trace(`bootloader MTU unknown — trying optimistic ${ctx.payloadSize}-byte writes (will fall back to ${PACKET_PAYLOAD_SAFE} if chunk 1 fails)`);
+    trace(`bootloader MTU_GET unsupported; using ${ctx.payloadSize}-byte writes (Nordic Secure DFU baseline)`);
   }
 
   try {
