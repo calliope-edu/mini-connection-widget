@@ -30,7 +30,6 @@ import {
   type BluetoothDfuPhase,
 } from './ble-dfu-web';
 import { extractFriendlyName, friendlyNameFromDeviceId } from './friendly-name';
-import { showBlePairingInfo } from './pairing-info';
 import {
   classifyBleError,
   isExpectedRebootWindow,
@@ -305,24 +304,18 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
       if (mapped === 'connected') {
         startHeartbeat();
         appendLog({ direction: 'info', text: 'Connected (BLE)' });
-        // Successful connect means upstream already read the model number
-        // (an authenticated characteristic), so OS bonding is fine. Mark
-        // capabilities optimistically; the real verdict comes from any
-        // actual write/flash that fails, where the error code tells us
-        // which mode is broken.
+        // With open-mode firmware, a successful `gatt.connect()` means we
+        // can immediately use every characteristic — there's no SMP gate
+        // to wait on. Mark capabilities optimistically; the classifier
+        // below will downgrade if the device turns out to be in DfuTarg.
         const name = getBleDeviceName(c);
         let boardVersion: 'V1' | 'V2' | undefined;
         try { boardVersion = c.getBoardVersion(); } catch { /* not ready yet */ }
-        // BLE name only carries the friendly suffix when whitelist is off
-        // OR the device was discovered while in pairing mode, in which
-        // case the OS cached "Calliope mini [tipov]". Often it's just
+        // BLE name only carries the friendly suffix when the OS cached
+        // it during a prior pairing operation. Often it's just
         // "Calliope mini" — in that case the regex returns undefined and
         // we keep whatever friendlyName USB (or a prior connect) supplied.
         const friendly = extractFriendlyName(name);
-        // Single atomic update — subscribers (notably flash.ts's auto-resume
-        // hook) never observe a `connected && !bleCanFlash` half-state, so
-        // the dispatcher can't mis-fire the "OS pairing missing" modal in
-        // the brief window between status flip and capability flip.
         updateState((s) => ({
           ...s,
           bleStatus: 'connected',
@@ -333,7 +326,8 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
           friendlyName: friendly ?? s.friendlyName,
           bleCanCommunicate: true,
           bleCanFlash: true,
-          bleStaleBond: false,
+          bleHasPermission: true,
+          userDisconnectedBle: false,
           connectedAt: Date.now(),
         }));
         // Background: query the CODAL DeviceInfo characteristic for the
@@ -370,26 +364,10 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
             });
             updateState((s) => {
               if (s.flashTransport === 'ble') return { ...s, bleSessionKind: result.kind };
-              // 'bond-ok' confirms what we already optimistically set;
-              // mostly worth recording bleHasPaired:true so downstream code
-              // (auto-reconnect after flash, stale-bond detection) trusts
-              // the existing permission.
-              if (result.kind === 'bond-ok') {
-                return {
-                  ...s,
-                  bleSessionKind: 'bond-ok',
-                  bleCanFlash: true,
-                  bleCanCommunicate: true,
-                  bleStaleBond: false,
-                  bleHasPaired: true,
-                  // Sticky across reconnects within a session — see
-                  // classifyBleError(authVerified) for the rationale.
-                  bleAuthEverVerified: true,
-                };
-              }
-              // 'dfu-bootloader' is the one classification we trust enough
-              // to downgrade state on: name=DfuTarg + only DFU service is a
-              // hardware-level signal, not a permission-filter artefact.
+              // 'dfu-bootloader' is the one classification that downgrades
+              // capabilities: the bootloader doesn't host UART or
+              // partial-flash, so neither comms nor partial-flash work
+              // until the device reboots back into app mode.
               if (result.kind === 'dfu-bootloader') {
                 return {
                   ...s,
@@ -400,15 +378,6 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
                     'Calliope ist im DFU-Bootloader. Reset drücken, um zurück in die Anwendung zu kommen.',
                 };
               }
-              // 'partial' / 'unknown' are diagnostically interesting but
-              // unreliable for decision-making — Chrome's `optionalServices`
-              // filter is captured at requestDevice time, so a permission
-              // granted before we declared a UUID will report the service
-              // as missing even when the device exposes it and the bond is
-              // fine. We log the classification (forensic trail) but keep
-              // the optimistic state: the first encrypted op is the only
-              // authoritative test, and our error classifier routes its
-              // failure to the pairing modal cleanly.
               return { ...s, bleSessionKind: result.kind };
             });
           } catch (err) {
@@ -418,44 +387,12 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
             });
           }
         })();
-        // No active OS-pairing probe at connect time.
-        //
-        // Paired-mode editor builds (MakeCode + Blocks + MicroPython on
-        // pre-rc07 firmware) require a real OS-level bond — there is no
-        // just-works fallback. Chrome's `gatt.connect()` against a device
-        // that's currently in pair mode (just AB+Reset, advertising as
-        // pairable) silently triggers Windows SMP and creates the bond as
-        // a side effect of the link-layer encryption upgrade. That's the
-        // "auto-pair" path: no JS work needed.
-        //
-        // If the device is NOT in pair mode at connect time (typical: user
-        // re-connecting to a previously-paired device whose OS bond was
-        // wiped, or first connect without AB+Reset), Chrome falls back to
-        // a just-works session. We can't differentiate without poking an
-        // encrypted characteristic — and poking by ourselves poisons the
-        // Windows bond window because PAIR mode has already closed by the
-        // time we'd probe.
-        //
-        // The classifier below picks up the difference passively: when
-        // partial-flash + UART are visible we're either (a) bonded
-        // (paired-mode + good bond) or (b) running open-mode firmware
-        // (MICROBIT_BLE_OPEN=1 from rc07 campus-open) where there is no
-        // SMP gate at all. Both verdict as `bond-ok`, and downstream code
-        // gates the pairing modal on that verdict so we never push open-
-        // mode users toward OS Bluetooth settings.
-        //
-        // For genuine paired-mode + no-bond sessions the first user-
-        // initiated encrypted op (flash, blocks write) still trips the
-        // security error; classifier routes it to BlePairingInfoModal,
-        // which releases the Chrome link so Windows can do the OS pairing
-        // cleanly.
       } else {
         updateState((s) => ({
           ...s,
           bleStatus: mapped,
           bleCanCommunicate: false,
           bleCanFlash: false,
-          bleStaleBond: false,
           bleSessionKind: undefined,
         }));
         if (getState().usbStatus !== 'connected') stopHeartbeat();
@@ -464,28 +401,20 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
     });
     c.addEventListener('backgrounderror', (ev) => {
       const msg = ev.error.message;
-      // During an expected device reboot (post-flash, pairing-mode switch,
-      // DFU enter) the GATT drops as part of normal operation. Log it as
-      // info so power-users still see it in the comms panel, but don't
-      // promote it to a user-facing error toast.
+      // During an expected device reboot (post-flash, DFU enter) the GATT
+      // drops as part of normal operation. Log it as info so power-users
+      // still see it in the comms panel, but don't promote it to an error.
       if (isExpectedRebootWindow()) {
         appendLog({ direction: 'info', text: `BLE background (expected reboot): ${msg}` });
         return;
       }
-      const st = getState();
-      const classified = classifyBleError(
-        ev.error,
-        st.bleHasPaired,
-        st.bleSessionKind === 'bond-ok' || st.bleAuthEverVerified,
-      );
+      const classified = classifyBleError(ev.error);
       if (classified.kind === 'aborted') return;
       updateState((s) => ({
         ...s,
         bleStatus: 'error',
-        bleStaleBond: classified.staleBond,
         bleErrorMessage: classified.userMessage,
       }));
-      if (classified.showPairingModal) showBlePairingInfo();
       appendLog({ direction: 'error', text: msg });
     });
     // UART data — upstream gives us a Uint8Array per notification. Buffer and
@@ -514,26 +443,6 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
 
 // ---- Capability probes ------------------------------------------------------
 
-/**
- * After connect, work out what we can actually do over BLE. Three failure
- * modes to distinguish:
- *
- *  - **Hex without UART** — service legitimately not advertised. We stay
- *    connected; just no data flows.
- *  - **OS-pairing missing** — a never-paired device hides authenticated
- *    services. UART unreachable; partial-flashing service unreachable.
- *    UI shows "OS-Pairing fehlt".
- *  - **OS-pairing stale** — OS still has a bond, but the Calliope has
- *    forgotten its whitelist (typical after USB full-flash). Same symptom
- *    as never-paired but the browser remembers the device. UI shows
- *    "OS-Pairing veraltet" with instructions to entkoppeln + neu pairen.
- *
- * Probe is conservative: try a no-op `uartWrite('')`. If it fails, we have
- * neither communication nor the right pairing state. Then we cross-reference
- * `bleHasPaired` to pick the right message. We optimistically assume
- * `bleCanFlash` is true when connected — the real answer comes when the
- * user actually flashes; if it fails with a relevant error we can flip.
- */
 // ---- Flash via BLE ----------------------------------------------------------
 
 function applyFlashProgress(stage: ProgressStage, progress: number | undefined): void {
@@ -788,8 +697,6 @@ function handleBleFlashError(err: unknown): void {
   // classifier doesn't see. Everything else routes through the classifier
   // so we get one consistent BLE-error story.
   let userMsg: string;
-  let updateStaleBond = false;
-  let showModal = false;
   if (err instanceof BluetoothPartialFlashDalMismatchError) {
     userMsg = 'Runtime auf dem Calliope passt nicht zum Programm — bitte einmal per USB voll flashen.';
     updateState((s) => ({ ...s, bleCanFlash: false }));
@@ -804,33 +711,17 @@ function handleBleFlashError(err: unknown): void {
     userMsg = 'Runtime auf dem Calliope passt nicht zum Programm — bitte einmal per USB voll flashen.';
     updateState((s) => ({ ...s, bleCanFlash: false }));
   } else {
-    const st = getState();
-    const classified = classifyBleError(
-      err,
-      st.bleHasPaired,
-      st.bleSessionKind === 'bond-ok' || st.bleAuthEverVerified,
-    );
-    if (classified.kind === 'aborted') {
-      userMsg = 'Flash abgebrochen.';
-    } else {
-      userMsg = classified.userMessage;
-      updateStaleBond = classified.staleBond;
-      showModal = classified.showPairingModal;
-      if (classified.kind === 'stale-bond' || classified.kind === 'pairing-missing') {
-        updateState((s) => ({ ...s, bleCanFlash: false }));
-      }
-    }
+    const classified = classifyBleError(err);
+    userMsg = classified.kind === 'aborted' ? 'Flash abgebrochen.' : classified.userMessage;
   }
   updateState((s) => ({
     ...s,
     flashTransport: undefined,
     bleStatus: 'error',
-    bleStaleBond: updateStaleBond || s.bleStaleBond,
     bleErrorMessage: userMsg,
     flashProgress: undefined,
     flashPhase: undefined,
   }));
-  if (showModal) showBlePairingInfo();
   appendLog({ direction: 'error', text: `BLE flash failed: ${userMsg}` });
 }
 
@@ -874,7 +765,8 @@ export async function forgetAllBleDevices(): Promise<void> {
 /**
  * Refresh whether the browser remembers a previously-permitted BLE device
  * for this origin. Called on init so the UI can show a remembered name even
- * before the first connect.
+ * before the first connect, and so the reconnect daemon knows whether
+ * there's anything to reconnect to.
  */
 export async function refreshPairedBleStatus(): Promise<void> {
   if (typeof navigator === 'undefined' || !('bluetooth' in navigator)) return;
@@ -887,7 +779,7 @@ export async function refreshPairedBleStatus(): Promise<void> {
     const first = known[0] as unknown as { name?: string; id?: string } | undefined;
     updateState((s) => ({
       ...s,
-      bleHasPaired: known.length > 0,
+      bleHasPermission: known.length > 0,
       bleDeviceName: s.bleDeviceName ?? first?.name ?? first?.id,
     }));
   } catch {

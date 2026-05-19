@@ -12,7 +12,6 @@ import {
   forgetAllUsbDevices,
   getUsbConnection,
 } from './usb';
-import { showBlePairingInfo } from './pairing-info';
 import { showUsbErrorInfo } from './usb-error-info';
 import { classifyBleError, classifyUsbError } from './connection-errors';
 
@@ -21,7 +20,7 @@ import { classifyBleError, classifyUsbError } from './connection-errors';
  * resume path first — for BLE this means upstream's `connect()` re-using a
  * previously-permitted device. If a chooser would be needed, we wipe all
  * per-transport device info first so the popover doesn't lie about a stale
- * "paired" state while the picker is open.
+ * "connected" state while the picker is open.
  */
 export async function connectCalliope(
   transport: CalliopeTransport = 'usb',
@@ -30,7 +29,15 @@ export async function connectCalliope(
   try {
     if (transport === 'ble') {
       if (!SUPPORT.ble) return;
-      updateState((s) => ({ ...s, bleStatus: 'connecting', bleErrorMessage: undefined }));
+      updateState((s) => ({
+        ...s,
+        bleStatus: 'connecting',
+        bleErrorMessage: undefined,
+        // User is explicitly asking for BLE — clear the "I disconnected on
+        // purpose" flag so the reconnect daemon resumes work if this attempt
+        // ever drops.
+        userDisconnectedBle: false,
+      }));
 
       const c = await getBleConnection();
       if (forceChooser) {
@@ -38,27 +45,27 @@ export async function connectCalliope(
         updateState((s) => ({
           ...s,
           bleDeviceName: undefined,
-          bleHasPaired: false,
+          bleHasPermission: false,
           bleCanFlash: false,
           bleCanCommunicate: false,
-          bleStaleBond: false,
         }));
       }
-      // Use bondMode: 'application' so the lib bonds (if needed) and leaves
-      // the device in app mode — not pairing mode. Flash() handles its own
-      // pairing-mode switch when the time comes. Ignored on web; only the
-      // native (Capacitor) path looks at this.
-      //
-      // On `MICROBIT_BLE_OPEN=1` firmware (rc07 campus-open) no bonding ever
-      // happens regardless — every characteristic is SEC_OPEN, so bondMode
-      // is effectively a no-op even on native.
-      await c.connect({ bondMode: 'application' });
-      // Reflect the just-paired state. On web `connect()` succeeds means the
-      // browser now remembers the device.
-      updateState((s) => ({ ...s, bleHasPaired: true }));
+      // With rc07-open firmware there's no SMP gate to negotiate — the
+      // bondMode flag the Capacitor native plugin used to take is now a
+      // no-op on every supported transport.
+      await c.connect();
+      // `connect()` returning means the browser now remembers the device
+      // for this origin. Reflect that in state so the daemon and UI can
+      // make decisions without re-querying getDevices().
+      updateState((s) => ({ ...s, bleHasPermission: true }));
     } else {
       if (!SUPPORT.usb) return;
-      updateState((s) => ({ ...s, usbStatus: 'connecting', usbErrorMessage: undefined }));
+      updateState((s) => ({
+        ...s,
+        usbStatus: 'connecting',
+        usbErrorMessage: undefined,
+        userDisconnectedUsb: false,
+      }));
       const c = await getUsbConnection();
       if (forceChooser) {
         await c.clearDevice();
@@ -68,12 +75,7 @@ export async function connectCalliope(
     }
   } catch (err) {
     if (transport === 'ble') {
-      const st = getState();
-      const classified = classifyBleError(
-        err,
-        st.bleHasPaired,
-        st.bleSessionKind === 'bond-ok' || st.bleAuthEverVerified,
-      );
+      const classified = classifyBleError(err);
       if (classified.kind === 'aborted') {
         updateState((s) => ({ ...s, bleStatus: 'disconnected', bleErrorMessage: undefined }));
         return;
@@ -85,10 +87,8 @@ export async function connectCalliope(
       updateState((s) => ({
         ...s,
         bleStatus: 'error',
-        bleStaleBond: classified.staleBond,
         bleErrorMessage: classified.userMessage,
       }));
-      if (classified.showPairingModal) showBlePairingInfo();
       return;
     }
     const classified = classifyUsbError(err);
@@ -112,6 +112,10 @@ export async function connectCalliope(
  * Disconnect the given transport AND forget any browser-remembered device on
  * it. Next connect will always show a fresh picker. This is the unified
  * "Trennen" + "Anderen Calliope verbinden" action.
+ *
+ * Sets the corresponding `userDisconnectedX` flag so the reconnect daemon
+ * stops trying — without this it would immediately reconnect to the device
+ * we just forgot.
  */
 export async function disconnectAndForget(transport: CalliopeTransport): Promise<void> {
   if (transport === 'usb') {
@@ -123,6 +127,7 @@ export async function disconnectAndForget(transport: CalliopeTransport): Promise
       usbStatus: SUPPORT.usb ? 'disconnected' : 'unsupported',
       usbDeviceName: undefined,
       usbErrorMessage: undefined,
+      userDisconnectedUsb: true,
       // Drop the friendly name if BLE isn't also holding the device.
       friendlyName: s.bleStatus === 'connected' ? s.friendlyName : undefined,
     }));
@@ -136,13 +141,10 @@ export async function disconnectAndForget(transport: CalliopeTransport): Promise
     bleStatus: SUPPORT.ble ? 'disconnected' : 'unsupported',
     bleDeviceName: undefined,
     bleErrorMessage: undefined,
-    bleHasPaired: false,
-    // Reset the sticky auth-verified flag — the user explicitly
-    // forgetting the device implies they want the fresh-pair flow back.
-    bleAuthEverVerified: false,
+    bleHasPermission: false,
     bleCanFlash: false,
     bleCanCommunicate: false,
-    bleStaleBond: false,
+    userDisconnectedBle: true,
     // Drop the friendly name if USB isn't also holding the device.
     friendlyName: s.usbStatus === 'connected' ? s.friendlyName : undefined,
   }));

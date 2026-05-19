@@ -1,7 +1,6 @@
 import { ConnectionStatus } from '@microbit/microbit-connection';
 import { calliopeState, getState, updateState, SUPPORT } from './state';
 import { appendLog } from './log';
-import { showBlePairingInfo } from './pairing-info';
 import { awaitUsbPlugConfirm } from './usb-plug';
 import { awaitConnectionChoice } from './connection-choice';
 import { connectCalliope } from './connect';
@@ -65,17 +64,16 @@ export async function flashCalliope(hex: string, name: string = 'project'): Prom
     });
   }
 
-  // Silent BLE reconnect: if BLE was previously paired but is now down
-  // (typical when post-flash `scheduleBleReconnect` gave up just before the
+  // Silent BLE reconnect: if BLE permission exists but BLE is currently
+  // down (typical when post-flash auto-reconnect gave up just before the
   // device finished rebooting), try the cached browser permission once
-  // before falling through to the 3-way modal. Same effect as clicking
-  // "Verbinden" — avoids the modal-then-picker-then-fail dance for what's
-  // really a transient drop. Direct `c.connect()` (not `connectCalliope`)
-  // so a failure doesn't fire the stale-bond modal; if it doesn't come
-  // back, we just fall through to the regular dispatcher.
+  // before falling through to the connection-choice modal. Direct
+  // `c.connect()` (not `connectCalliope`) so a failure stays quiet — if
+  // it doesn't come back we just fall through to the regular dispatcher.
   if (
     SUPPORT.ble &&
-    s.bleHasPaired &&
+    s.bleHasPermission &&
+    !s.userDisconnectedBle &&
     s.bleStatus !== 'connected' &&
     s.bleStatus !== 'connecting' &&
     s.usbStatus !== 'connected'
@@ -87,8 +85,8 @@ export async function flashCalliope(hex: string, name: string = 'project'): Prom
     try {
       const c = await getBleConnection();
       updateState((st) => ({ ...st, bleStatus: 'connecting', bleErrorMessage: undefined }));
-      await c.connect({ bondMode: 'application' });
-      updateState((st) => ({ ...st, bleHasPaired: true }));
+      await c.connect();
+      updateState((st) => ({ ...st, bleHasPermission: true }));
       appendLog({ direction: 'info', text: 'Silent BLE reconnect succeeded' });
     } catch (err) {
       updateState((st) => ({ ...st, bleStatus: 'disconnected', bleErrorMessage: undefined }));
@@ -215,15 +213,10 @@ export async function flashCalliope(hex: string, name: string = 'project'): Prom
           await scheduleBleReconnect();
           return;
         }
-        // Suppress the pairing-info modal when the device's classifier
-        // verdict is bond-ok / open-mode (or once was, this session) —
-        // its "entkoppeln + neu pairen" copy is misleading there.
-        const authOk = s.bleSessionKind === 'bond-ok' || s.bleAuthEverVerified;
-        if (!authOk) showBlePairingInfo();
         updateState((st) => ({
           ...st,
           bleErrorMessage:
-            'Runtime auf dem Calliope passt nicht zum Programm und der BLE-Vollflash ist fehlgeschlagen — bitte per USB voll flashen.',
+            'BLE-Flash fehlgeschlagen und kein USB verfügbar — bitte ein BLE-fähiges Programm aufspielen (A+B halten und Reset drücken, dann erneut versuchen).',
         }));
         return;
       }
@@ -243,16 +236,14 @@ export async function flashCalliope(hex: string, name: string = 'project'): Prom
     return;
   }
   if (s.bleStatus === 'connected' && !s.bleCanFlash) {
-    // In open-mode firmware (bond-ok at connect) bleCanFlash is set true
-    // immediately and we shouldn't be here. If we are despite that, the
-    // partial-flash service is genuinely missing — don't push OS pairing.
-    const authVerified = s.bleSessionKind === 'bond-ok' || s.bleAuthEverVerified;
-    if (!authVerified) showBlePairingInfo();
+    // BLE is up but the partial-flash service isn't reachable (e.g. the
+    // current hex is MicroPython firmware that doesn't expose it). The
+    // dispatcher above already tried BLE-DFU and USB fallbacks; getting
+    // here means none of those panned out.
     updateState((st) => ({
       ...st,
-      bleErrorMessage: authVerified
-        ? 'Flashen über Bluetooth ist gerade nicht möglich — bitte per USB anschließen.'
-        : 'Zum Flashen über Bluetooth muss der Calliope einmal im Betriebssystem gekoppelt werden — oder schließe ihn per USB an.',
+      bleErrorMessage:
+        'Flashen über Bluetooth ist gerade nicht möglich — bitte per USB anschließen.',
     }));
     return;
   }
@@ -416,8 +407,8 @@ async function scheduleBleReconnect(): Promise<void> {
     appendLog({ direction: 'info', text: `Auto-reconnecting BLE after flash (delay ${delay}ms, status=${s.bleStatus})` });
     try {
       const c = await getBleConnection();
-      await c.connect({ bondMode: 'application' });
-      updateState((st) => ({ ...st, bleHasPaired: true }));
+      await c.connect();
+      updateState((st) => ({ ...st, bleHasPermission: true }));
       clearExpectedReboot();
       appendLog({ direction: 'info', text: 'Auto-reconnect succeeded' });
       return;

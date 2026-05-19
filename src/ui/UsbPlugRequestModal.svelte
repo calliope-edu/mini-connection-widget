@@ -24,13 +24,6 @@
         <li>USB-Kabel mit dem Calliope verbinden.</li>
         <li>Auf <em>"Übertragen"</em> klicken — beim allerersten Mal Browser-Dialog mit dem Calliope auswählen.</li>
       </ol>
-      <p class="hint">
-        Hinweis: Ein USB-Flash setzt die Bluetooth-Kopplung auf dem Calliope
-        zurück. Danach in den OS-Bluetooth-Einstellungen den Calliope
-        einmal entkoppeln und neu pairen (A&nbsp;+&nbsp;B halten und Reset
-        kurz drücken — der Bildschirm zeigt das Muster). Erst dann ist die
-        Bluetooth-Verbindung wieder voll nutzbar.
-      </p>
       <div class="actions">
         <button type="button" class="btn ghost" onclick={() => req.cancel()}>
           Abbrechen

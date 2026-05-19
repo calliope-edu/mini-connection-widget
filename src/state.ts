@@ -32,52 +32,32 @@ export interface CalliopeState {
   bleStatus: CalliopeStatus;
   bleDeviceName?: string;
   bleErrorMessage?: string;
-  /** Browser remembers a previously-permitted BLE device for this origin. */
-  bleHasPaired: boolean;
-  /** Sticky "we have observed bond-ok / open-mode on this device at least
-   *  once this session". Survives transient disconnect → reconnect cycles
-   *  so that a NetworkError on the reconnect attempt (when bleSessionKind
-   *  is back to undefined) doesn't misroute to the OS-pairing modal.
+  /** Browser remembers a previously-permitted BLE device for this origin —
+   *  i.e. `navigator.bluetooth.getDevices()` would return at least one
+   *  Calliope. Refreshed on init and after every successful `connect()`.
    *
-   *  Reset only by `disconnectAndForget` — the user explicitly choosing
-   *  to forget the device implies they want the fresh-pair flow back. */
-  bleAuthEverVerified: boolean;
+   *  Used by the auto-reconnect daemon to decide whether to attempt silent
+   *  reconnects on page load / post-disconnect.
+   */
+  bleHasPermission: boolean;
   /** Partial-flashing service exposed by the running hex (BLE flash possible). */
   bleCanFlash: boolean;
   /** UART service exposed (BLE serial communication possible). */
   bleCanCommunicate: boolean;
-  /** Connected over BLE to a previously-paired device but authenticated
-   *  services are inaccessible — i.e. OS still holds a bond, but the
-   *  Calliope has forgotten its whitelist (typical after USB full-flash).
-   *  The fix is OS-side: forget + re-pair.
-   *
-   *  Stays `false` for `MICROBIT_BLE_OPEN=1` firmware (rc07 campus-open):
-   *  there is no bond to go stale. The error classifier downgrades any
-   *  potential stale-bond signal to a generic transient when
-   *  `bleSessionKind === 'bond-ok'`. */
-  bleStaleBond: boolean;
-  /** Post-connect GATT-database fingerprint — what the device looks like
-   *  from Web Bluetooth's perspective after the LL link is up.
-   *
-   *  - `bond-ok`: full CODAL service set visible → ready to flash.
-   *    Doubles as the "auth verified" signal: either we have a working
-   *    bond (paired-mode firmware) or the device is running open-mode
-   *    firmware (`MICROBIT_BLE_OPEN=1`) with no auth gate. Either way
-   *    the error classifier suppresses the OS-pairing modal — it would
-   *    be misleading in both cases.
-   *  - `partial`: auth-required services hidden → on paired-mode
-   *    firmware we're either in pair mode (waiting on SMP) or
-   *    unencrypted app mode (no/stale bond). Cannot occur on open-mode
-   *    firmware (which always reaches bond-ok).
-   *  - `dfu-bootloader`: the device rebooted into Nordic DFU and is
-   *    advertising as `DfuTarg`. Useful for diagnostic; the DFU flow
-   *    handles the actual write.
-   *  - `unknown` / undefined: classifier hasn't run yet, or no services
-   *    enumerated.
-   *
-   *  Refreshed asynchronously after every `connected` transition by the
-   *  classifier in `ble-state.ts`. */
+  /** Post-connect GATT-database fingerprint — `app-mode` if the device
+   *  exposes the regular CODAL service set, `dfu-bootloader` if it's
+   *  advertising as DfuTarg with only the Nordic DFU service, `unknown`
+   *  otherwise. Drives the dispatcher's "skip partial flash, go straight
+   *  to DFU" decision when the device is already in the bootloader. */
   bleSessionKind?: BleSessionKind;
+  /** True when the user explicitly clicked "Trennen & vergessen" on BLE.
+   *  Set by `disconnectAndForget('ble')`, cleared by `connectCalliope('ble')`.
+   *  The reconnect daemon respects this — when the user deliberately
+   *  disconnected, we don't fight them by reconnecting. */
+  userDisconnectedBle: boolean;
+  /** True when the user explicitly clicked "Trennen & vergessen" on USB.
+   *  Mirror of `userDisconnectedBle` for the USB reconnect daemon. */
+  userDisconnectedUsb: boolean;
 
   /** Browser support flags. */
   usbSupported: boolean;
@@ -124,6 +104,10 @@ export interface CalliopeState {
     hex: string;
     name: string;
     createdAt: number;
+    /** Transport the user explicitly picked at the connection-choice modal.
+     *  When set, the dispatcher honors it instead of defaulting to USB-first
+     *  routing. */
+    preferredTransport?: CalliopeTransport;
   };
 
   /**
@@ -155,11 +139,11 @@ function recomputeOverall(s: CalliopeState): CalliopeState {
 const initial: CalliopeState = recomputeOverall({
   usbStatus: usbSupported ? 'disconnected' : 'unsupported',
   bleStatus: bleSupported ? 'disconnected' : 'unsupported',
-  bleHasPaired: false,
-  bleAuthEverVerified: false,
+  bleHasPermission: false,
   bleCanFlash: false,
   bleCanCommunicate: false,
-  bleStaleBond: false,
+  userDisconnectedBle: false,
+  userDisconnectedUsb: false,
   usbSupported,
   bleSupported,
   status: 'disconnected',

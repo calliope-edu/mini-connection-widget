@@ -28,8 +28,6 @@ export interface ConnectLabels {
   usbConnected: string;
   bleConnectedFull: string;
   bleConnectedCommOnly: string;
-  bleConnectedStaleBond: string;
-  bleConnectedNeedsPairing: string;
   notSupportedUsb: string;
   notSupportedBle: string;
   unsupportedHint: string;
@@ -38,9 +36,6 @@ export interface ConnectLabels {
   connect: string;
   disconnect: string;
   forget: string;
-  howToPair: string;
-  pairingHint: string;
-  staleBondHint: string;
 
   // Flash block
   flashVia: (transport: 'usb' | 'ble') => string;
@@ -75,8 +70,6 @@ export const DEFAULT_LABELS: ConnectLabels = {
   usbConnected: 'Flashen & Kommunikation',
   bleConnectedFull: 'Flashen & Kommunikation',
   bleConnectedCommOnly: 'Nur Kommunikation',
-  bleConnectedStaleBond: 'Verbunden — OS-Pairing veraltet',
-  bleConnectedNeedsPairing: 'Verbunden — OS-Pairing fehlt',
   notSupportedUsb: 'WebUSB nicht verfuegbar',
   notSupportedBle: 'Web Bluetooth nicht verfuegbar',
   unsupportedHint:
@@ -86,12 +79,6 @@ export const DEFAULT_LABELS: ConnectLabels = {
   connect: 'Verbinden',
   disconnect: 'Trennen',
   forget: 'Trennen & vergessen',
-  howToPair: 'Wie pairen?',
-  pairingHint:
-    'Calliope einmal in den OS-Bluetooth-Einstellungen koppeln.',
-  staleBondHint:
-    'Calliope in den OS-Bluetooth-Einstellungen entkoppeln und neu pairen ' +
-    '(das Pairing wurde nach einem USB-Flash auf dem Calliope verworfen).',
 
   flashVia: (t) => `Flashen via ${t === 'ble' ? 'Bluetooth' : 'USB'}`,
   partialFlash: 'Schnelles Flashen',

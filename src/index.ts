@@ -41,7 +41,6 @@ export type { Readable, Writable, Subscriber, Unsubscriber } from './store';
 
 export { calliopeState } from './state';
 export { calliopeLog, clearCalliopeLog } from './log';
-export { calliopeBlePairingInfo, dismissBlePairingInfo, showBlePairingInfo } from './pairing-info';
 export { calliopeUsbPlugRequest } from './usb-plug';
 export { calliopeUsbErrorInfo, dismissUsbErrorInfo } from './usb-error-info';
 export { calliopeConnectionChoiceRequest } from './connection-choice';
@@ -93,7 +92,6 @@ export { default as CommsPanel } from './ui/CommsPanel.svelte';
 export { default as UsbPlugRequestModal } from './ui/UsbPlugRequestModal.svelte';
 export { default as UsbErrorModal } from './ui/UsbErrorModal.svelte';
 export { default as ConnectionChoiceModal } from './ui/ConnectionChoiceModal.svelte';
-export { default as BlePairingInfoModal } from './ui/BlePairingInfoModal.svelte';
 export { default as MiniNamePattern } from './ui/MiniNamePattern.svelte';
 
 export {
@@ -176,10 +174,10 @@ async function tryAutoReconnectBle(): Promise<void> {
   try {
     const devices = await bt.getDevices();
     if (!devices || devices.length === 0) return;
-    appendLog({ direction: 'info', text: 'Auto-reconnecting to previously-paired BLE device' });
+    appendLog({ direction: 'info', text: 'Auto-reconnecting to previously-permitted BLE device' });
     const c = await getBleConnection();
-    await c.connect({ bondMode: 'application' });
-    updateState((s) => ({ ...s, bleHasPaired: true }));
+    await c.connect();
+    updateState((s) => ({ ...s, bleHasPermission: true }));
   } catch (err) {
     appendLog({
       direction: 'info',

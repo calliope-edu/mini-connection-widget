@@ -20,7 +20,7 @@
           </span>
           <span class="choice-body">
             <span class="choice-title">Per Bluetooth</span>
-            <span class="choice-detail">Schnell, drahtlos — Calliope muss einmal gekoppelt sein.</span>
+            <span class="choice-detail">Drahtlos — Calliope muss eingeschaltet und in Reichweite sein.</span>
           </span>
         </button>
         <button type="button" class="choice" onclick={() => req.choose('usb')}>

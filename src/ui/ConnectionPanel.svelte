@@ -7,7 +7,6 @@
    */
   import { calliopeState } from '../state';
   import { connectCalliope, disconnectAndForget } from '../connect';
-  import { showBlePairingInfo } from '../pairing-info';
   import type { CalliopeStatus } from '../state';
   import { mergeLabels, type ConnectLabels } from './labels';
   import { extractFriendlyName } from '../friendly-name';
@@ -98,7 +97,6 @@
   function doConnectBle() { fire(); void connectCalliope('ble'); }
   function doForgetUsb() { fire(); void disconnectAndForget('usb'); }
   function doForgetBle() { fire(); void disconnectAndForget('ble'); }
-  function doShowPairingInfo() { fire(); showBlePairingInfo(); }
 </script>
 
 <div class="panel">
@@ -207,17 +205,11 @@
     {#if s.bleSupported}
       {@const bleBusy = s.bleStatus === 'connecting' || s.flashTransport === 'ble'}
       {@const bleConnected = s.bleStatus === 'connected'}
-      {@const needsPairing = bleConnected && !s.bleCanCommunicate}
-      <div class="transport-row" class:connected={bleConnected} class:err={s.bleStatus === 'error'} class:warn={needsPairing}>
+      <div class="transport-row" class:connected={bleConnected} class:err={s.bleStatus === 'error'}>
         <div class="transport-row-head">
           <span class="transport-name">
             {labels.ble}
             {#if bleConnected && s.bleSessionKind === 'dfu-bootloader'}
-              <!-- Only the bootloader chip is reliable enough to show. The
-                   'partial' / 'unknown' classifications are noisy because
-                   Chrome's optionalServices filter is captured at
-                   requestDevice time and silently hides services for
-                   permissions granted under older widget versions. -->
               <span class="session-chip session-dfu-bootloader" title="Nordic DFU bootloader erkannt">
                 Bootloader
               </span>
@@ -233,14 +225,6 @@
             </button>
           {/if}
         </div>
-        {#if needsPairing}
-          <div class="transport-hint">
-            {s.bleStaleBond ? labels.staleBondHint : labels.pairingHint}
-            <button type="button" class="link-btn" onclick={doShowPairingInfo}>
-              {labels.howToPair}
-            </button>
-          </div>
-        {/if}
       </div>
     {/if}
   </div>
@@ -377,7 +361,6 @@
     background: #fff;
     transition: border-color 0.15s, background 0.15s;
     &.connected { border-color: #bbf7d0; background: #f0fdf4; }
-    &.warn { border-color: #fde68a; background: #fffbeb; }
     &.err { border-color: #fecaca; background: #fef2f2; }
   }
   .transport-row-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
@@ -388,14 +371,11 @@
     text-transform: none;
     padding: 1px 6px;
     border-radius: 10px;
-    background: #fef3c7;
-    color: #92400e;
+    background: #ddf4ff;
+    color: #0969da;
     letter-spacing: 0.01em;
     vertical-align: 1px;
   }
-  .session-chip.session-dfu-bootloader { background: #ddf4ff; color: #0969da; }
-  .session-chip.session-unknown { background: #f3f4f6; color: #6b7280; }
-  .transport-hint { font-size: 11px; color: #6b7280; line-height: 1.35; margin-top: 6px; }
   .row-btn {
     padding: 5px 12px; border-radius: 6px; border: 1px solid transparent;
     font-size: 12px; font-weight: 600; cursor: pointer;
@@ -411,11 +391,6 @@
       &:hover:not(:disabled) { background: #f3f4f6; }
       &:disabled { opacity: 0.5; cursor: default; }
     }
-  }
-  .link-btn {
-    background: none; border: none; padding: 0; margin-left: 4px;
-    color: #0ea5b7; text-decoration: underline; font-size: inherit; cursor: pointer;
-    &:hover { color: #0891a8; }
   }
   .meta-row { display: flex; justify-content: space-between; font-size: 12px; padding: 4px 0; }
   .meta-row.muted { color: #666; margin-top: 6px; }
