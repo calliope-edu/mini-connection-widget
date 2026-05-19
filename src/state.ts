@@ -70,6 +70,18 @@ export interface CalliopeState {
   flashPartial?: boolean;
   lastFlashName?: string;
   lastFlashAt?: number;
+  /**
+   * True from the moment a flash call enters the flashing dispatcher until
+   * the `finally` clears it. Differs from `flashTransport` which marks the
+   * data-transfer window only — `flashInProgress` covers the broader window
+   * including post-flash reboot + reconnect.
+   *
+   * Used by USB-writing code paths (heartbeats, blocks-runtime probes,
+   * serial-write helpers) to back off so they don't share the DAP `sendQueue`
+   * with the flash control commands. See `usb.ts#pauseSerialDataPolling` for
+   * the inner mechanism — this flag is the outer guarantee.
+   */
+  flashInProgress: boolean;
 
   boardVersion?: BoardVersion;
   calliopeVersion?: CalliopeVersion;
@@ -144,6 +156,7 @@ const initial: CalliopeState = recomputeOverall({
   bleCanCommunicate: false,
   userDisconnectedBle: false,
   userDisconnectedUsb: false,
+  flashInProgress: false,
   usbSupported,
   bleSupported,
   status: 'disconnected',

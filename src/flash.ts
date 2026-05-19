@@ -48,13 +48,33 @@ export async function flashCalliope(
   preferredTransport?: CalliopeTransport,
 ): Promise<void> {
   let s = getState();
-  if (s.status === 'flashing') {
+  if (s.status === 'flashing' || s.flashInProgress) {
     appendLog({
       direction: 'info',
       text: `Flash bereits aktiv — zusätzlicher Versuch ignoriert (${name}).`,
     });
     return;
   }
+  // Raise the outer gate immediately — anything that talks to USB / BLE
+  // outside of the flash itself (heartbeats, blocks-runtime probes,
+  // sendSerialLine callers) backs off while this is true. The inner
+  // pause/resume on the serial-listener registry is still load-bearing
+  // for the DAP sendQueue race, but it doesn't catch writes coming from
+  // outside the registry.
+  updateState((st) => ({ ...st, flashInProgress: true }));
+  try {
+    await flashDispatch(hex, name, preferredTransport);
+  } finally {
+    updateState((st) => ({ ...st, flashInProgress: false }));
+  }
+}
+
+async function flashDispatch(
+  hex: string,
+  name: string,
+  preferredTransport?: CalliopeTransport,
+): Promise<void> {
+  let s = getState();
 
   // Classify the hex up front. MicroPython firmware can't be partial-flashed
   // (no MakeCode marker) — go straight to BLE-DFU or USB so the user doesn't

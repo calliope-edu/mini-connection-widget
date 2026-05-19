@@ -270,8 +270,14 @@ export async function getUsbConnection(): Promise<MicrobitUSBConnection> {
   return usbInitPromise;
 }
 
-export async function connectWithRetry(c: MicrobitUSBConnection, tries = 2): Promise<void> {
+export async function connectWithRetry(c: MicrobitUSBConnection, tries = 3): Promise<void> {
   let lastErr: unknown;
+  // Settle delays: { 500ms, 1200ms, 2000ms }. The Windows kernel often
+  // needs ~1.5 s to fully release the DAPLink endpoint after a previous
+  // disconnect; coming back faster than that hits the same stale handle.
+  // `device-disconnected` cases get an extra bump (doubles the next wait)
+  // because that's the kernel-release race specifically.
+  const baseSettleMs = [500, 1200, 2000];
   for (let i = 0; i < tries; i++) {
     try {
       await c.connect();
@@ -284,11 +290,8 @@ export async function connectWithRetry(c: MicrobitUSBConnection, tries = 2): Pro
       // just hit the same lock. Surface the recovery modal and stop.
       if (code === 'device-in-use') throw err;
       appendLog({ direction: 'info', text: `Connect attempt ${i + 1} failed: ${(err as Error).message}` });
-      // `device-disconnected` from open() is the Windows-side race after a
-      // previous disconnect — the kernel hasn't released the interface yet
-      // by the time we re-claim it. A longer settle window resolves it
-      // most of the time without the user noticing.
-      const settleMs = code === 'device-disconnected' ? 900 : 400;
+      const base = baseSettleMs[Math.min(i, baseSettleMs.length - 1)];
+      const settleMs = code === 'device-disconnected' ? base * 2 : base;
       await new Promise((r) => setTimeout(r, settleMs));
     }
   }
@@ -435,59 +438,63 @@ export async function flashCalliopeViaUsb(hex: string, name: string): Promise<vo
  *    dap.close races with an in-flight transferOut from the polling
  *    loop (the chatty-runtime case).
  *
- * Recovery: ONE retry. Bounce only if upstream still has its
- * `usbDevice` (status not yet flipped to NoAuthorizedDevice). When the
- * cancelled transferOut causes the OS to fire `usb.disconnect`,
- * upstream wipes `usbDevice` and any auto-reconnect would call
- * `requestDevice` — Chrome rejects that with `SecurityError: Must be
- * handling a user gesture`. In that case we surface the modal so the
- * user clicks Retry inside a gesture context.
+ * Recovery: up to 3 attempts with backoff (800ms, 1500ms, 2500ms).
+ * Windows USB sometimes needs multiple settle windows on back-to-back
+ * transients. Bails early when upstream's `usbDevice` is gone — that
+ * means the OS fired `usb.disconnect` and any reconnect needs a user
+ * gesture, which we don't have inside a flash() callback. The surrounding
+ * modal handles that case.
  */
+const TRANSFER_RETRY_SETTLE_MS = [800, 1500, 2500];
+
 async function runFlashWithTransferRetry(
   c: MicrobitUSBConnection,
   dataSource: FlashDataSource,
   progress: ProgressCallback,
 ): Promise<void> {
-  try {
-    await c.flash(dataSource, { partial: true, progress, minimumProgressIncrement: 0.05 });
-    return;
-  } catch (err) {
-    if (!isTransientUsbTransferError(err)) throw err;
-    // If upstream's `usb.disconnect` event already fired (OS-level USB
-    // reset triggered by the cancellation), `getDevice()` returns
-    // undefined. Re-connecting from here would need a user gesture
-    // (`requestDevice`), which we don't have inside a flash() callback.
-    // Skip the auto-retry and let the surrounding modal handle it.
-    if (!c.getDevice()) throw err;
-    appendLog({
-      direction: 'info',
-      text: `USB transfer error (${(err as Error).message}) — bouncing connection and retrying once`,
-    });
+  let lastErr: unknown = null;
+  for (let attempt = 0; attempt <= TRANSFER_RETRY_SETTLE_MS.length; attempt++) {
     try {
-      await c.disconnect();
-    } catch { /* ignore — we're about to reconnect anyway */ }
-    // Windows USB stack needs ~800ms to fully release the DAPLink
-    // endpoint after a cancellation. Coming back too fast hits the same
-    // cancelled-transferOut again.
-    await new Promise((r) => setTimeout(r, 800));
-    try {
-      await c.connect();
-    } catch (reconnectErr) {
-      throw new Error(
-        `USB transfer error; reconnect failed: ${(reconnectErr as Error).message}`,
-      );
+      if (attempt > 0) {
+        // Reset the UI flash phase between attempts so the progress bar
+        // doesn't jump backwards visually.
+        updateState((s) => ({ ...s, flashPhase: 'check', flashProgress: undefined }));
+      }
+      await c.flash(dataSource, { partial: true, progress, minimumProgressIncrement: 0.05 });
+      return;
+    } catch (err) {
+      lastErr = err;
+      if (!isTransientUsbTransferError(err)) throw err;
+      // If upstream's `usb.disconnect` event fired, `getDevice()` returns
+      // undefined and a reconnect would need a user gesture. Bail out and
+      // let the surrounding modal handle it.
+      if (!c.getDevice()) throw err;
+      if (attempt >= TRANSFER_RETRY_SETTLE_MS.length) {
+        // Exhausted retries — propagate the last error.
+        throw err;
+      }
+      const settleMs = TRANSFER_RETRY_SETTLE_MS[attempt];
+      appendLog({
+        direction: 'info',
+        text: `USB transfer error #${attempt + 1} (${(err as Error).message}) — bouncing connection (settle ${settleMs}ms) and retrying`,
+      });
+      try {
+        await c.disconnect();
+      } catch { /* ignore — we're about to reconnect anyway */ }
+      await new Promise((r) => setTimeout(r, settleMs));
+      try {
+        await c.connect();
+      } catch (reconnectErr) {
+        throw new Error(
+          `USB transfer error; reconnect failed: ${(reconnectErr as Error).message}`,
+        );
+      }
+      // `c.connect()` returns before status flips to Connected. Without
+      // the wait, flash() throws "Must be connected now".
+      await waitForUsbConnected(c);
     }
-    // Same race as in `flashCalliopeViaUsb`: `c.connect()` returns before
-    // status flips to Connected. Without the wait, the lib's flash() throws
-    // "Must be connected now" and we'd surface that instead of the original
-    // transferOut error.
-    await waitForUsbConnected(c);
-    // Reset the UI flash phase — the lib starts the second attempt from
-    // scratch ("FindingDevice" → ...), so the progress bar would jump
-    // backwards if we left the previous percentage on screen.
-    updateState((s) => ({ ...s, flashPhase: 'check', flashProgress: undefined }));
-    await c.flash(dataSource, { partial: true, progress, minimumProgressIncrement: 0.05 });
   }
+  throw lastErr ?? new Error('USB flash failed after retries');
 }
 
 /**
@@ -583,11 +590,17 @@ export async function forgetAllUsbDevices(): Promise<void> {
       usb: { getDevices(): Promise<{ vendorId: number; productId: number; forget?: () => Promise<void> }[]> };
     };
     const devices = await nav.usb.getDevices();
+    let forgotAny = false;
     for (const d of devices) {
       if (d.vendorId !== 0x0d28 || d.productId !== 0x0204) continue;
       if (typeof d.forget === 'function') {
-        try { await d.forget(); } catch { /* ignore */ }
+        try { await d.forget(); forgotAny = true; } catch { /* ignore */ }
       }
     }
+    // On Windows the kernel needs a moment after `forget()` before it
+    // accepts a fresh `requestDevice` for the same VID/PID. Without this
+    // settle, the next user-initiated Connect can hit a "device not
+    // selected" or stale-handle error.
+    if (forgotAny) await new Promise((r) => setTimeout(r, 800));
   } catch { /* ignore */ }
 }

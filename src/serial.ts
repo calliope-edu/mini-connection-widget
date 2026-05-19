@@ -7,11 +7,15 @@ import {
   bleSerialWrite,
   getBleConn,
 } from './ble';
-import { calliopeState } from './state';
+import { calliopeState, getState } from './state';
 import { pushTx } from './comms';
 
 const HEARTBEAT_MS = 1000;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+
+function isFlashGated(): boolean {
+  return getState().flashInProgress;
+}
 
 export function startHeartbeat(): void {
   if (heartbeatTimer) return;
@@ -20,11 +24,17 @@ export function startHeartbeat(): void {
     // in its frame handler. MicroPython's REPL would echo every byte back
     // and flood the user's serial terminal.
     let programType: string | undefined;
+    let flashInProgress = false;
     const unsub = calliopeState.subscribe((s) => {
       programType = s.programType;
+      flashInProgress = s.flashInProgress;
     });
     unsub();
     if (programType !== 'blocks') return;
+    // Don't share the DAP `sendQueue` with a flash in progress — even with
+    // the listener-registry pause active, a heartbeat write here would
+    // hit the same race that breaks the flash.
+    if (flashInProgress) return;
     // Send over whichever transport is connected. Prefer USB when both are
     // up — DAPLink's serial is more reliable than BLE UART.
     const usb = getUsbConn();
@@ -52,6 +62,7 @@ export function stopHeartbeat(): void {
  * communication panel doesn't get spammed.
  */
 export async function sendSerialLine(line: string): Promise<void> {
+  if (isFlashGated()) return;
   const out = line.endsWith('\n') ? line : line + '\n';
   try {
     const usb = getUsbConn();
@@ -81,6 +92,7 @@ export async function sendSerialLine(line: string): Promise<void> {
  */
 export async function sendSerialData(data: string): Promise<void> {
   if (!data) return;
+  if (isFlashGated()) return;
   try {
     const usb = getUsbConn();
     if (usb?.status === ConnectionStatus.Connected) {
