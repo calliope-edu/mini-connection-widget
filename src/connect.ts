@@ -13,6 +13,7 @@ import {
   getUsbConnection,
 } from './usb';
 import { showUsbErrorInfo } from './usb-error-info';
+import { showBleOfflineInfo } from './ble-offline-info';
 import { classifyBleError, classifyUsbError } from './connection-errors';
 
 /**
@@ -89,6 +90,11 @@ export async function connectCalliope(
         bleStatus: 'error',
         bleErrorMessage: classified.userMessage,
       }));
+      // Transient connect failures on a user-initiated attempt usually mean
+      // the Calliope is running a non-BLE hex. Surface the offline-info
+      // modal so the user gets numbered steps to recover (AB+Reset → DFU,
+      // or plug in USB) instead of just a red error chip in the panel.
+      if (classified.kind === 'transient') showBleOfflineInfo();
       return;
     }
     const classified = classifyUsbError(err);

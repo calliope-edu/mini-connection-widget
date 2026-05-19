@@ -42,6 +42,7 @@ export { calliopeState } from './state';
 export { calliopeLog, clearCalliopeLog } from './log';
 export { calliopeUsbPlugRequest } from './usb-plug';
 export { calliopeUsbErrorInfo, dismissUsbErrorInfo } from './usb-error-info';
+export { calliopeBleOfflineInfo, dismissBleOfflineInfo, showBleOfflineInfo } from './ble-offline-info';
 export { calliopeConnectionChoiceRequest } from './connection-choice';
 
 export { connectCalliope, disconnectAndForget } from './connect';
@@ -91,6 +92,7 @@ export { default as CommsPanel } from './ui/CommsPanel.svelte';
 export { default as UsbPlugRequestModal } from './ui/UsbPlugRequestModal.svelte';
 export { default as UsbErrorModal } from './ui/UsbErrorModal.svelte';
 export { default as ConnectionChoiceModal } from './ui/ConnectionChoiceModal.svelte';
+export { default as BleOfflineModal } from './ui/BleOfflineModal.svelte';
 export { default as MiniNamePattern } from './ui/MiniNamePattern.svelte';
 
 export {
