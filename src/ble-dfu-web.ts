@@ -132,20 +132,25 @@ const Res = {
  * down on chunk-1 failure (see `sendDataObjectStream`'s first-chunk
  * retry):
  *
- *   - 500: BLE spec allows up to 512 bytes per ATT write (MTU 515 − 3
- *     header bytes); Chrome on Android and some Linux configs negotiates
- *     ATT MTU 517 which is enough. ~30 % fewer writes per chunk vs 244.
  *   - 244: Standard BLE 5 MTU-247 payload — the value Chrome on Windows
  *     and macOS typically negotiates. ~10× faster than the safe legacy.
+ *   - 182: Conservative MTU-185 fallback (some older Android/Linux stacks).
  *   - 20:  Legacy MTU-23 baseline. Works everywhere; ~2 KB/s.
+ *
+ * 500-byte writes (MTU 517) used to head this list, but Chrome on Windows
+ * negotiates MTU 247 not 517 on the bootloader link — the 500-byte write
+ * is rejected by Chrome's BLE stack with a generic "GATT operation
+ * failed" AND the bootloader closes the link as a side effect, so the
+ * step-down ladder can't recover. 244 is the practical max and never
+ * disconnects the link if it fails.
  *
  * On chunk-1 failure (`InvalidLengthError` or CRC/offset mismatch from
  * Chrome silently fragmenting an oversized write), the dispatcher
  * advances to the next index and retries the chunk. Worst-case overhead
- * is one failed chunk attempt per step (~2 s each) — three steps × ~2 s
- * = ~6 s lost on the fallback path; vs ~25 s saved if step 0 works.
+ * is one failed chunk attempt per step (~2 s each) — two steps × ~2 s
+ * = ~4 s lost on the fallback path.
  */
-const PACKET_PAYLOAD_STEPS: readonly number[] = [500, 244, 182, 20];
+const PACKET_PAYLOAD_STEPS: readonly number[] = [244, 182, 20];
 const PACKET_PAYLOAD_SAFE = PACKET_PAYLOAD_STEPS[PACKET_PAYLOAD_STEPS.length - 1];
 const PACKET_PAYLOAD_MAX = PACKET_PAYLOAD_STEPS[0];
 
@@ -817,6 +822,17 @@ async function sendDataObjectStream(
       // advance on success). Failure past chunk 1, or after all steps
       // exhausted, is a real protocol error and gets thrown.
       if (chunkIndex === 1 && payloadStepIdx + 1 < PACKET_PAYLOAD_STEPS.length) {
+        // The step-down only helps if the GATT link survived the failed
+        // attempt. Some oversized writes (PACKET_PAYLOAD_STEPS[0] above the
+        // negotiated ATT MTU) cause the bootloader to drop the link as a
+        // side effect — every subsequent step then fails with "GATT
+        // disconnected mid-DFU" and we bury the real cause under noise.
+        // Bail early instead and let the dispatcher surface a clean
+        // failure to the user.
+        if (ctx.disconnected) {
+          trace(`chunk 1 disconnected the GATT (payload=${ctx.payloadSize}); skipping step-down — link is gone`);
+          throw err;
+        }
         const oldPayload = ctx.payloadSize;
         payloadStepIdx++;
         ctx.payloadSize = PACKET_PAYLOAD_STEPS[payloadStepIdx];
