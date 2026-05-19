@@ -1,5 +1,5 @@
 import { ConnectionStatus } from '@microbit/microbit-connection';
-import { calliopeState, getState, updateState, SUPPORT } from './state';
+import { calliopeState, getState, updateState, SUPPORT, type CalliopeTransport } from './state';
 import { appendLog } from './log';
 import { awaitUsbPlugConfirm } from './usb-plug';
 import { awaitConnectionChoice } from './connection-choice';
@@ -28,21 +28,25 @@ import { clearExpectedReboot, markExpectedReboot } from './connection-errors';
 const PENDING_FLASH_TTL_MS = 60_000;
 
 /**
- * Top-level flash dispatcher. Auto-routes:
+ * Top-level flash dispatcher. USB-first routing by default — USB is faster
+ * (~5-10 s vs ~115 s for BLE-DFU) and more reliable on Web Bluetooth.
  *
- *  1. **BLE connected & OS-paired** (partial-flashing service reachable) →
- *     flash via BLE. Preferred whenever available because USB flash wipes
- *     the Calliope's bonding whitelist, silently breaking the OS pairing.
- *  2. **USB connected** → flash via USB. Logs a heads-up if BLE is also
- *     connected so the user knows BLE will need re-pairing afterwards.
- *  3. **BLE connected but no pairing** → surface the OS-pairing explainer
- *     plus a hint to plug in USB.
- *  4. **Nothing connected** → show the 3-way connection choice modal
- *     (Bluetooth / USB / Download hex). For 'ble' and 'usb' we set
- *     `pendingFlash` so the auto-resume hook below re-fires the flash once
- *     the user picks a device and the transport flips to connected.
+ * Order:
+ *  1. **`preferredTransport === 'ble'`** — user explicitly picked BLE at
+ *     the connection-choice modal. Honor it: try BLE partial → BLE-DFU,
+ *     no automatic USB fallback (the user already saw the USB option and
+ *     chose otherwise).
+ *  2. **USB connected** → USB flash. Fastest. With open-mode firmware
+ *     USB flash no longer breaks any BLE state, so no warning needed.
+ *  3. **BLE connected and stuck in DfuTarg** → direct BLE-DFU.
+ *  4. **BLE connected and can flash** → BLE partial → BLE-DFU → USB hybrid.
+ *  5. **Nothing connected** → connection-choice modal.
  */
-export async function flashCalliope(hex: string, name: string = 'project'): Promise<void> {
+export async function flashCalliope(
+  hex: string,
+  name: string = 'project',
+  preferredTransport?: CalliopeTransport,
+): Promise<void> {
   let s = getState();
   if (s.status === 'flashing') {
     appendLog({
@@ -54,8 +58,7 @@ export async function flashCalliope(hex: string, name: string = 'project'): Prom
 
   // Classify the hex up front. MicroPython firmware can't be partial-flashed
   // (no MakeCode marker) — go straight to BLE-DFU or USB so the user doesn't
-  // see the partial-flash failure flicker. Mirrors the iOS/Android apps,
-  // which check the magic bytes before opening any GATT writes.
+  // see the partial-flash failure flicker.
   const flavor: HexFlavor = inspectHex(hex).flavor;
   if (flavor === 'micropython') {
     appendLog({
@@ -67,9 +70,9 @@ export async function flashCalliope(hex: string, name: string = 'project'): Prom
   // Silent BLE reconnect: if BLE permission exists but BLE is currently
   // down (typical when post-flash auto-reconnect gave up just before the
   // device finished rebooting), try the cached browser permission once
-  // before falling through to the connection-choice modal. Direct
-  // `c.connect()` (not `connectCalliope`) so a failure stays quiet — if
-  // it doesn't come back we just fall through to the regular dispatcher.
+  // before falling through to the connection-choice modal. Only attempt
+  // when USB isn't already a better option — USB-first means we never
+  // wake BLE just to flash if a USB cable is plugged in.
   if (
     SUPPORT.ble &&
     s.bleHasPermission &&
@@ -99,9 +102,7 @@ export async function flashCalliope(hex: string, name: string = 'project'): Prom
   }
 
   // Remember whether BLE was connected pre-flash so we can re-establish it
-  // automatically after the Calliope reboots into the new program. Without
-  // this the editor stays disconnected after flashing and the user has to
-  // click "Verbinden" again — annoying for the blocks-editor loop especially.
+  // automatically after the Calliope reboots into the new program.
   const wasBleConnected = s.bleStatus === 'connected';
 
   // Either transport is connected? Clear any leftover pending flash —
@@ -111,146 +112,58 @@ export async function flashCalliope(hex: string, name: string = 'project'): Prom
     clearPendingFlash();
   }
 
-  // Already stuck in DfuTarg from a previous interrupted DFU? Skip the
-  // partial-flash attempt (there's no app running to host the CODAL
-  // partial-flashing service) and go straight to a full BLE-DFU. The
-  // bootloader's still advertising, the Nordic DFU service is up, and
-  // a fresh CreateObject(Data) resets the in-progress object's CRC.
-  if (s.bleStatus === 'connected' && s.bleSessionKind === 'dfu-bootloader') {
-    appendLog({
-      direction: 'info',
-      text: 'Calliope ist noch im DFU-Bootloader (vorheriger Flash abgebrochen) — direkter Wiederaufnahme-Versuch.',
-    });
+  // ---- Explicit BLE choice -------------------------------------------------
+  //
+  // User picked BLE at the connection-choice modal. Don't second-guess that
+  // by routing through USB; do the BLE path even if USB happens to also be
+  // up. The fallback chain stays BLE-partial → BLE-DFU. If both fail we
+  // surface an error rather than silently switching transports — the user
+  // would expect a different UI prompt if we wanted to switch.
+  if (preferredTransport === 'ble' && s.bleStatus === 'connected') {
     try {
-      markExpectedReboot(45_000);
-      await flashCalliopeViaBleDfu(hex, name);
-      await scheduleBleReconnect();
-      return;
-    } catch (dfuErr) {
-      appendLog({
-        direction: 'info',
-        text: `BLE-DFU-Wiederaufnahme fehlgeschlagen (${(dfuErr as Error)?.message ?? dfuErr}) — fallback auf USB.`,
-      });
-      // Drop through to USB / hybrid path below.
+      return await flashOverBle(hex, name, flavor, s.bleSessionKind);
+    } finally {
+      if (wasBleConnected) await scheduleBleReconnect();
     }
   }
 
-  // MicroPython firmware: no MakeCode marker → partial flash can't work.
-  // Skip directly to BLE-DFU when BLE is connected (the iOS/Android apps
-  // also route MicroPython through Nordic DFU), else USB.
-  if (flavor === 'micropython' && s.bleStatus === 'connected') {
-    try {
-      markExpectedReboot(45_000);
-      await flashCalliopeViaBleDfu(hex, name);
-      await scheduleBleReconnect();
-      return;
-    } catch (dfuErr) {
-      appendLog({
-        direction: 'info',
-        text: `BLE-DFU für MicroPython fehlgeschlagen (${(dfuErr as Error)?.message ?? dfuErr}) — fallback auf USB.`,
-      });
-      // Drop through to USB / hybrid path below.
-    }
-  }
+  // ---- USB-first default --------------------------------------------------
 
-  if (s.bleStatus === 'connected' && s.bleCanFlash && flavor !== 'micropython') {
-    try {
-      markExpectedReboot(20_000);
-      await flashCalliopeViaBle(hex, name);
-      await scheduleBleReconnect();
-      return;
-    } catch (err) {
-      const partialUnusable =
-        err instanceof BluetoothPartialFlashDalMismatchError ||
-        err instanceof BluetoothPartialFlashServiceMissingError ||
-        err instanceof BluetoothPartialFlashInvalidHexError;
-      if (!partialUnusable) throw err;
-      // Partial flash impossible — one of:
-      //   - DAL hash mismatch (running runtime doesn't match the hex)
-      //   - partial-flashing service isn't there at all (typical after a
-      //     previous DFU left the device in a state where the application's
-      //     GATT profile changed)
-      //   - hex isn't MakeCode-shaped (e.g. MicroPython firmware images
-      //     have no MakeCode marker, so partial flash refuses them)
-      // Try a full BLE flash via Nordic DFU; iOS/Android do the same via
-      // their native DFU lib.
-      const reason = err instanceof BluetoothPartialFlashDalMismatchError
-        ? 'DAL mismatch'
-        : err instanceof BluetoothPartialFlashInvalidHexError
-        ? 'no MakeCode marker (non-MakeCode hex)'
-        : 'partial-flash service missing';
-      appendLog({
-        direction: 'info',
-        text: `BLE partial flash impossible (${reason}) — trying full BLE-DFU flash.`,
-      });
-      try {
-        markExpectedReboot(45_000);
-        await flashCalliopeViaBleDfu(hex, name);
-        await scheduleBleReconnect();
-        return;
-      } catch (dfuErr) {
-        if (dfuErr instanceof BluetoothDfuServiceMissingError) {
-          appendLog({
-            direction: 'info',
-            text: 'Calliope is not exposing the Nordic DFU service — falling back to USB.',
-          });
-        } else {
-          appendLog({
-            direction: 'info',
-            text: `BLE-DFU flash failed (${(dfuErr as Error)?.message ?? dfuErr}) — falling back to USB.`,
-          });
-        }
-        const sNow = getState();
-        if (sNow.usbStatus === 'connected') {
-          markExpectedReboot(20_000);
-          await flashCalliopeViaUsb(hex, name);
-          await primeBlocksRuntimeProbe();
-          await scheduleBleReconnect();
-          return;
-        }
-        if (SUPPORT.usb) {
-          await flashCalliopeHybrid(hex, name);
-          await scheduleBleReconnect();
-          return;
-        }
-        updateState((st) => ({
-          ...st,
-          bleErrorMessage:
-            'BLE-Flash fehlgeschlagen und kein USB verfügbar — bitte ein BLE-fähiges Programm aufspielen (A+B halten und Reset drücken, dann erneut versuchen).',
-        }));
-        return;
-      }
-    }
-  }
   if (s.usbStatus === 'connected') {
-    if (s.bleStatus === 'connected') {
-      appendLog({
-        direction: 'info',
-        text: 'USB-Flash überschreibt das BLE-Pairing. Nach dem Flashen bitte erneut über BLE verbinden.',
-      });
-    }
     markExpectedReboot(20_000);
     await flashCalliopeViaUsb(hex, name);
     await primeBlocksRuntimeProbe();
     if (wasBleConnected) await scheduleBleReconnect();
     return;
   }
-  if (s.bleStatus === 'connected' && !s.bleCanFlash) {
-    // BLE is up but the partial-flash service isn't reachable (e.g. the
-    // current hex is MicroPython firmware that doesn't expose it). The
-    // dispatcher above already tried BLE-DFU and USB fallbacks; getting
-    // here means none of those panned out.
-    updateState((st) => ({
-      ...st,
-      bleErrorMessage:
-        'Flashen über Bluetooth ist gerade nicht möglich — bitte per USB anschließen.',
-    }));
-    return;
+
+  // No USB. Try BLE.
+  if (s.bleStatus === 'connected') {
+    try {
+      await flashOverBle(hex, name, flavor, s.bleSessionKind);
+      if (wasBleConnected) await scheduleBleReconnect();
+      return;
+    } catch (err) {
+      appendLog({
+        direction: 'info',
+        text: `BLE flash path exhausted (${(err as Error)?.message ?? err}) — trying USB hybrid.`,
+      });
+      if (SUPPORT.usb) {
+        await flashCalliopeHybrid(hex, name);
+        if (wasBleConnected) await scheduleBleReconnect();
+        return;
+      }
+      updateState((st) => ({
+        ...st,
+        bleErrorMessage:
+          'BLE-Flash fehlgeschlagen und kein USB verfügbar — bitte ein BLE-fähiges Programm aufspielen (A+B halten und Reset drücken, dann erneut versuchen).',
+      }));
+      return;
+    }
   }
+
   // Nothing connected — let the user choose between Bluetooth, USB, and
-  // saving the hex to disk. The first two set `pendingFlash` so the
-  // auto-resume hook re-fires the flash once the transport is ready;
-  // 'download' just hands the file to the browser and we're done.
+  // saving the hex to disk.
   let choice: 'ble' | 'usb' | 'download';
   try {
     choice = await awaitConnectionChoice(name);
@@ -260,29 +173,15 @@ export async function flashCalliope(hex: string, name: string = 'project'): Prom
   }
   switch (choice) {
     case 'ble': {
-      setPendingFlash(hex, name);
+      setPendingFlash(hex, name, 'ble');
       appendLog({ direction: 'info', text: `User chose BLE — opening picker, flash will resume after connect` });
-      // Run the BLE connect in the user-gesture context that bubbled
-      // from the choice click. `forceChooser=true` so the picker always
-      // shows — we know nothing is connected here.
       await connectCalliope('ble', true);
-      // Auto-resume runs from the state subscription once `bleStatus`
-      // flips to 'connected'. If the user cancelled the picker the
-      // status goes back to 'disconnected' and the pending flash
-      // expires after PENDING_FLASH_TTL_MS.
       return;
     }
     case 'usb': {
-      setPendingFlash(hex, name);
+      setPendingFlash(hex, name, 'usb');
       appendLog({ direction: 'info', text: `User chose USB — opening picker, flash will resume after connect` });
-      // The hybrid path covers both "USB cable not plugged in" and
-      // "user needs to pick the DAPLink device" — same UX as before.
       await flashCalliopeHybrid(hex, name);
-      // flashCalliopeHybrid runs the flash inline, so clear pending
-      // and we're done. (We still set it above so a mid-flow disconnect
-      // recovery — e.g. the user cancels the plug prompt then reconnects
-      // USB later — could still resume; but the typical path completes
-      // synchronously here.)
       clearPendingFlash();
       if (wasBleConnected) await scheduleBleReconnect();
       return;
@@ -295,12 +194,76 @@ export async function flashCalliope(hex: string, name: string = 'project'): Prom
   }
 }
 
+/**
+ * Run the full BLE flash sequence. Tries the right transport for the device's
+ * current mode:
+ *  - DfuTarg → direct BLE-DFU
+ *  - MicroPython hex → BLE-DFU (no MakeCode marker, partial flash impossible)
+ *  - Otherwise → partial flash, with BLE-DFU as the fallback on the three
+ *    "partial flash impossible" errors.
+ *
+ * Throws when both BLE paths fail; the caller decides whether to fall back
+ * to USB or surface the error.
+ */
+async function flashOverBle(
+  hex: string,
+  name: string,
+  flavor: HexFlavor,
+  sessionKind: ReturnType<typeof getState>['bleSessionKind'],
+): Promise<void> {
+  // Stuck in DfuTarg from a previous interrupted DFU? Skip partial flash
+  // (no app to host the partial-flashing service) and go straight to DFU.
+  if (sessionKind === 'dfu-bootloader') {
+    appendLog({
+      direction: 'info',
+      text: 'Calliope ist im DFU-Bootloader — direkter BLE-DFU-Flash.',
+    });
+    markExpectedReboot(45_000);
+    await flashCalliopeViaBleDfu(hex, name);
+    return;
+  }
+
+  // MicroPython firmware: no MakeCode marker, partial flash refuses.
+  // Route straight through Nordic DFU (mirrors iOS/Android apps).
+  if (flavor === 'micropython') {
+    markExpectedReboot(45_000);
+    await flashCalliopeViaBleDfu(hex, name);
+    return;
+  }
+
+  // Regular MakeCode hex: try partial flash first (fast path).
+  try {
+    markExpectedReboot(20_000);
+    await flashCalliopeViaBle(hex, name);
+    return;
+  } catch (err) {
+    const partialUnusable =
+      err instanceof BluetoothPartialFlashDalMismatchError ||
+      err instanceof BluetoothPartialFlashServiceMissingError ||
+      err instanceof BluetoothPartialFlashInvalidHexError;
+    if (!partialUnusable) throw err;
+    // Partial flash impossible (DAL mismatch / no partial-flash service /
+    // hex isn't MakeCode-shaped). Fall back to full Nordic DFU.
+    const reason = err instanceof BluetoothPartialFlashDalMismatchError
+      ? 'DAL mismatch'
+      : err instanceof BluetoothPartialFlashInvalidHexError
+      ? 'no MakeCode marker (non-MakeCode hex)'
+      : 'partial-flash service missing';
+    appendLog({
+      direction: 'info',
+      text: `BLE partial flash impossible (${reason}) — trying full BLE-DFU flash.`,
+    });
+    markExpectedReboot(45_000);
+    await flashCalliopeViaBleDfu(hex, name);
+  }
+}
+
 // ---- Pending-flash plumbing -----------------------------------------------
 
-function setPendingFlash(hex: string, name: string): void {
+function setPendingFlash(hex: string, name: string, preferredTransport?: CalliopeTransport): void {
   updateState((st) => ({
     ...st,
-    pendingFlash: { hex, name, createdAt: Date.now() },
+    pendingFlash: { hex, name, createdAt: Date.now(), preferredTransport },
   }));
 }
 
@@ -313,14 +276,6 @@ function clearPendingFlash(): void {
  * flips into `connected` AND we have a fresh `pendingFlash`, re-fire the
  * flash. Prevents the user from having to click Download a second time
  * after the BLE/USB picker dance.
- *
- * Guards:
- *  - Only fires when *currently* not flashing (so an in-flight flash isn't
- *    disrupted by a transient status flicker).
- *  - Expires `pendingFlash` older than `PENDING_FLASH_TTL_MS` to avoid
- *    surprising the user with a request they no longer expect.
- *  - Uses `wasConnected` to fire only on the `disconnected→connected` (or
- *    `connecting→connected`) edge, not on every state mutation.
  */
 let prevBleConnected = false;
 let prevUsbConnected = false;
@@ -344,14 +299,15 @@ calliopeState.subscribe((s) => {
     clearPendingFlash();
     return;
   }
+  // Honor the user's explicit transport choice if they made one, even when
+  // the other transport happens to be available right now. Otherwise the
+  // USB-first default takes over.
   appendLog({
     direction: 'info',
-    text: `Transport ${bleConnected ? 'BLE' : 'USB'} connected — auto-resuming pending flash "${pending.name}"`,
+    text: `Transport ${bleConnected ? 'BLE' : 'USB'} connected — auto-resuming pending flash "${pending.name}"${pending.preferredTransport ? ` (user picked ${pending.preferredTransport})` : ''}`,
   });
   clearPendingFlash();
-  // Fire-and-forget: the dispatcher handles its own errors. We don't
-  // `await` here because we're inside a store subscription.
-  flashCalliope(pending.hex, pending.name).catch((err) => {
+  flashCalliope(pending.hex, pending.name, pending.preferredTransport).catch((err) => {
     appendLog({
       direction: 'error',
       text: `Auto-resumed flash failed: ${(err as Error)?.message ?? err}`,
@@ -383,27 +339,20 @@ function downloadHexFile(hex: string, name: string): void {
 }
 
 /**
- * After a successful flash, the Calliope reboots and the BLE GATT drops for
+ * After a successful flash the Calliope reboots and the BLE GATT drops for
  * a few seconds. Retry with backoff so the user lands back in 'connected'
- * without having to click "Verbinden". Bypasses `connectCalliope` to avoid
- * triggering the stale-bond modal on transient reboot-window failures —
- * those are expected here and resolve on the next retry.
- *
- * Skipped when BLE has reconnected already (e.g. upstream's auto-reconnect
- * beat us to it during the flash flow).
+ * without having to click "Verbinden". Bypasses `connectCalliope` to keep
+ * the retry quiet — the reconnect daemon picks up after this tight burst
+ * if it doesn't reconnect immediately.
  */
 async function scheduleBleReconnect(): Promise<void> {
   if (!SUPPORT.ble) return;
-  // Device reboot after partial flash can take several seconds; bond
-  // re-establishment another moment on top. Retry with backoff until the
-  // total budget elapses. Only short-circuit on a real `connected` state
-  // — if upstream is stuck in `connecting`, our explicit retry is what
-  // unsticks it.
   const delays = [1500, 2500, 3500, 5000, 7000];
   for (const delay of delays) {
     await new Promise((r) => setTimeout(r, delay));
     const s = getState();
     if (s.bleStatus === 'connected') return;
+    if (s.userDisconnectedBle) return;       // user clicked Trennen mid-flash
     appendLog({ direction: 'info', text: `Auto-reconnecting BLE after flash (delay ${delay}ms, status=${s.bleStatus})` });
     try {
       const c = await getBleConnection();
@@ -419,13 +368,13 @@ async function scheduleBleReconnect(): Promise<void> {
       });
     }
   }
-  appendLog({ direction: 'info', text: 'Auto-reconnect gave up after retries' });
+  appendLog({ direction: 'info', text: 'Auto-reconnect post-flash burst done — handing off to daemon.' });
   clearExpectedReboot();
 }
 
 /**
- * Hybrid path: nothing is connected (or only BLE without pairing), but USB
- * is supported. Ask the user to plug in a cable, then flash via USB.
+ * Hybrid path: nothing is connected (or only BLE without flash capability),
+ * but USB is supported. Ask the user to plug in a cable, then flash via USB.
  */
 async function flashCalliopeHybrid(hex: string, name: string): Promise<void> {
   if (!SUPPORT.usb) {
@@ -445,7 +394,6 @@ async function flashCalliopeHybrid(hex: string, name: string): Promise<void> {
   if (ble?.status === ConnectionStatus.Connected) {
     try { await ble.disconnect(); } catch { /* ignore */ }
   }
-  // Touch usb conn ref so the type checker sees we use it (lint-only).
   void getUsbConn;
   markExpectedReboot(20_000);
   await flashCalliopeViaUsb(hex, name);

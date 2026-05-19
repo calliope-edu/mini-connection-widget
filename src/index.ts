@@ -3,8 +3,8 @@
  *
  * Vanilla TypeScript wrapper around `@microbit/microbit-connection` that
  * orchestrates the higher-level Calliope lifecycle: simultaneous USB+BLE
- * tracking, smart picker resets, stale-bond detection, automatic flash
- * routing (BLE-paired > USB > USB-plug prompt), and a Svelte-compatible
+ * tracking, smart picker resets, USB-first flash routing (USB > BLE > USB-
+ * plug prompt), forever-running reconnect daemon, and a Svelte-compatible
  * store so any UI framework can subscribe.
  *
  * No framework dependency, no Svelte imports — when this directory moves
@@ -18,11 +18,10 @@
  */
 
 import { connectCalliope } from './connect';
-import { getUsbConnection, registerSerialDataListener } from './usb';
-import { addBleRawSubscriber, getBleConnection, refreshPairedBleStatus } from './ble';
-import { updateState } from './state';
-import { appendLog } from './log';
+import { registerSerialDataListener } from './usb';
+import { addBleRawSubscriber, refreshPairedBleStatus } from './ble';
 import { attachCommsFeeds } from './comms';
+import { installReconnectDaemon, triggerReconnectEvaluation } from './reconnect-daemon';
 
 // ---- Public API ------------------------------------------------------------
 
@@ -111,9 +110,10 @@ export type { ConnectLabels } from './ui/labels';
 // ---- Initialization --------------------------------------------------------
 
 /**
- * Wire up module side-effects: silently reconnect to a previously-permitted
- * USB Calliope on app start, and refresh the "browser remembers a paired
- * BLE device" hint. Call once in the host app's bootstrap.
+ * Wire up module side-effects: refresh the "browser remembers a permitted
+ * BLE device" hint and arm the reconnect daemon that will keep both
+ * transports alive throughout the session. Call once in the host app's
+ * bootstrap.
  *
  * Idempotent — calling more than once is a no-op after the first run.
  */
@@ -123,71 +123,17 @@ export function initializeCalliopeConnection(): void {
   initialized = true;
   if (typeof window === 'undefined') return;
   attachCommsFeeds(addBleRawSubscriber, registerSerialDataListener);
+  installReconnectDaemon();
   // Brief delay so the page has time to settle before we fire WebUSB calls.
-  setTimeout(() => {
-    void tryAutoReconnectUsb();
-    void tryAutoReconnectBle();
-    void refreshPairedBleStatus();
+  setTimeout(async () => {
+    // Refresh the BLE permission flag first — the daemon's BLE side checks
+    // `bleHasPermission` before doing anything.
+    await refreshPairedBleStatus();
+    // Now kick the daemon. It will try both transports on its own schedule.
+    triggerReconnectEvaluation();
   }, 250);
 }
 
-/**
- * Silently reconnect to a previously-authorized USB Calliope. Only attempts
- * a real connect when `navigator.usb.getDevices()` already returns an
- * authorized DAPLink — never prompts the user.
- */
-async function tryAutoReconnectUsb(): Promise<void> {
-  if (typeof navigator === 'undefined' || !('usb' in navigator)) return;
-  try {
-    const devices = (await (navigator as unknown as {
-      usb: { getDevices(): Promise<{ vendorId: number; productId: number }[]> };
-    }).usb.getDevices()) as { vendorId: number; productId: number }[];
-    const authorized = devices.find(
-      (d) => d.vendorId === 0x0d28 && d.productId === 0x0204,
-    );
-    if (!authorized) return;
-    appendLog({ direction: 'info', text: 'Auto-reconnecting to authorized USB device' });
-    const c = await getUsbConnection();
-    await c.connect();
-  } catch (err) {
-    appendLog({
-      direction: 'info',
-      text: `USB auto-reconnect skipped: ${(err as Error)?.message ?? err}`,
-    });
-  }
-}
-
-/**
- * Silently reconnect to a previously-paired BLE Calliope on page load. Uses
- * `navigator.bluetooth.getDevices()` to find already-permitted devices and
- * attempts a silent connect. Bypasses `connectCalliope` so a transient
- * failure doesn't pop the stale-bond modal — if the bond really is stale
- * the user will discover that when they click "Verbinden" themselves.
- *
- * Requires the experimental WebBluetooth `getDevices()` API. Browsers that
- * don't support it just skip the auto-reconnect.
- */
-async function tryAutoReconnectBle(): Promise<void> {
-  if (typeof navigator === 'undefined' || !('bluetooth' in navigator)) return;
-  const bt = (navigator as { bluetooth?: { getDevices?: () => Promise<unknown[]> } }).bluetooth;
-  if (!bt?.getDevices) return;
-  try {
-    const devices = await bt.getDevices();
-    if (!devices || devices.length === 0) return;
-    appendLog({ direction: 'info', text: 'Auto-reconnecting to previously-permitted BLE device' });
-    const c = await getBleConnection();
-    await c.connect();
-    updateState((s) => ({ ...s, bleHasPermission: true }));
-  } catch (err) {
-    appendLog({
-      direction: 'info',
-      text: `BLE auto-reconnect skipped: ${(err as Error)?.message ?? err}`,
-    });
-  }
-}
-
 // Touch the `connectCalliope` import so tree-shakers don't drop it from the
-// bundle when only `flashCalliope` is consumed (some internal codepaths in
-// `flash.ts` end up calling connect via the lib's reconnect, but nothing
-// here calls `connectCalliope` directly).
+// bundle when only `flashCalliope` is consumed.
 void connectCalliope;
