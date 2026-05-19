@@ -113,6 +113,30 @@ export async function flashCalliope(hex: string, name: string = 'project'): Prom
     clearPendingFlash();
   }
 
+  // Already stuck in DfuTarg from a previous interrupted DFU? Skip the
+  // partial-flash attempt (there's no app running to host the CODAL
+  // partial-flashing service) and go straight to a full BLE-DFU. The
+  // bootloader's still advertising, the Nordic DFU service is up, and
+  // a fresh CreateObject(Data) resets the in-progress object's CRC.
+  if (s.bleStatus === 'connected' && s.bleSessionKind === 'dfu-bootloader') {
+    appendLog({
+      direction: 'info',
+      text: 'Calliope ist noch im DFU-Bootloader (vorheriger Flash abgebrochen) — direkter Wiederaufnahme-Versuch.',
+    });
+    try {
+      markExpectedReboot(45_000);
+      await flashCalliopeViaBleDfu(hex, name);
+      await scheduleBleReconnect();
+      return;
+    } catch (dfuErr) {
+      appendLog({
+        direction: 'info',
+        text: `BLE-DFU-Wiederaufnahme fehlgeschlagen (${(dfuErr as Error)?.message ?? dfuErr}) — fallback auf USB.`,
+      });
+      // Drop through to USB / hybrid path below.
+    }
+  }
+
   // MicroPython firmware: no MakeCode marker → partial flash can't work.
   // Skip directly to BLE-DFU when BLE is connected (the iOS/Android apps
   // also route MicroPython through Nordic DFU), else USB.

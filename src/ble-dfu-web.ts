@@ -270,27 +270,54 @@ export async function flashOverNordicDfuWeb(opts: FlashOverNordicDfuOptions): Pr
   const appBin = extractAppBin(opts.hex);
   trace(`app bin extracted: ${appBin.length} bytes`);
 
-  // Phase 1 — buttonless DFU enter. Causes the device to reboot into the
-  // bootloader and disconnect.
-  phase('entering-bootloader');
-  await enterBootloader(opts.device, trace, opts.signal);
+  // Detect: is the device already advertising as DfuTarg? Happens when a
+  // previous BLE-DFU was interrupted mid-transfer — the bootloader stays
+  // in its DFU-in-progress state (showing "+" on the LED matrix from the
+  // progress histogram) and keeps advertising the Nordic DFU service.
+  // In that case we skip the buttonless-enter dance entirely — there's
+  // no app running to host the buttonless characteristic, and trying to
+  // write 0x01 to it throws and drops the link. A fresh
+  // Select/Create on the existing bootloader connection resets the
+  // in-progress object's offset/CRC, so we can resume from a clean
+  // state without an Abort (the v2-bootloader disconnects on Abort).
+  const alreadyInBootloader = /DfuTarg/i.test(opts.device.name ?? '');
+  let dfuServer: BluetoothRemoteGATTServer;
+  if (alreadyInBootloader) {
+    trace('device is already DfuTarg — skipping buttonless enter, reusing the existing bootloader connection');
+    phase('reconnecting');
+    // The device might still be advertising or we might still have a live
+    // GATT — either way, ensure we have a server handle. If the link
+    // dropped between the classifier verdict and our flash call, the
+    // reconnect helper handles it with the same retry/backoff used post-
+    // enter-bootloader.
+    if (opts.device.gatt && opts.device.gatt.connected) {
+      dfuServer = opts.device.gatt;
+    } else {
+      dfuServer = await reconnectToBootloader(opts.device, trace, opts.signal);
+    }
+  } else {
+    // Phase 1 — buttonless DFU enter. Causes the device to reboot into the
+    // bootloader and disconnect.
+    phase('entering-bootloader');
+    await enterBootloader(opts.device, trace, opts.signal);
 
-  // Phase 2 — wait for the bootloader to actually be ready, then reconnect
-  // to the same BluetoothDevice (the bootloader keeps the application's
-  // BD_ADDR by inheriting the SoftDevice peer data).
-  //
-  // Wait time matters: Nordic SDK 17's bootloader needs ~1.5–3 s after
-  // reboot to finish SoftDevice init → bootloader init → advertising
-  // start. Chrome's `gatt.connect()` will happily complete against a
-  // device that has the LL-layer up but isn't a full GATT peer yet —
-  // the bootloader then drops the connection a few hundred ms later
-  // once it's actually ready, mid-service-discovery on our end. Two
-  // seconds is the minimum that reliably catches the bootloader after
-  // it has registered its DFU service.
-  phase('awaiting-bootloader');
-  await delay(2000);
-  phase('reconnecting');
-  const dfuServer = await reconnectToBootloader(opts.device, trace, opts.signal);
+    // Phase 2 — wait for the bootloader to actually be ready, then reconnect
+    // to the same BluetoothDevice (the bootloader keeps the application's
+    // BD_ADDR by inheriting the SoftDevice peer data).
+    //
+    // Wait time matters: Nordic SDK 17's bootloader needs ~1.5–3 s after
+    // reboot to finish SoftDevice init → bootloader init → advertising
+    // start. Chrome's `gatt.connect()` will happily complete against a
+    // device that has the LL-layer up but isn't a full GATT peer yet —
+    // the bootloader then drops the connection a few hundred ms later
+    // once it's actually ready, mid-service-discovery on our end. Two
+    // seconds is the minimum that reliably catches the bootloader after
+    // it has registered its DFU service.
+    phase('awaiting-bootloader');
+    await delay(2000);
+    phase('reconnecting');
+    dfuServer = await reconnectToBootloader(opts.device, trace, opts.signal);
+  }
 
   // No settle here. `gatt.connect()` resolves the moment Chrome has an
   // ATT session, and Nordic SDK 17's secure-DFU bootloader runs an
