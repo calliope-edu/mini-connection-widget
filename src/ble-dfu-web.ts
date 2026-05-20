@@ -874,22 +874,9 @@ async function sendDataObjectStream(
 
 /**
  * Stream one chunk's bytes with Packet Receipt Notification throttling.
- *
- * Within each PRN window (PRN_INTERVAL packets) we fire all writes in a
- * tight loop **without per-packet await**, then `Promise.all` to wait for
- * Chrome's Web Bluetooth stack to accept the batch, then await the device's
- * PRN ack on the Control Point. This mirrors iOS's DFU pipelining
- * (`canSendWriteWithoutResponse` + per-packet pipelined writes) — Web
- * Bluetooth has no equivalent backpressure signal, so we use the PRN ack
- * as the only synchronisation point.
- *
- * Why bursts of exactly PRN_INTERVAL = 6:
- *   - Nordic SDK 17's `NRF_DFU_BLE_BUFFERS=8` caps how many unprocessed
- *     packets the bootloader can hold. 6 leaves headroom for the link
- *     layer's own queueing — see the PRN_INTERVAL comment.
- *   - The PRN ack is also our flow-control signal; we can't safely issue
- *     more packets in flight than the PRN window allows without risking
- *     RX buffer overflow.
+ * Every `PRN_INTERVAL` packets, we expect a notification on the Control
+ * Point with the running offset+CRC; we set up the awaitResponse *before*
+ * writing the Nth packet so the notification finds a resolver waiting.
  *
  * `cumulativeCrcInBefore` is the CRC32 state (pre-XOR) at the start of
  * this chunk. We update and return it so the caller can chain across
@@ -907,42 +894,32 @@ async function streamChunkWithPrn(
   signal: AbortSignal | undefined,
 ): Promise<number> {
   let writtenInChunk = 0;
+  let packetsSincePrn = 0;
   let crc = cumulativeCrcInBefore;
   while (writtenInChunk < chunk.length) {
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    const sliceEnd = Math.min(writtenInChunk + ctx.payloadSize, chunk.length);
+    const slice = chunk.subarray(writtenInChunk, sliceEnd);
 
-    // How many packets fit in this PRN window, capped by chunk remainder.
-    const remaining = chunk.length - writtenInChunk;
-    const packetsRemaining = Math.ceil(remaining / ctx.payloadSize);
-    const burstSize =
-      PRN_INTERVAL > 0 ? Math.min(PRN_INTERVAL, packetsRemaining) : packetsRemaining;
-
-    // Set up the PRN resolver BEFORE firing any writes. The bootloader
-    // emits a PRN automatically after the Nth packet it receives — if
-    // this burst contains that Nth packet, the notification must find a
-    // resolver in place or it gets dropped silently.
-    const isPrnBurst = PRN_INTERVAL > 0 && burstSize === PRN_INTERVAL;
+    // Decide BEFORE writing whether this packet will be the Nth (PRN
+    // trigger). The bootloader emits a PRN notification automatically when
+    // it has received N packets since the last PRN, regardless of where
+    // we sit in the current chunk. We have to set up the awaitResponse
+    // *before* the write so the PRN notification's onNotify handler finds
+    // a resolver in place (notifications without a pending resolver get
+    // dropped). A PRN at end-of-chunk is fine — we just consume it; the
+    // outer loop's explicit CalcChecksum gets its own response.
+    const nextCount = packetsSincePrn + 1;
+    const isPrnPacket = PRN_INTERVAL > 0 && nextCount === PRN_INTERVAL;
     let prnPending: Promise<Uint8Array> | null = null;
-    if (isPrnBurst) {
+    if (isPrnPacket) {
       prnPending = ctx.awaitResponse(Op.CalcChecksum, CHECKSUM_TIMEOUT_MS);
     }
 
-    // Fan out the writes synchronously (no await between them) so Chrome
-    // can pipeline them into the OS BLE TX queue back-to-back. This is
-    // the actual perf win — `writeValueWithoutResponse` resolves when the
-    // local stack has accepted the write, but issuing the next call only
-    // after the previous resolution serialises us to one packet per
-    // resolution turn-around. Issuing all 6 calls first lets the stack
-    // batch them into a single connection interval where possible.
-    const writes: Promise<void>[] = [];
-    for (let i = 0; i < burstSize; i++) {
-      const sliceEnd = Math.min(writtenInChunk + ctx.payloadSize, chunk.length);
-      const slice = chunk.subarray(writtenInChunk, sliceEnd);
-      writes.push(writeOnePacket(ctx, slice));
-      crc = crc32Update(crc, slice);
-      writtenInChunk += slice.length;
-    }
-    await Promise.all(writes);
+    await writeOnePacket(ctx, slice);
+    crc = crc32Update(crc, slice);
+    writtenInChunk += slice.length;
+    packetsSincePrn++;
 
     if (prnPending) {
       const payload = await prnPending;
@@ -961,6 +938,7 @@ async function streamChunkWithPrn(
           `PRN CRC mismatch at offset ${expectedOffset}: device=0x${deviceCrc.toString(16).padStart(8, '0')}, local=0x${expectedCrc.toString(16).padStart(8, '0')}`,
         );
       }
+      packetsSincePrn = 0;
     }
   }
   return crc;
