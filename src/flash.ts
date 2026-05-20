@@ -76,16 +76,11 @@ async function flashDispatch(
 ): Promise<void> {
   let s = getState();
 
-  // Classify the hex up front. MicroPython firmware can't be partial-flashed
-  // (no MakeCode marker) — go straight to BLE-DFU or USB so the user doesn't
-  // see the partial-flash failure flicker.
+  // Classify the hex up front. Used by flashOverBle for diagnostics only;
+  // partial flash now supports BOTH MakeCode hexes (MAGIC_MARKER) AND
+  // MicroPython hexes (addlayouttable.py layout-table magic) — see
+  // parseMicroPythonHex in ble-flash-web.ts.
   const flavor: HexFlavor = inspectHex(hex).flavor;
-  if (flavor === 'micropython') {
-    appendLog({
-      direction: 'info',
-      text: `Hex erkannt als MicroPython — überspringe BLE-Partial-Flash.`,
-    });
-  }
 
   // Silent BLE reconnect: if BLE permission exists but BLE is currently
   // down (typical when post-flash auto-reconnect gave up just before the
@@ -218,9 +213,9 @@ async function flashDispatch(
  * Run the full BLE flash sequence. Tries the right transport for the device's
  * current mode:
  *  - DfuTarg → direct BLE-DFU
- *  - MicroPython hex → BLE-DFU (no MakeCode marker, partial flash impossible)
- *  - Otherwise → partial flash, with BLE-DFU as the fallback on the three
- *    "partial flash impossible" errors.
+ *  - Otherwise → partial flash (handles both MakeCode and MicroPython hexes
+ *    via ble-flash-web.ts parseHexForPartialFlash), with BLE-DFU as the
+ *    fallback on the three "partial flash impossible" errors.
  *
  * Throws when both BLE paths fail; the caller decides whether to fall back
  * to USB or surface the error.
@@ -243,17 +238,12 @@ async function flashOverBle(
     return;
   }
 
-  // MicroPython firmware: no MakeCode marker, partial flash refuses.
-  // Route straight through Nordic DFU (mirrors iOS/Android apps).
-  if (flavor === 'micropython') {
-    markExpectedReboot(45_000);
-    await flashCalliopeViaBleDfu(hex, name);
-    return;
-  }
-
-  // Regular MakeCode hex: try partial flash first (fast path).
+  // Try partial flash first (fast path). The partial-flash parser now
+  // accepts both MakeCode and MicroPython hex formats; MicroPython hexes
+  // flash just the 24 KB filesystem region (~3-5 s) instead of the whole
+  // ~330 KB app via Nordic DFU (~3 min).
   try {
-    markExpectedReboot(20_000);
+    markExpectedReboot(30_000);
     await flashCalliopeViaBle(hex, name);
     return;
   } catch (err) {
@@ -263,11 +253,13 @@ async function flashOverBle(
       err instanceof BluetoothPartialFlashInvalidHexError;
     if (!partialUnusable) throw err;
     // Partial flash impossible (DAL mismatch / no partial-flash service /
-    // hex isn't MakeCode-shaped). Fall back to full Nordic DFU.
+    // hex isn't either MakeCode or MicroPython format). Fall back to full
+    // Nordic DFU. For MicroPython, DAL mismatch typically means the user
+    // is changing MicroPython runtime version, not just their Python code.
     const reason = err instanceof BluetoothPartialFlashDalMismatchError
-      ? 'DAL mismatch'
+      ? `DAL mismatch (${flavor === 'micropython' ? 'MicroPython runtime version changed' : 'incompatible runtime'})`
       : err instanceof BluetoothPartialFlashInvalidHexError
-      ? 'no MakeCode marker (non-MakeCode hex)'
+      ? 'hex has neither MakeCode nor MicroPython layout-table marker'
       : 'partial-flash service missing';
     appendLog({
       direction: 'info',
