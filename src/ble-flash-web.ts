@@ -352,7 +352,21 @@ export function parseMicroPythonHex(hex: string): ParsedHex {
   const map = MemoryMap.fromHex(hex);
 
   // Find the layout-table trailer: 16-byte window with MAGIC1 at offset 0
-  // and MAGIC2 at offset 12.
+  // and MAGIC2 at offset 12, validated against three additional invariants
+  // that the addlayouttable.py output guarantees but a coincidental bytes
+  // match inside the runtime binary will fail:
+  //
+  //   1. The trailer's last byte ends exactly on a 4-KB page boundary.
+  //      (addlayouttable.py aligns the table to end-of-page so codal can
+  //      "quickly and easily" search for it — codal scans page-aligned.)
+  //   2. TABLE_LEN ≤ 256 — that's ≤ 16 region records, more than enough for
+  //      any realistic firmware layout (we ship 3).
+  //   3. NUM_REG ≤ 16 — matches (2).
+  //
+  // Without these, the runtime binary's 305 KB of code regularly contains
+  // 4-byte byte sequences that happen to match MAGIC1 + MAGIC2 at the
+  // right separation, producing nonsense "trailers" with garbage
+  // TABLE_LEN / NUM_REG values.
   for (const [segStart, bytes] of map) {
     const u8: Uint8Array = bytes;
     for (let i = 0; i + 16 <= u8.length; i += 16) {
@@ -362,7 +376,13 @@ export function parseMicroPythonHex(hex: string): ParsedHex {
         u8[i + 12] === UPY_MAGIC2[0] && u8[i + 13] === UPY_MAGIC2[1] &&
         u8[i + 14] === UPY_MAGIC2[2] && u8[i + 15] === UPY_MAGIC2[3]
       ) {
+        // Invariant 1: trailer ends on a 4-KB page boundary.
+        if (((segStart + i + 16) & 0xfff) !== 0) continue;
         const tableLen = u8[i + 6] | (u8[i + 7] << 8);
+        const numReg = u8[i + 8] | (u8[i + 9] << 8);
+        // Invariants 2 + 3: reasonable size.
+        if (tableLen === 0 || tableLen > 256 || numReg === 0 || numReg > 16) continue;
+        if (tableLen !== numReg * 16) continue;
         // Region records precede the trailer.
         const recordsStart = i - tableLen;
         if (recordsStart < 0) continue; // trailer too close to start; not real
