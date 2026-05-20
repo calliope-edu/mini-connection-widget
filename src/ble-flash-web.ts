@@ -291,6 +291,160 @@ export function parseMakeCodeHex(hex: string): ParsedHex {
   throw new BluetoothPartialFlashInvalidHexError();
 }
 
+// ---- MicroPython layout-table parsing -------------------------------------
+
+/**
+ * MicroPython hex layout-table magic numbers. Emitted by `addlayouttable.py`
+ * in the FIRMWARE/micropython-calliope-mini-v3 build. The codal partial
+ * flashing service on the device parses the same magic — see
+ * codal-microbit-v2 `MicroBitMemoryMap.cpp:152-165` (`processRecord`).
+ *
+ * The 16-byte trailer at the end of the layout table is:
+ *   [MAGIC1:4 | VERSION:2 | TABLE_LEN:2 | NUM_REG:2 | PSIZE_LOG2:2 | MAGIC2:4]
+ * (all little-endian). Region records precede the trailer in the same page:
+ *   [ID:1 | HT:1 | REG_PAGE:2 | REG_LEN:4 | HASH_DATA:8]
+ *
+ * MAGIC1 = 0x597F30FE, MAGIC2 = 0xC1B1D79D (from addlayouttable.py).
+ */
+const UPY_MAGIC1 = new Uint8Array([0xfe, 0x30, 0x7f, 0x59]); // LE 0x597F30FE
+const UPY_MAGIC2 = new Uint8Array([0x9d, 0xd7, 0xb1, 0xc1]); // LE 0xC1B1D79D
+
+/**
+ * Region IDs used by `addlayouttable.py`:
+ *   1 = SoftDevice
+ *   2 = MicroPython runtime (HASH_PTR — codal stores CRC32 of version string)
+ *   3 = Filesystem (HASH_NONE — codal stores 8 zero bytes)
+ *
+ * The codal partial flashing service maps these to `memoryMap[id - 1]` (see
+ * `MicroBitMemoryMap.cpp:212`). So the widget's `Region.Dal` query (slot 1
+ * = id 2) returns the MicroPython runtime hash, and the widget's
+ * `Region.MakeCode` query (slot 2 = id 3) returns the filesystem hash.
+ */
+const UPY_REGION_RUNTIME = 2;
+const UPY_REGION_FS = 3;
+
+interface UpyLayoutRecord {
+  id: number;
+  startAddr: number;
+  endAddr: number;
+  hash: Uint8Array; // 8 bytes
+}
+
+/**
+ * Parse a MicroPython-format hex (one that bundles
+ * `addlayouttable.py` output) for partial flashing.
+ *
+ * Returns the FS region's bytes as `bin` so the widget's existing
+ * write loop streams the filesystem (24 KB for our build) to the device.
+ * The MicroPython runtime is not flashed by this path — it's covered by
+ * the DAL-hash compatibility check (any runtime version change forces a
+ * full Nordic DFU fallback via `BluetoothPartialFlashDalMismatchError`).
+ *
+ * Note: codal's layout-table records for SD and FS use `HASH_NONE` (8
+ * zero bytes). To prevent the widget's "identical hash → skip flash"
+ * shortcut from no-op'ing every MicroPython flash, we synthesise a
+ * deterministic non-zero `makeCodeHash` from the FS bytes' length + first
+ * 4 bytes — guaranteed to differ from the device's all-zero FS hash on
+ * any actually-flashable run. (Same-content re-flash will re-write the
+ * 24 KB FS, which is ~3 s at partial-flashing throughput.)
+ */
+export function parseMicroPythonHex(hex: string): ParsedHex {
+  const map = MemoryMap.fromHex(hex);
+
+  // Find the layout-table trailer: 16-byte window with MAGIC1 at offset 0
+  // and MAGIC2 at offset 12.
+  for (const [segStart, bytes] of map) {
+    const u8: Uint8Array = bytes;
+    for (let i = 0; i + 16 <= u8.length; i += 16) {
+      if (
+        u8[i] === UPY_MAGIC1[0] && u8[i + 1] === UPY_MAGIC1[1] &&
+        u8[i + 2] === UPY_MAGIC1[2] && u8[i + 3] === UPY_MAGIC1[3] &&
+        u8[i + 12] === UPY_MAGIC2[0] && u8[i + 13] === UPY_MAGIC2[1] &&
+        u8[i + 14] === UPY_MAGIC2[2] && u8[i + 15] === UPY_MAGIC2[3]
+      ) {
+        const tableLen = u8[i + 6] | (u8[i + 7] << 8);
+        // Region records precede the trailer.
+        const recordsStart = i - tableLen;
+        if (recordsStart < 0) continue; // trailer too close to start; not real
+
+        const records: UpyLayoutRecord[] = [];
+        for (let r = recordsStart; r < i; r += 16) {
+          const id = u8[r];
+          const regPage = u8[r + 2] | (u8[r + 3] << 8);
+          const regLen =
+            u8[r + 4] | (u8[r + 5] << 8) | (u8[r + 6] << 16) | (u8[r + 7] << 24);
+          const startAddr = regPage * 4096; // PSIZE_LOG2 = 12
+          records.push({
+            id,
+            startAddr,
+            endAddr: startAddr + regLen,
+            hash: u8.slice(r + 8, r + 16),
+          });
+        }
+
+        const runtime = records.find((r) => r.id === UPY_REGION_RUNTIME);
+        const fs = records.find((r) => r.id === UPY_REGION_FS);
+        if (!runtime || !fs) continue;
+
+        // Extract FS bytes from the hex's memory map.
+        // slicePad fills any unprogrammed gaps with 0xFF (flash-erased state)
+        // so the device's per-page erase-only-if-needed logic stays cheap.
+        const fsBytes = map.slicePad(fs.startAddr, fs.endAddr - fs.startAddr, 0xff);
+
+        // Synthesise a non-zero makeCodeHash so the widget's hash-compare
+        // shortcut never short-circuits. (FS HASH_NONE on device is 8
+        // zero bytes — see codal MicroBitMemoryMap processRecord.)
+        const synthetic = new Uint8Array(8);
+        const dv = new DataView(synthetic.buffer);
+        dv.setUint32(0, fsBytes.length >>> 0, true);
+        // first 4 bytes of FS as a content fingerprint
+        for (let k = 0; k < 4 && k < fsBytes.length; k++) {
+          synthetic[4 + k] = fsBytes[k];
+        }
+        // guarantee non-zero even if FS is empty/all-FF
+        if (synthetic.every((b) => b === 0)) synthetic[0] = 0x01;
+
+        return {
+          bin: fsBytes,
+          magicOffset: 0,
+          baseAddr: fs.startAddr,
+          // Device's Region.Dal (slot 1, codal index 1) returns the
+          // MicroPython runtime hash. The runtime layout record (id=2)
+          // stores CRC32 of the microbit version string in the first 4 bytes
+          // (`hash[0]`), with `hash[4..8]` set to zero — see codal
+          // `MicroBitMemoryMap.cpp` processRecord HASH_PTR path. The
+          // layout-table embeds it the same way, so byte-for-byte the same
+          // 8 bytes appear on both sides → match → flash proceeds.
+          dalHash: runtime.hash,
+          makeCodeHash: synthetic,
+        };
+      }
+    }
+  }
+  throw new BluetoothPartialFlashInvalidHexError();
+}
+
+/**
+ * Try the MakeCode parser first; on `BluetoothPartialFlashInvalidHexError`,
+ * fall back to MicroPython. If both throw, surface a single
+ * `BluetoothPartialFlashInvalidHexError` mentioning both formats.
+ */
+function parseHexForPartialFlash(hex: string): ParsedHex {
+  try {
+    return parseMakeCodeHex(hex);
+  } catch (e) {
+    if (!(e instanceof BluetoothPartialFlashInvalidHexError)) throw e;
+  }
+  try {
+    return parseMicroPythonHex(hex);
+  } catch (e) {
+    if (e instanceof BluetoothPartialFlashInvalidHexError) {
+      throw new BluetoothPartialFlashInvalidHexError();
+    }
+    throw e;
+  }
+}
+
 // ---- Session ---------------------------------------------------------------
 
 interface PfStatus { version: number; mode: number; }
@@ -324,7 +478,7 @@ class BluetoothPartialFlashSession {
       opts.signal.addEventListener('abort', () => { this.aborted = true; });
     }
 
-    const parsed = parseMakeCodeHex(hex);
+    const parsed = parseHexForPartialFlash(hex);
     log(`parsed hex: bin=${parsed.bin.length} bytes, base=0x${parsed.baseAddr.toString(16)}`);
 
     await this.openCharacteristic();
