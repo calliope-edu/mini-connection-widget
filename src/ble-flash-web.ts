@@ -323,11 +323,69 @@ const UPY_MAGIC2 = new Uint8Array([0x9d, 0xd7, 0xb1, 0xc1]); // LE 0xC1B1D79D
 const UPY_REGION_RUNTIME = 2;
 const UPY_REGION_FS = 3;
 
+/** Codal-MicroPython layout-table hash type codes (from addlayouttable.py). */
+const UPY_HASH_NONE = 0;
+const UPY_HASH_DATA = 1;
+const UPY_HASH_POINTER = 2;
+
 interface UpyLayoutRecord {
   id: number;
+  ht: number;
   startAddr: number;
   endAddr: number;
-  hash: Uint8Array; // 8 bytes
+  /** Raw 8 bytes from the layout table — interpretation depends on ht. */
+  hashData: Uint8Array;
+}
+
+/**
+ * Standard CRC-32 (polynomial 0xEDB88320, initial 0xFFFFFFFF, final XOR).
+ * Bit-by-bit implementation matching codal's `crc32_compute` byte-for-byte
+ * — see `codal-microbit-nrf5sdk/.../crc32/crc32.c`. Used to resolve
+ * HASH_POINTER records that store a flash address whose content (the
+ * MicroPython version string) the device CRCs at boot.
+ */
+function crc32Compute(bytes: Uint8Array): number {
+  let crc = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) {
+    crc ^= bytes[i];
+    for (let j = 0; j < 8; j++) {
+      crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+    }
+  }
+  return (~crc) >>> 0;
+}
+
+/**
+ * Resolve a HASH_POINTER record to the device-side 8-byte hash codal will
+ * compute and expose via the partial-flashing REGION_INFO response.
+ *
+ * The hash_data bytes are interpreted as `[uint32_LE pointer, uint32_LE 0]`
+ * (see addlayouttable.py REGION_HASH_PTR path). At runtime codal does:
+ *   `hash[0] = crc32(*pointer); hash[1] = 0;`
+ * where `*pointer` is the null-terminated version string at that flash
+ * address. We read those bytes out of the hex's memory map, CRC them, and
+ * pack into the same 8-byte layout.
+ *
+ * Returns null if the pointer can't be resolved (e.g. address not present
+ * in the hex's binary — would indicate a malformed image).
+ */
+function resolvePointerHash(map: ReturnType<typeof MemoryMap.fromHex>, record: UpyLayoutRecord): Uint8Array | null {
+  const ptr =
+    record.hashData[0] | (record.hashData[1] << 8) |
+    (record.hashData[2] << 16) | (record.hashData[3] << 24);
+  // Match codal's MAX_STRING_LENGTH cap (currently 256 in
+  // MicroBitMemoryMap.cpp). Walk until null terminator or cap.
+  const MAX_STR = 256;
+  const probe = map.slicePad(ptr, MAX_STR, 0xff);
+  let n = 0;
+  while (n < MAX_STR && probe[n] !== 0x00) n++;
+  if (n === 0) return null;
+  const crc = crc32Compute(probe.subarray(0, n));
+  const out = new Uint8Array(8);
+  const dv = new DataView(out.buffer);
+  dv.setUint32(0, crc >>> 0, true);
+  // hash[1] (bytes 4-7) stays zero — matches codal.
+  return out;
 }
 
 /**
@@ -390,21 +448,37 @@ export function parseMicroPythonHex(hex: string): ParsedHex {
         const records: UpyLayoutRecord[] = [];
         for (let r = recordsStart; r < i; r += 16) {
           const id = u8[r];
+          const ht = u8[r + 1];
           const regPage = u8[r + 2] | (u8[r + 3] << 8);
           const regLen =
             u8[r + 4] | (u8[r + 5] << 8) | (u8[r + 6] << 16) | (u8[r + 7] << 24);
           const startAddr = regPage * 4096; // PSIZE_LOG2 = 12
           records.push({
             id,
+            ht,
             startAddr,
             endAddr: startAddr + regLen,
-            hash: u8.slice(r + 8, r + 16),
+            hashData: u8.slice(r + 8, r + 16),
           });
         }
 
         const runtime = records.find((r) => r.id === UPY_REGION_RUNTIME);
         const fs = records.find((r) => r.id === UPY_REGION_FS);
         if (!runtime || !fs) continue;
+
+        // Resolve the runtime hash to the same 8 bytes codal exposes via
+        // REGION_INFO at runtime. Without this, the DAL-hash check below
+        // would always fail (hex stores a pointer; device returns a CRC).
+        let runtimeDeviceHash: Uint8Array;
+        if (runtime.ht === UPY_HASH_POINTER) {
+          const resolved = resolvePointerHash(map, runtime);
+          if (!resolved) continue; // pointer didn't dereference cleanly — skip
+          runtimeDeviceHash = resolved;
+        } else if (runtime.ht === UPY_HASH_DATA || runtime.ht === UPY_HASH_NONE) {
+          runtimeDeviceHash = runtime.hashData;
+        } else {
+          continue; // unknown hash type — surface as InvalidHex below
+        }
 
         // Extract FS bytes from the hex's memory map.
         // slicePad fills any unprogrammed gaps with 0xFF (flash-erased state)
@@ -429,13 +503,12 @@ export function parseMicroPythonHex(hex: string): ParsedHex {
           magicOffset: 0,
           baseAddr: fs.startAddr,
           // Device's Region.Dal (slot 1, codal index 1) returns the
-          // MicroPython runtime hash. The runtime layout record (id=2)
-          // stores CRC32 of the microbit version string in the first 4 bytes
-          // (`hash[0]`), with `hash[4..8]` set to zero — see codal
-          // `MicroBitMemoryMap.cpp` processRecord HASH_PTR path. The
-          // layout-table embeds it the same way, so byte-for-byte the same
-          // 8 bytes appear on both sides → match → flash proceeds.
-          dalHash: runtime.hash,
+          // MicroPython runtime hash. For ht=HASH_POINTER (the default in
+          // addlayouttable.py for the runtime region), codal CRCs the
+          // version string pointed to by hashData[0..4]. We mirror that
+          // computation above in resolvePointerHash() so the comparison
+          // matches when the device runs the same runtime build.
+          dalHash: runtimeDeviceHash,
           makeCodeHash: synthetic,
         };
       }
