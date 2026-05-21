@@ -581,13 +581,35 @@ class BluetoothPartialFlashSession {
 
     // DAL region — must match the hex's expected DAL hash.
     const dal = await this.requestRegion(Region.Dal);
-    log(`DAL hash on device: ${hexFmt(dal.hash)} / file: ${hexFmt(parsed.dalHash)}`);
+    log(`DAL on device: 0x${dal.startAddr.toString(16)}-0x${dal.endAddr.toString(16)} hash=${hexFmt(dal.hash)} / file hash=${hexFmt(parsed.dalHash)}`);
+
+    // Defensive check: the partial-flash GATT service can be present on a
+    // device whose firmware never wrote a memory-map layout table (e.g.
+    // blocks-runtime built without addlayouttable.py — verified 2026-05-21).
+    // In that case REGION_INFO returns start=0, end=0, hash=0..0 for both
+    // regions; the all-zero hash will fail arraysEqual against any real
+    // hex hash anyway, but we shortcut here with a clearer error so the
+    // dispatcher's DFU fallback fires unambiguously. Without this guard,
+    // edge cases where the hex's parsed.dalHash also happens to be
+    // all-zero (or a partial-flash session gets confused by the empty
+    // ranges later in the protocol) would silently no-op and leave the
+    // wrong app on the device.
+    if (dal.startAddr === 0 && dal.endAddr === 0) {
+      log('DAL region reports zero range — device has no partial-flash layout table');
+      throw new BluetoothPartialFlashServiceMissingError();
+    }
+
     if (!arraysEqual(dal.hash, parsed.dalHash)) {
       throw new BluetoothPartialFlashDalMismatchError();
     }
 
     const mc = await this.requestRegion(Region.MakeCode);
-    log(`MakeCode hash on device: ${hexFmt(mc.hash)} / file: ${hexFmt(parsed.makeCodeHash)}`);
+    log(`MC on device: 0x${mc.startAddr.toString(16)}-0x${mc.endAddr.toString(16)} hash=${hexFmt(mc.hash)} / file hash=${hexFmt(parsed.makeCodeHash)}`);
+
+    if (mc.startAddr === 0 && mc.endAddr === 0) {
+      log('MakeCode region reports zero range — partial-flash layout table malformed');
+      throw new BluetoothPartialFlashServiceMissingError();
+    }
 
     if (arraysEqual(mc.hash, parsed.makeCodeHash)) {
       // Identical code — just reset into application mode to mirror USB
