@@ -247,23 +247,26 @@ async function flashOverBle(
     await flashCalliopeViaBle(hex, name);
     return;
   } catch (err) {
-    const partialUnusable =
-      err instanceof BluetoothPartialFlashDalMismatchError ||
-      err instanceof BluetoothPartialFlashServiceMissingError ||
-      err instanceof BluetoothPartialFlashInvalidHexError;
-    if (!partialUnusable) throw err;
-    // Partial flash impossible (DAL mismatch / no partial-flash service /
-    // hex isn't either MakeCode or MicroPython format). Fall back to full
-    // Nordic DFU. For MicroPython, DAL mismatch typically means the user
-    // is changing MicroPython runtime version, not just their Python code.
+    // Any partial-flash failure is potentially recoverable by Nordic DFU —
+    // not just the three "partial-unusable by design" errors:
+    //  - DAL mismatch / service missing / no MakeCode marker → expected;
+    //    the runtime on the device doesn't match what partial flashing
+    //    needs (e.g. different MicroPython version, post-DFU silent app).
+    //  - Transient BLE errors at partial-flash entry → also recoverable;
+    //    the DFU path re-establishes its own GATT through the buttonless
+    //    DFU service, so a stale partial-flash GATT cache doesn't block
+    //    the bootloader handshake. Observed empirically 2026-05-21 with
+    //    `Bluetooth-Verbindung fehlgeschlagen` ~6 s after a fresh connect.
     const reason = err instanceof BluetoothPartialFlashDalMismatchError
       ? `DAL mismatch (${flavor === 'micropython' ? 'MicroPython runtime version changed' : 'incompatible runtime'})`
       : err instanceof BluetoothPartialFlashInvalidHexError
       ? 'hex has neither MakeCode nor MicroPython layout-table marker'
-      : 'partial-flash service missing';
+      : err instanceof BluetoothPartialFlashServiceMissingError
+      ? 'partial-flash service missing'
+      : `transient BLE error: ${(err as Error)?.message ?? err}`;
     appendLog({
       direction: 'info',
-      text: `BLE partial flash impossible (${reason}) — trying full BLE-DFU flash.`,
+      text: `BLE partial flash failed (${reason}) — trying full BLE-DFU flash.`,
     });
     markExpectedReboot(45_000);
     await flashCalliopeViaBleDfu(hex, name);

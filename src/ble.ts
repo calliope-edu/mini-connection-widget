@@ -581,7 +581,14 @@ export async function flashCalliopeViaBle(hex: string, name: string): Promise<vo
       appendLog({ direction: 'info', text: `BLE partial flash impossible (${reason})` });
       throw err;
     }
+    // Transient BLE error (Chrome's GATT cache went stale after a few
+    // seconds idle, characteristic write rejected, link dropped, etc).
+    // Update UI/log state, then RE-THROW so flashOverBle's catch can try
+    // the DFU fallback. Without the throw, flashOverBle thinks partial
+    // flash succeeded and the dispatcher records ok=true for a flash
+    // that never wrote a byte.
     handleBleFlashError(err);
+    throw err;
   }
 }
 

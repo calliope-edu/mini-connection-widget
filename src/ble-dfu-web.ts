@@ -126,36 +126,28 @@ const Res = {
 // ---- Tunables --------------------------------------------------------------
 
 /**
- * Per-packet payload sizes we'll try when the bootloader doesn't expose
- * MTU via `MTU_GET (0x07)` — the Calliope v2-bootloader rejects that
- * opcode the same way it rejects Abort.
+ * Per-packet payload sizes we'll try, largest first.
  *
- * 20 ONLY. Confirmed empirically (rc07 campus-open debugging session
- * 2026-05-19) against the Calliope mini v2-bootloader using native
- * bleak/Python on Windows: the bootloader negotiates ATT MTU 23 even
- * though the OS reports `max_write_without_response_size=244`. Any
- * write >20 bytes to the Packet characteristic (8EC90002) succeeds at
- * the host's BLE stack but is silently dropped at the bootloader's
- * ATT layer — no PRN fires, the bootloader's offset stays at zero.
- * After enough silent drops, Windows tries to upgrade encryption
- * "just-works" thinking it'll help; the bonded bootloader rejects
- * the pairing → "X" on the LED matrix and the device is wedged until
- * reset.
+ * 244 == NRF_SDH_BLE_GATT_MAX_MTU_SIZE(247) − 3 (ATT header). On the
+ * v3-bootloader rebuild deployed 2026-05-21 the bootloader's sdk_config
+ * is set to MTU=247 and the on_write handler accepts the full 244-byte
+ * payload — verified by the rebuild target (sdk_config.h + nrf_dfu_ble.c
+ * exchange handler both present and wired). Each ladder step is a
+ * multiple of 4 (Nordic write-alignment requirement on the data path).
  *
- * iOS Nordic DFU works because Apple's library hardcodes 20-byte
- * writes per Nordic Secure DFU recommendations — we do the same.
+ * The older Calliope mini bootloader (prior to 2026-05-21) silently
+ * dropped writes >20 bytes — see commit history. The adaptive ladder
+ * exists so the widget still works against that bootloader: chunk 1
+ * fails with a PRN/CRC mismatch (the >20-byte writes never landed), and
+ * sendDataObjectStream steps down to the next entry on the next
+ * CreateObject. So devices that haven't been re-flashed with the new
+ * bootloader still complete DFU, just slowly.
  *
- * Trade-off: ~4 KB/s wire speed. 180 KB firmware = ~45 s. Slow but
- * reliable. Larger payloads can be revisited once the firmware
- * properly exposes MTU exchange (probably needs SDK_CONFIG change in
- * v3-bootloader's nrf_dfu_ble.c — Nordic SDK 17's BLE manager
- * normally responds to MTU exchange but maybe the Calliope build
- * has it disabled or the GATT MTU is hardcoded).
- *
- * The fallback ladder is kept so we still have a defensive step-down
- * if the single 20-byte step fails; in practice it's never hit.
+ * 244 → 64 → 20. The 64 step is a defensive intermediate in case the
+ * negotiated MTU lands between 23 and 247 (some Android stacks cap at
+ * 67 = 64+3); we'd rather know that than skip to 20 immediately.
  */
-const PACKET_PAYLOAD_STEPS: readonly number[] = [20];
+const PACKET_PAYLOAD_STEPS: readonly number[] = [244, 64, 20];
 const PACKET_PAYLOAD_SAFE = PACKET_PAYLOAD_STEPS[PACKET_PAYLOAD_STEPS.length - 1];
 const PACKET_PAYLOAD_MAX = PACKET_PAYLOAD_STEPS[0];
 
@@ -164,18 +156,25 @@ const PACKET_PAYLOAD_MAX = PACKET_PAYLOAD_STEPS[0];
  * write to the Packet characteristic, the bootloader sends a checksum
  * notification on the Control Point with the running offset+CRC.
  *
- * Stays under Nordic SDK 17's default `NRF_DFU_BLE_BUFFERS=8` — the
- * bootloader can hold at most 8 unprocessed inbound packets in RAM, and it
- * stops processing during page-erase right after `CreateObject(Data)`
- * (each erase is ~85 ms on nRF52833). If we send more than 8 packets
- * during that window the BLE RX buffer overflows and the extras get
- * dropped silently — the bootloader keeps writing the bytes it did
- * receive (so the on-device display shows progress), but our local CRC
+ * Has to stay under the bootloader's `NRF_DFU_BLE_BUFFERS` because that's
+ * how many unprocessed inbound packets the bootloader can buffer while
+ * page-erase runs (~85 ms on nRF52833, kicked off by `CreateObject(Data)`).
+ * Send more than that during the erase window and the BLE RX queue
+ * overflows, packets are dropped silently — the device's display keeps
+ * showing progress (it wrote the bytes it did get), but our local CRC
  * drifts from the device's and the next PRN tells us the offset mismatched.
  *
- * 6 leaves headroom for the BLE link layer's own queueing.
+ * The v3-bootloader build deployed 2026-05-21 derives MAX_DFU_BUFFERS from
+ * `((CODE_PAGE_SIZE / MAX_DFU_PKT_LEN) + 1) == (4096 / 244) + 1 == 17` at
+ * compile time, so 12 leaves plenty of headroom. Older bootloaders shipped
+ * with the SDK default 8 → 12 is too high there and the first PRN-cycle
+ * mismatch surfaces; the adaptive step-down in sendDataObjectStream
+ * recovers by retrying with smaller writes (which also reduces the per-
+ * 85 ms-erase packet count, masking the buffer shortage). Compromise
+ * value picked deliberately: 12 wins on the new bootloader, still
+ * recovers gracefully on the old.
  */
-const PRN_INTERVAL = 6;
+const PRN_INTERVAL = 12;
 
 /** Timeout for every CalcChecksum / PRN ack — chunk size × write rate worst case. */
 const CHECKSUM_TIMEOUT_MS = 15_000;
@@ -358,21 +357,26 @@ export async function flashOverNordicDfuWeb(opts: FlashOverNordicDfuOptions): Pr
   // sending the new init packet anyway.
 
   // Query the bootloader's view of the negotiated ATT MTU so we can
-  // size every write to fill it. The legacy MTU of 23 caps us at
-  // 20-byte payloads — fine for correctness, but ~1.8 KB/s in practice,
-  // i.e. ~100 s for a 180 KB firmware. With MTU 247 (Chrome's normal
-  // negotiated value on modern desktops/phones) we can write 244 bytes
-  // per BLE transaction instead, cutting the wire-time by ~10×.
-  // MtuGet is informational only now — see PACKET_PAYLOAD_STEPS comment for
-  // why we hardcode 20-byte writes on the bootloader Packet characteristic.
-  // The bootloader's actual ATT MTU is 23 (max payload 20) regardless of
-  // what the host's BLE stack reports.
+  // size every write to fill it. With MTU 247 we can write 244 bytes
+  // per BLE transaction; with MTU 23 only 20. The new v3-bootloader
+  // (2026-05-21) supports MTU exchange and MTU_GET; older Calliope
+  // bootloaders reject MTU_GET (returns null), in which case we still
+  // try the optimistic 244-byte path and let sendDataObjectStream's
+  // adaptive step-down catch the failure on chunk 1.
   const mtu = await mtuGet(ctx);
-  ctx.payloadSize = PACKET_PAYLOAD_MAX; // == 20
+  const reported = mtu ?? 0;
+  // Pick the largest ladder step whose payload fits the reported MTU
+  // (payload = MTU − 3 ATT header). If MTU_GET is unsupported, default
+  // optimistically to PACKET_PAYLOAD_MAX; the ladder will step down on
+  // first-chunk failure.
+  const startStep = reported > 0
+    ? PACKET_PAYLOAD_STEPS.find(p => p <= reported - 3) ?? PACKET_PAYLOAD_SAFE
+    : PACKET_PAYLOAD_MAX;
+  ctx.payloadSize = startStep;
   if (mtu !== null) {
-    trace(`bootloader reports MTU=${mtu}; using ${ctx.payloadSize}-byte writes anyway (see ble-dfu-web.ts PACKET_PAYLOAD_STEPS comment)`);
+    trace(`bootloader reports MTU=${mtu}; starting at ${ctx.payloadSize}-byte writes`);
   } else {
-    trace(`bootloader MTU_GET unsupported; using ${ctx.payloadSize}-byte writes (Nordic Secure DFU baseline)`);
+    trace(`bootloader MTU_GET unsupported; starting at ${ctx.payloadSize}-byte writes (adaptive ladder will step down on failure)`);
   }
 
   try {
