@@ -8,7 +8,7 @@
  */
 
 import { sendNative, addNativeGattListener } from './native-bridge';
-import { updateState, getState, type CalliopeTransport } from './state';
+import { calliopeState, updateState, getState, type CalliopeTransport } from './state';
 import { appendLog } from './log';
 import { pushTx } from './comms';
 
@@ -176,4 +176,102 @@ export async function nativeGattSubscribe(
     unsubLocal();
     void sendNative<void>('gattUnsubscribe', { serviceId, characteristicId }).catch(() => { /* ignore */ });
   };
+}
+
+// ---- Auto-reconnect daemon -------------------------------------------------
+//
+// The native host (Android BridgeBleSession / future iOS counterpart) emits
+// a `state, status: 'disconnected'` event when the BLE GATT drops — typical
+// causes: mini restart, brief out-of-range, post-flash reboot. Without an
+// auto-retry the widget would stick at "über App – warte auf Calliope"
+// until the user manually clicked Verbinden, even though the host app is
+// often already showing the device as available again. This daemon does
+// the equivalent of `reconnect-daemon.ts` for the native-proxy backend.
+//
+// Differences from the web daemon:
+//   - no `bleHasPermission` gate — the host owns the pairing record
+//   - BLE only; native proxy never uses USB
+//   - first-boot connect failures (no device paired yet) are NOT retried;
+//     we only re-arm after a session that was previously up.
+
+const RECONNECT_BACKOFF_MS = [3_000, 5_000, 10_000, 20_000, 30_000];
+const RECONNECT_STEADY_MS = 30_000;
+
+let reconnectInstalled = false;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let reconnectAttempt = 0;
+let reconnectGeneration = 0;
+let prevBleStatus = 'unknown';
+let hadConnected = false;
+
+function stopReconnect(reason: string): void {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  reconnectAttempt = 0;
+  reconnectGeneration += 1;
+  if (reason) appendLog({ direction: 'info', text: `native reconnect daemon stopped: ${reason}` });
+}
+
+function scheduleReconnect(): void {
+  if (reconnectTimer) return;
+  const delay = reconnectAttempt < RECONNECT_BACKOFF_MS.length
+    ? RECONNECT_BACKOFF_MS[reconnectAttempt]
+    : RECONNECT_STEADY_MS;
+  const myGen = reconnectGeneration;
+  appendLog({
+    direction: 'info',
+    text: `native reconnect attempt #${reconnectAttempt + 1} in ${delay}ms`,
+  });
+  reconnectTimer = setTimeout(async () => {
+    reconnectTimer = null;
+    if (myGen !== reconnectGeneration) return;
+    const s = getState();
+    if (s.userDisconnectedBle) {
+      stopReconnect('user disconnected');
+      return;
+    }
+    if (s.bleStatus === 'connected' || s.bleStatus === 'connecting') return;
+    try {
+      await nativeConnect('ble');
+    } catch { /* surfaced via state */ }
+    if (myGen !== reconnectGeneration) return;
+    // If we're still not connected, queue the next backoff step.
+    const after = getState();
+    if (after.bleStatus !== 'connected' && !after.userDisconnectedBle) {
+      reconnectAttempt += 1;
+      scheduleReconnect();
+    }
+  }, delay);
+}
+
+/**
+ * Arm the auto-reconnect listener. Idempotent — call from
+ * `initializeCalliopeConnection` after the bridge has been detected.
+ */
+export function installNativeReconnectDaemon(): void {
+  if (reconnectInstalled) return;
+  reconnectInstalled = true;
+  calliopeState.subscribe((s) => {
+    // Edge: previously-connected session just dropped. The host will
+    // bring it back when the mini re-advertises; we keep retrying so the
+    // widget catches up.
+    if (
+      prevBleStatus === 'connected' &&
+      s.bleStatus !== 'connected' &&
+      s.bleStatus !== 'connecting'
+    ) {
+      hadConnected = true;
+    }
+    // First-ever connect: mark steady so future drops trigger retries.
+    if (s.bleStatus === 'connected') hadConnected = true;
+
+    if (hadConnected && s.bleStatus !== 'connected' && s.bleStatus !== 'connecting' && !s.userDisconnectedBle) {
+      scheduleReconnect();
+    }
+    if (s.bleStatus === 'connected') stopReconnect('connected');
+    if (s.userDisconnectedBle) stopReconnect('user disconnected');
+    prevBleStatus = s.bleStatus;
+  });
 }

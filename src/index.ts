@@ -23,6 +23,7 @@ import { addBleRawSubscriber, refreshPairedBleStatus } from './ble';
 import { attachCommsFeeds } from './comms';
 import { installReconnectDaemon, triggerReconnectEvaluation } from './reconnect-daemon';
 import { isNativeMode, installNativeApi } from './native-bridge';
+import { installNativeReconnectDaemon } from './native-mode';
 
 // ---- Public API ------------------------------------------------------------
 
@@ -137,16 +138,18 @@ export function initializeCalliopeConnection(): void {
   initialized = true;
   if (typeof window === 'undefined') return;
   if (isNativeMode()) {
-    // Native host owns scanning, bonding, USB enumeration, and reconnect.
-    // We only install the inbound event surface so the host can push
-    // state/log/gatt/serial events back. No daemon, no Web Bluetooth /
-    // WebUSB calls — those APIs don't exist in iOS WKWebView anyway.
+    // Native host owns scanning, bonding, USB enumeration. We install the
+    // inbound event surface so the host can push state/log/gatt/serial
+    // events back, plus a native-mode reconnect daemon so the widget
+    // catches up after the host drops a session (mini restart, brief
+    // out-of-range, post-flash reboot).
     installNativeApi();
+    installNativeReconnectDaemon();
     // Auto-fire a BLE connect once on bootstrap. The Android side resolves
     // the target device from the parent app's paired-device pref, so this
     // is a no-op from the user's perspective — but without it the widget
-    // would sit at "Nicht verbunden" until the user manually clicked
-    // Verbinden, even though the host is ready.
+    // would sit at "über App – warte auf Calliope" until the user manually
+    // clicked Verbinden, even though the host is ready.
     setTimeout(() => { void connectCalliope('ble').catch(() => { /* surfaced via state */ }); }, 100);
     return;
   }
