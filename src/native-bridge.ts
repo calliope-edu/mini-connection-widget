@@ -29,7 +29,7 @@
  * Binary data (hex, gatt payloads, serial) crosses the bridge as base64.
  */
 
-import { updateState, type CalliopeState, type CalliopeFlashPhase, type CalliopeTransport } from './state';
+import { updateState, NATIVE_MODE, type CalliopeState, type CalliopeFlashPhase, type CalliopeTransport } from './state';
 import { appendLog } from './log';
 
 // ---- Detection -------------------------------------------------------------
@@ -60,14 +60,12 @@ function getBridge(): AndroidBridge | IosBridgeHandler | null {
   return null;
 }
 
-let bridgeChecked = false;
-let bridgeRef: AndroidBridge | IosBridgeHandler | null = null;
+// Resolve the bridge handle eagerly. The detection result is captured once
+// at module load by `state.ts` (NATIVE_MODE) — re-running detection here
+// would risk drift if the host injects the bridge later.
+const bridgeRef: AndroidBridge | IosBridgeHandler | null = NATIVE_MODE ? getBridge() : null;
 
 export function isNativeMode(): boolean {
-  if (!bridgeChecked) {
-    bridgeRef = getBridge();
-    bridgeChecked = true;
-  }
   return bridgeRef !== null;
 }
 

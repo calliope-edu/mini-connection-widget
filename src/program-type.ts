@@ -24,6 +24,8 @@ import { getConnectedBleDevice } from './ble';
 import { getUsbConn, registerSerialDataListener } from './usb';
 import { calliopeState, updateState } from './state';
 import { buildBlocksFrame, BLOCKS_REQ } from './blocks-protocol';
+import { isNativeMode } from './native-bridge';
+import { nativeGattRead } from './native-mode';
 
 export type CalliopeProgramType = 'blocks' | 'unknown' | 'disconnected';
 
@@ -63,6 +65,24 @@ function readState(): { usbOn: boolean; bleOn: boolean } {
 // ---- Probes ---------------------------------------------------------------
 
 async function probeBle(): Promise<CalliopeProgramInfo | null> {
+  if (isNativeMode()) {
+    // Native host owns GATT. Reuse the same proof-of-life heuristic: STATE
+    // returns non-zero only when the real Blocks runtime is filling it
+    // with sensor data; the CODAL stub leaves it all-zero. A failed read
+    // (bridge replies empty/throws) is treated as "no Blocks" — same
+    // semantics as the web path.
+    try {
+      const bytes = await nativeGattRead(BLOCKS_BLE_SERVICE_UUID, BLOCKS_BLE_STATE_CHAR_UUID);
+      if (bytes.length === 0) return null;
+      for (let i = 0; i < bytes.length; i++) {
+        if (bytes[i] !== 0) return { type: 'blocks', via: 'ble' };
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
   const device = await getConnectedBleDevice();
   if (!device?.gatt) return null;
   let server: BluetoothRemoteGATTServer;

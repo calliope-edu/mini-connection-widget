@@ -48,6 +48,10 @@ export interface ConnectLabels {
   connectedSince: string;
   program: string;
   programBlocks: string;
+
+  // Native-proxy mode (iOS/Android app hosting the campus). Empty/undefined
+  // overrides leave the chip out entirely.
+  appModeChip: string;
 }
 
 export const DEFAULT_LABELS: ConnectLabels = {
@@ -89,6 +93,8 @@ export const DEFAULT_LABELS: ConnectLabels = {
   connectedSince: 'Verbunden seit',
   program: 'Programm',
   programBlocks: 'Blocks-Runtime',
+
+  appModeChip: 'über App',
 };
 
 export function mergeLabels(overrides?: Partial<ConnectLabels>): ConnectLabels {

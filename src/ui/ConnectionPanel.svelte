@@ -111,7 +111,12 @@
   >
     <span class="dot-lg status-{s.status}"></span>
     <div class="panel-header-text">
-      <div class="title">{labels.panelTitle}</div>
+      <div class="title">
+        {labels.panelTitle}
+        {#if s.nativeMode && labels.appModeChip}
+          <span class="app-mode-chip">{labels.appModeChip}</span>
+        {/if}
+      </div>
       <div class="subtitle">{statusLabel(s.status)}</div>
     </div>
     {#if onTogglePin}
@@ -373,6 +378,18 @@
     border-radius: 10px;
     background: #ddf4ff;
     color: #0969da;
+    letter-spacing: 0.01em;
+    vertical-align: 1px;
+  }
+  .app-mode-chip {
+    margin-left: 6px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: none;
+    padding: 1px 6px;
+    border-radius: 10px;
+    background: #e9e3ff;
+    color: #5a3fd6;
     letter-spacing: 0.01em;
     vertical-align: 1px;
   }

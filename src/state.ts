@@ -62,6 +62,10 @@ export interface CalliopeState {
   /** Browser support flags. */
   usbSupported: boolean;
   bleSupported: boolean;
+  /** True when a native iOS/Android host owns the radio — the widget is
+   *  acting as a thin UI on top of a JS bridge instead of WebBluetooth.
+   *  Drives UX hints like the "über App" chip. */
+  nativeMode: boolean;
 
   // ---- Flash state (single op at a time across both transports). ----
   flashTransport?: CalliopeTransport;
@@ -130,10 +134,34 @@ export interface CalliopeState {
   status: CalliopeStatus;
 }
 
+/**
+ * True when a native host (iOS WKScriptMessageHandler / Android
+ * addJavascriptInterface) has injected a Calliope bridge. Detected here
+ * locally rather than imported from `./native-bridge` to keep this module
+ * dependency-free (it sits at the bottom of the import graph).
+ */
+function hasNativeBridge(): boolean {
+  if (typeof window === 'undefined') return false;
+  const w = window as unknown as {
+    CalliopeNative?: { postMessage?: unknown };
+    webkit?: { messageHandlers?: { calliope?: { postMessage?: unknown } } };
+  };
+  if (typeof w.CalliopeNative?.postMessage === 'function') return true;
+  if (typeof w.webkit?.messageHandlers?.calliope?.postMessage === 'function') return true;
+  return false;
+}
+
+export const NATIVE_MODE = hasNativeBridge();
+
+// In native mode the host owns the radio. iOS WKWebView has no WebUSB and
+// no Web Bluetooth at all; Android WebView has WebUSB only — but the proxy
+// is the supported path on both, so present it as "BLE supported" and let
+// USB lie dormant. The connection panel uses these to pick which transport
+// rows to render.
 const usbSupported =
-  typeof navigator !== 'undefined' && 'usb' in navigator;
+  !NATIVE_MODE && typeof navigator !== 'undefined' && 'usb' in navigator;
 const bleSupported =
-  typeof navigator !== 'undefined' && 'bluetooth' in navigator;
+  NATIVE_MODE || (typeof navigator !== 'undefined' && 'bluetooth' in navigator);
 
 export const SUPPORT = { usb: usbSupported, ble: bleSupported };
 
@@ -159,6 +187,7 @@ const initial: CalliopeState = recomputeOverall({
   flashInProgress: false,
   usbSupported,
   bleSupported,
+  nativeMode: NATIVE_MODE,
   status: 'disconnected',
 });
 
