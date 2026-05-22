@@ -9,6 +9,8 @@ import {
 } from './ble';
 import { calliopeState, getState } from './state';
 import { pushTx } from './comms';
+import { isNativeMode, addNativeSerialListener } from './native-bridge';
+import { nativeSerialWrite } from './native-mode';
 
 const HEARTBEAT_MS = 1000;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -64,6 +66,11 @@ export function stopHeartbeat(): void {
 export async function sendSerialLine(line: string): Promise<void> {
   if (isFlashGated()) return;
   const out = line.endsWith('\n') ? line : line + '\n';
+  if (isNativeMode()) {
+    await nativeSerialWrite(out);
+    if (line.trim() !== 'H') appendLog({ direction: 'tx', text: line.replace(/\n$/, '') });
+    return;
+  }
   try {
     const usb = getUsbConn();
     let transport: 'usb' | 'ble' | null = null;
@@ -93,6 +100,10 @@ export async function sendSerialLine(line: string): Promise<void> {
 export async function sendSerialData(data: string): Promise<void> {
   if (!data) return;
   if (isFlashGated()) return;
+  if (isNativeMode()) {
+    await nativeSerialWrite(data);
+    return;
+  }
   try {
     const usb = getUsbConn();
     if (usb?.status === ConnectionStatus.Connected) {
@@ -116,6 +127,9 @@ export async function sendSerialData(data: string): Promise<void> {
  * REPL.
  */
 export function onSerialData(cb: (chunk: string) => void): () => void {
+  if (isNativeMode()) {
+    return addNativeSerialListener(cb);
+  }
   const unsubBle = addBleRawSubscriber(cb);
   const unsubUsb = registerSerialDataListener((ev) => {
     if (ev.data) cb(ev.data);
@@ -133,6 +147,18 @@ export function onSerialData(cb: (chunk: string) => void): () => void {
  * the same way, so the consumer doesn't care which transport is active.
  */
 export function onSerialLine(cb: (line: string) => void): () => void {
+  if (isNativeMode()) {
+    let buf = '';
+    return addNativeSerialListener((chunk) => {
+      buf += chunk;
+      let idx: number;
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx).replace(/\r$/, '');
+        buf = buf.slice(idx + 1);
+        if (line) cb(line);
+      }
+    });
+  }
   let usbBuf = '';
   const unsubBle = addBleLineSubscriber(cb);
   const unsubUsb = registerSerialDataListener((ev) => {

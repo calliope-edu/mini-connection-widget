@@ -19,6 +19,8 @@ import {
 import { BluetoothDfuServiceMissingError } from './ble-dfu-web';
 import { inspectHex, type HexFlavor } from './hex-inspect';
 import { clearExpectedReboot, markExpectedReboot } from './connection-errors';
+import { isNativeMode } from './native-bridge';
+import { nativeFlash } from './native-mode';
 
 /**
  * If a pending flash sits unfulfilled for longer than this, clear it on the
@@ -47,6 +49,12 @@ export async function flashCalliope(
   name: string = 'project',
   preferredTransport?: CalliopeTransport,
 ): Promise<void> {
+  if (isNativeMode()) {
+    // Native host owns transport choice, partial-vs-DFU routing, and
+    // reconnect. `preferredTransport` is currently ignored — there's only
+    // one path on mobile (BLE open-mode).
+    return nativeFlash(hex, name);
+  }
   let s = getState();
   if (s.status === 'flashing' || s.flashInProgress) {
     appendLog({

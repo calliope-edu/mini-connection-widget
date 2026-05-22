@@ -15,6 +15,8 @@ import {
 import { showUsbErrorInfo } from './usb-error-info';
 import { showBleOfflineInfo } from './ble-offline-info';
 import { classifyBleError, classifyUsbError } from './connection-errors';
+import { isNativeMode } from './native-bridge';
+import { nativeConnect, nativeDisconnectAndForget } from './native-mode';
 
 /**
  * Connect to a Calliope on the chosen transport. Always tries the silent
@@ -27,6 +29,9 @@ export async function connectCalliope(
   transport: CalliopeTransport = 'usb',
   forceChooser = false,
 ): Promise<void> {
+  if (isNativeMode()) {
+    return nativeConnect(transport);
+  }
   try {
     if (transport === 'ble') {
       if (!SUPPORT.ble) return;
@@ -124,6 +129,9 @@ export async function connectCalliope(
  * we just forgot.
  */
 export async function disconnectAndForget(transport: CalliopeTransport): Promise<void> {
+  if (isNativeMode()) {
+    return nativeDisconnectAndForget(transport);
+  }
   if (transport === 'usb') {
     await disconnectUsb();
     await forgetAllUsbDevices();

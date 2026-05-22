@@ -22,6 +22,7 @@ import { registerSerialDataListener } from './usb';
 import { addBleRawSubscriber, refreshPairedBleStatus } from './ble';
 import { attachCommsFeeds } from './comms';
 import { installReconnectDaemon, triggerReconnectEvaluation } from './reconnect-daemon';
+import { isNativeMode, installNativeApi } from './native-bridge';
 
 // ---- Public API ------------------------------------------------------------
 
@@ -109,6 +110,17 @@ export { extractFriendlyName, friendlyNameToPattern, friendlyNameFromDeviceId } 
 export { DEFAULT_LABELS, mergeLabels } from './ui/labels';
 export type { ConnectLabels } from './ui/labels';
 
+// ---- Native-proxy bridge --------------------------------------------------
+// Detection + GATT/serial proxy helpers for iOS/Android hosts that inject
+// a JS bridge. In web mode `isNativeMode()` is `false` and the helpers
+// reject — consumers should branch on `isNativeMode()` themselves.
+export { isNativeMode } from './native-bridge';
+export {
+  nativeGattRead,
+  nativeGattWrite,
+  nativeGattSubscribe,
+} from './native-mode';
+
 // ---- Initialization --------------------------------------------------------
 
 /**
@@ -124,6 +136,14 @@ export function initializeCalliopeConnection(): void {
   if (initialized) return;
   initialized = true;
   if (typeof window === 'undefined') return;
+  if (isNativeMode()) {
+    // Native host owns scanning, bonding, USB enumeration, and reconnect.
+    // We only install the inbound event surface so the host can push
+    // state/log/gatt/serial events back. No daemon, no Web Bluetooth /
+    // WebUSB calls — those APIs don't exist in iOS WKWebView anyway.
+    installNativeApi();
+    return;
+  }
   attachCommsFeeds(addBleRawSubscriber, registerSerialDataListener);
   installReconnectDaemon();
   // Brief delay so the page has time to settle before we fire WebUSB calls.
