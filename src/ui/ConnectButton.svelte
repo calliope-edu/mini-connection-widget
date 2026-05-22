@@ -158,6 +158,25 @@
   );
 
   function statusLabel(status: CalliopeStatus): string {
+    // In native-proxy mode (hosted in iOS/Android app), surface the
+    // app-mode framing in every state — "Nicht verbunden" misleads when
+    // the radio is being managed by the host app, not by the browser.
+    if (s.nativeMode) {
+      switch (status) {
+        case 'connected': return labels.appModeConnected;
+        case 'connecting': return labels.appModeConnecting;
+        case 'flashing': {
+          const phase = s.flashPhase;
+          if (phase === 'check') return labels.phaseCheck;
+          if (phase === 'reboot') return labels.phaseReboot;
+          if (phase === 'prepare') return labels.phasePrepare;
+          if (phase === 'finalising') return labels.phaseFinalising;
+          return `${labels.flashing} ${s.flashProgress ?? 0}%`;
+        }
+        case 'error': return labels.error;
+        default: return labels.appModeWaiting;
+      }
+    }
     switch (status) {
       case 'connected':
         if (s.usbStatus === 'connected' && s.bleStatus === 'connected') return 'USB + BLE';

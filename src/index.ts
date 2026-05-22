@@ -142,6 +142,12 @@ export function initializeCalliopeConnection(): void {
     // state/log/gatt/serial events back. No daemon, no Web Bluetooth /
     // WebUSB calls — those APIs don't exist in iOS WKWebView anyway.
     installNativeApi();
+    // Auto-fire a BLE connect once on bootstrap. The Android side resolves
+    // the target device from the parent app's paired-device pref, so this
+    // is a no-op from the user's perspective — but without it the widget
+    // would sit at "Nicht verbunden" until the user manually clicked
+    // Verbinden, even though the host is ready.
+    setTimeout(() => { void connectCalliope('ble').catch(() => { /* surfaced via state */ }); }, 100);
     return;
   }
   attachCommsFeeds(addBleRawSubscriber, registerSerialDataListener);

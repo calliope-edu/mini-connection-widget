@@ -49,6 +49,25 @@
   );
 
   function statusLabel(status: CalliopeStatus): string {
+    // In native-proxy mode, frame every state as "über App" — the radio
+    // is being driven by the host app, so the standard "Nicht verbunden"
+    // text is misleading even before the BLE session is up.
+    if (s.nativeMode) {
+      switch (status) {
+        case 'connected': return labels.appModeConnected;
+        case 'connecting': return labels.appModeConnecting;
+        case 'flashing': {
+          const phase = s.flashPhase;
+          if (phase === 'check') return labels.phaseCheck;
+          if (phase === 'reboot') return labels.phaseReboot;
+          if (phase === 'prepare') return labels.phasePrepare;
+          if (phase === 'finalising') return labels.phaseFinalising;
+          return `${labels.flashing} ${s.flashProgress ?? 0}%`;
+        }
+        case 'error': return labels.error;
+        default: return labels.appModeWaiting;
+      }
+    }
     switch (status) {
       case 'connected':
         if (s.usbStatus === 'connected' && s.bleStatus === 'connected') return 'USB + BLE';
@@ -111,12 +130,7 @@
   >
     <span class="dot-lg status-{s.status}"></span>
     <div class="panel-header-text">
-      <div class="title">
-        {labels.panelTitle}
-        {#if s.nativeMode && labels.appModeChip}
-          <span class="app-mode-chip">{labels.appModeChip}</span>
-        {/if}
-      </div>
+      <div class="title">{labels.panelTitle}</div>
       <div class="subtitle">{statusLabel(s.status)}</div>
     </div>
     {#if onTogglePin}
@@ -378,18 +392,6 @@
     border-radius: 10px;
     background: #ddf4ff;
     color: #0969da;
-    letter-spacing: 0.01em;
-    vertical-align: 1px;
-  }
-  .app-mode-chip {
-    margin-left: 6px;
-    font-size: 10px;
-    font-weight: 600;
-    text-transform: none;
-    padding: 1px 6px;
-    border-radius: 10px;
-    background: #e9e3ff;
-    color: #5a3fd6;
     letter-spacing: 0.01em;
     vertical-align: 1px;
   }

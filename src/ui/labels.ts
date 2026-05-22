@@ -52,6 +52,14 @@ export interface ConnectLabels {
   // Native-proxy mode (iOS/Android app hosting the campus). Empty/undefined
   // overrides leave the chip out entirely.
   appModeChip: string;
+  /** Status string while waiting for the native host to connect a device.
+   *  Replaces the standard "Nicht verbunden" so the user knows the radio
+   *  is being driven through the app rather than the browser. */
+  appModeWaiting: string;
+  /** Status string while the native host's BLE connect is in flight. */
+  appModeConnecting: string;
+  /** Status string when the native host's BLE session is connected. */
+  appModeConnected: string;
 }
 
 export const DEFAULT_LABELS: ConnectLabels = {
@@ -95,6 +103,9 @@ export const DEFAULT_LABELS: ConnectLabels = {
   programBlocks: 'Blocks-Runtime',
 
   appModeChip: 'über App',
+  appModeWaiting: 'über App – warte auf Calliope',
+  appModeConnecting: 'über App – verbinde…',
+  appModeConnected: 'über App – verbunden',
 };
 
 export function mergeLabels(overrides?: Partial<ConnectLabels>): ConnectLabels {
