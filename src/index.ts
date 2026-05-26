@@ -122,6 +122,24 @@ export {
   nativeGattSubscribe,
 } from './native-mode';
 
+// ---- J-Link (mini v2) USB transport --------------------------------------
+// Standalone WebUSB path for Calliope mini v2, whose interface chip runs
+// SEGGER J-Link OB firmware (VID 0x1366) instead of DAPLink. Bypasses
+// upstream `@microbit/microbit-connection` (which only knows CMSIS-DAP)
+// and talks J-Link's native MSD-image-programming command set directly.
+// Caller must invoke `requestAndFlashJLink` from a user gesture; the
+// widget's standard `flashCalliope()` dispatcher doesn't auto-route to
+// this path because the WebUSB device selector is exclusive to one
+// VID/PID set at a time.
+export {
+  requestAndFlashJLink,
+  flashViaJLinkMsdImage,
+  SeggerBulkTransport,
+  SEGGER_VENDOR_ID,
+  SEGGER_USB_FILTERS,
+} from './segger-jlink';
+export type { JlinkFlashOptions } from './segger-jlink';
+
 // ---- Initialization --------------------------------------------------------
 
 /**
