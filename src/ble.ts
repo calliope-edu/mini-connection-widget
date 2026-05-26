@@ -147,6 +147,12 @@ const EXTRA_OPTIONAL_SERVICES: BluetoothServiceUUID[] = [
   // them, so omitting these would make the classifier blind.
   'e97dd91d-251d-470a-a062-fa1922dfa9a8', // CODAL partial-flashing service
   '6e400001-b5a3-f393-e0a9-e50e24dcca9e', // Nordic UART service (CODAL UART)
+  // Legacy Nordic DFU service used by mini v1 (nRF51) + mini v2 (legacy
+  // codal stack on nRF52833) bootloaders — Nordic SDK 8/11-era UUID.
+  // Without this Chrome's optional-services list won't grant the upstream
+  // V1 flash path access to the bootloader after the reboot, and service
+  // discovery errors out with "No Services found in device".
+  '00001530-1212-efde-1523-785feabcd123',
 ];
 
 function augmentRequestDeviceOptions(opts: unknown): unknown {
@@ -617,13 +623,50 @@ export async function flashCalliopeViaBleDfu(hex: string, name: string): Promise
   if (!device) {
     throw new BluetoothDfuFailedError('BLE device not accessible — please reconnect first.');
   }
+  // Pick the DFU path by BLE service presence, not the boardVersion that
+  // chip-detection returns — over BLE alone there's no way to distinguish
+  // mini v1 (nRF51) from mini v2 (nRF52833 with legacy stack) from mini
+  // v3 (nRF52833 with modern codal v2). Both v1 and v2 expose the legacy
+  // micro:bit DFU Control Service `e95d93b0`; mini v3 doesn't. So:
+  //
+  //   - legacy `e95d93b0` present → delegate to upstream's V1 flash path:
+  //     write 0x01 to e95d93b1, wait for the device to reboot into the
+  //     SDK-8 Nordic DFU bootloader, stream firmware over the older DFU
+  //     wire format.
+  //
+  //   - legacy absent → modern codal v2 stack (mini v3): use our custom
+  //     open-link Nordic Secure DFU path which handles the buttonless
+  //     `8EC9…` trigger + unbonded SDK 17 protocol.
+  //
+  // KNOWN-INCOMPLETE FOR mini v1/v2: the V1 path's reboot trigger fires
+  // correctly, but post-reboot the device comes up with an incremented
+  // BD_ADDR (Nordic SDK 8's default), so Chrome treats the bootloader as
+  // a different device → `device.gatt.connect()` reconnects to a stale
+  // GATT handle → service discovery returns "No Services found in
+  // device." This is the same problem we solved on the v3 bootloader
+  // via the BD_ADDR keep-app patch (`v0.3.5-campus-open-1`); same patch
+  // needs porting back to the legacy nRF51/SDK 8 bootloader before v1/v2
+  // BLE-DFU through the widget completes end-to-end. The dispatch
+  // structure is in place; only the firmware-side fix is missing.
+  const LEGACY_MICROBIT_DFU_CONTROL = 'e95d93b0-251d-470a-a062-fa1922dfa9a8';
+  const hasLegacyDfu = device.gatt?.connected
+    ? await deviceHasService(device, LEGACY_MICROBIT_DFU_CONTROL)
+    : false;
+  if (hasLegacyDfu) {
+    appendLog({
+      direction: 'info',
+      text: 'Detected legacy MicroBit DFU Control Service — using V1 (mini v1/v2) flash path',
+    });
+    return flashCalliopeViaUpstreamFullFlash(c, hex, name);
+  }
+
   let boardVersion: 'V2' | undefined;
   try {
     const v = c.getBoardVersion();
     if (v === 'V2') boardVersion = 'V2';
   } catch { /* not ready yet */ }
   if (boardVersion !== 'V2') {
-    throw new BluetoothDfuFailedError('Full BLE flash is only supported on Calliope mini 3.');
+    throw new BluetoothDfuFailedError('Full BLE flash is only supported on Calliope mini 1, 2 or 3.');
   }
   const cleanHex = stripMakeCodeMetadata(hex);
   appendLog({
@@ -695,6 +738,111 @@ export async function flashCalliopeViaBleDfu(hex: string, name: string): Promise
     // (flash.ts) decides whether to retry via USB or surface the failure.
     appendLog({ direction: 'info', text: `BLE-DFU flash failed: ${(err as Error)?.message ?? err}` });
     throw err;
+  }
+}
+
+/**
+ * Cheap probe: does the device expose a given primary service?
+ *
+ * Returns `false` on any failure — caller can fall through to whatever
+ * default-path it had. Service discovery on an already-connected GATT is
+ * cached by Chrome, so this is effectively a memo lookup after the first
+ * call.
+ */
+async function deviceHasService(device: BluetoothDevice, uuid: string): Promise<boolean> {
+  if (!device.gatt?.connected) return false;
+  try {
+    await device.gatt.getPrimaryService(uuid);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Full-flash via upstream's `connection.flash()`. Used for Calliope mini v1
+ * (BBC micro:bit V1 lineage — nRF51, older Nordic DFU SDK). The upstream lib
+ * already knows to:
+ *
+ *   1. Write 0x01 to the DFU Control characteristic (e95d93b1) on the
+ *      legacy `dfuControl` service (e95d93b0) — that's the V1 equivalent of
+ *      the V2 buttonless DFU enter-bootloader trigger.
+ *   2. Wait for the device to reboot into the older Nordic DFU bootloader
+ *      (which uses a different SoftDevice version and different service
+ *      UUIDs than the modern Nordic Secure DFU we ship on mini v3).
+ *   3. Stream the firmware to the bootloader via the older DFU protocol.
+ *
+ * Our custom `flashOverNordicDfuWeb` doesn't speak the legacy protocol —
+ * it's built for the modern (SDK 17) Nordic Secure DFU and the
+ * `8EC9…` buttonless characteristic. Delegate the V1 path to upstream
+ * rather than re-port two DFU protocols into the widget.
+ *
+ * Note: mini v2 hardware (nRF52833 + J-Link OB + legacy codal stack) also
+ * exposes `e95d93b0` and reports `boardVersion=V1` over GATT. The upstream
+ * path applies V1 flash addresses (0x18000 start) which happens to match
+ * mini v2's older codal layout. So this single function covers both v1
+ * and v2 BLE full-flash.
+ */
+async function flashCalliopeViaUpstreamFullFlash(
+  c: MicrobitBluetoothConnection,
+  hex: string,
+  name: string,
+): Promise<void> {
+  const cleanHex = stripMakeCodeMetadata(hex);
+  appendLog({
+    direction: 'info',
+    text: `Flashing via legacy BLE DFU "${name}" (${Math.round(cleanHex.length / 1024)} KB)`,
+  });
+  updateState((s) => ({
+    ...s,
+    flashTransport: 'ble',
+    flashProgress: undefined,
+    flashPhase: 'reboot',
+    flashPartial: false,
+    bleErrorMessage: undefined,
+    lastFlashName: name,
+  }));
+  // Force upstream's `connection.flash()` down its V1 code path even when
+  // the model-number characteristic doesn't carry the version (the BLE-side
+  // boardVersion detector defaults to V2 for any "Calliope mini" string).
+  // The V1 path does what mini v1 AND mini v2 need:
+  //   1. write 0x01 to e95d93b1 to reboot into bootloader
+  //   2. wait + reconnect
+  //   3. flashDfu with V1 flash addresses (app at 0x18000) and V1 init-packet
+  //      format — both correct for mini v1 (nRF51) AND mini v2 (nRF52833
+  //      with legacy codal stack that uses V1-era memory layout)
+  // The override is private API; field name has been stable across the
+  // 1.0.0-beta.* line.
+  const wrapper = (c as unknown as { device?: { boardVersion?: string } }).device;
+  const restoreBoardVersion = wrapper?.boardVersion;
+  if (wrapper) wrapper.boardVersion = 'V1';
+  try {
+    await c.flash(async () => cleanHex, {
+      progress: applyFlashProgress,
+    });
+    updateState((s) => ({
+      ...s,
+      flashTransport: undefined,
+      flashProgress: undefined,
+      flashPhase: undefined,
+      flashPartial: undefined,
+      lastFlashAt: Date.now(),
+    }));
+    appendLog({ direction: 'info', text: `Legacy BLE-DFU flash finished: ${name}` });
+  } catch (err) {
+    updateState((s) => ({
+      ...s,
+      flashTransport: undefined,
+      flashProgress: undefined,
+      flashPhase: undefined,
+      flashPartial: undefined,
+    }));
+    appendLog({ direction: 'info', text: `Legacy BLE-DFU flash failed: ${(err as Error)?.message ?? err}` });
+    throw err;
+  } finally {
+    // Restore whatever boardVersion was there so a follow-up flash or a
+    // non-flash code path sees the lib's own detection result again.
+    if (wrapper) wrapper.boardVersion = restoreBoardVersion;
   }
 }
 
