@@ -5,6 +5,13 @@
 
   const visible = $derived($calliopeBleOfflineInfo);
 
+  // "Connection attempt failed" is CoreBluetooth error 6 (CBErrorConnectionFailed),
+  // which fires on macOS when the OS has a stale bond for the device. Guide macOS
+  // users to remove it from System Settings → Bluetooth so Chrome can connect fresh.
+  const isMac =
+    typeof navigator !== 'undefined' &&
+    /Macintosh|Mac OS X/i.test(navigator.userAgent);
+
   let retrying = $state(false);
 
   // Auto-dismiss as soon as either transport becomes connected — the
@@ -45,7 +52,8 @@
       </div>
       <h2 id="ble-offline-title">Bluetooth ist auf deinem Calliope gerade aus</h2>
       <p class="lead">
-        Wahrscheinlich läuft ein Programm ohne Bluetooth. Zwei Wege zurück:
+        Wahrscheinlich läuft ein Programm ohne Bluetooth.
+        {isMac ? 'Drei mögliche Ursachen:' : 'Zwei Wege zurück:'}
       </p>
 
       <ol class="steps">
@@ -71,6 +79,21 @@
             </div>
           </div>
         </li>
+        {#if isMac}
+        <li>
+          <span class="num">3</span>
+          <div class="step-body">
+            <div class="step-title">Calliope aus macOS-Bluetooth entfernen</div>
+            <div class="step-hint">
+              macOS speichert manchmal eine veraltete Bluetooth-Verbindung, die
+              den Aufbau blockiert. Öffne
+              <em>Systemeinstellungen → Bluetooth</em>, suche „Calliope mini"
+              in der Geräteliste, klicke auf das „×" daneben und verbinde dann
+              erneut über diese Seite.
+            </div>
+          </div>
+        </li>
+        {/if}
       </ol>
 
       <div class="actions">
