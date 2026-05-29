@@ -29,6 +29,7 @@ import {
   BluetoothDfuServiceMissingError,
   type BluetoothDfuPhase,
 } from './ble-dfu-web';
+import { flashOverLegacyDfuWeb } from './ble-legacy-dfu-web';
 import { extractFriendlyName, friendlyNameFromDeviceId } from './friendly-name';
 import {
   classifyBleError,
@@ -147,12 +148,16 @@ const EXTRA_OPTIONAL_SERVICES: BluetoothServiceUUID[] = [
   // them, so omitting these would make the classifier blind.
   'e97dd91d-251d-470a-a062-fa1922dfa9a8', // CODAL partial-flashing service
   '6e400001-b5a3-f393-e0a9-e50e24dcca9e', // Nordic UART service (CODAL UART)
-  // Legacy Nordic DFU service used by mini v1 (nRF51) + mini v2 (legacy
-  // codal stack on nRF52833) bootloaders — Nordic SDK 8/11-era UUID.
-  // Without this Chrome's optional-services list won't grant the upstream
-  // V1 flash path access to the bootloader after the reboot, and service
-  // discovery errors out with "No Services found in device".
-  '00001530-1212-efde-1523-785feabcd123',
+  // micro:bit DFU Control service (running app) — used to trigger the reboot
+  // into the bootloader on mini v1/v2 (write 0x01 to e95d93b1).
+  'e95d93b0-251d-470a-a062-fa1922dfa9a8',
+  // Calliope mini v1/v2 bootloader legacy-DFU service. NOTE: the stock Nordic
+  // legacy DFU UUID 00001530-1212-efde-1523-785feabcd123 is on the Web
+  // Bluetooth GATT blocklist (Chrome hides/blocks it), which is why web V1 DFU
+  // never worked. The Calliope `v1.0-calliope-webdfu` bootloader re-bases the
+  // DFU service to the (non-blocklisted) micro:bit base e95d1530, which we list
+  // here so getPrimaryService() can reach it after the reboot.
+  'e95d1530-251d-470a-a062-fa1922dfa9a8',
 ];
 
 function augmentRequestDeviceOptions(opts: unknown): unknown {
@@ -638,16 +643,14 @@ export async function flashCalliopeViaBleDfu(hex: string, name: string): Promise
   //     open-link Nordic Secure DFU path which handles the buttonless
   //     `8EC9…` trigger + unbonded SDK 17 protocol.
   //
-  // KNOWN-INCOMPLETE FOR mini v1/v2: the V1 path's reboot trigger fires
-  // correctly, but post-reboot the device comes up with an incremented
-  // BD_ADDR (Nordic SDK 8's default), so Chrome treats the bootloader as
-  // a different device → `device.gatt.connect()` reconnects to a stale
-  // GATT handle → service discovery returns "No Services found in
-  // device." This is the same problem we solved on the v3 bootloader
-  // via the BD_ADDR keep-app patch (`v0.3.5-campus-open-1`); same patch
-  // needs porting back to the legacy nRF51/SDK 8 bootloader before v1/v2
-  // BLE-DFU through the widget completes end-to-end. The dispatch
-  // structure is in place; only the firmware-side fix is missing.
+  // mini v1/v2 BLE-DFU runs our own Web Bluetooth legacy Nordic DFU client
+  // (`ble-legacy-dfu-web.ts`). The upstream `connection.flash()` V1 path uses
+  // the native Capacitor Nordic DFU plugin, which doesn't run in a browser, and
+  // its service check targets `00001530` — which is on the Web Bluetooth GATT
+  // blocklist. Our client + the `v1.0-calliope-webdfu` bootloader (DFU service
+  // re-based to the non-blocklisted `e95d1530`) make web V1/V2 DFU work; the
+  // post-reboot reconnect is to the same device handle (the bootloader keeps the
+  // app's BD_ADDR). Requires a Calliope mini flashed with that bootloader.
   const LEGACY_MICROBIT_DFU_CONTROL = 'e95d93b0-251d-470a-a062-fa1922dfa9a8';
   const hasLegacyDfu = device.gatt?.connected
     ? await deviceHasService(device, LEGACY_MICROBIT_DFU_CONTROL)
@@ -655,9 +658,60 @@ export async function flashCalliopeViaBleDfu(hex: string, name: string): Promise
   if (hasLegacyDfu) {
     appendLog({
       direction: 'info',
-      text: 'Detected legacy MicroBit DFU Control Service — using V1 (mini v1/v2) flash path',
+      text: 'Detected micro:bit DFU Control service — using mini v1/v2 legacy BLE-DFU (e95d1530)',
     });
-    return flashCalliopeViaUpstreamFullFlash(c, hex, name);
+    const cleanHexV1 = stripMakeCodeMetadata(hex);
+    updateState((s) => ({
+      ...s,
+      flashTransport: 'ble',
+      flashProgress: undefined,
+      flashPhase: 'reboot',
+      flashPartial: false,
+      bleErrorMessage: undefined,
+      lastFlashName: name,
+    }));
+    try {
+      await flashOverLegacyDfuWeb({
+        device,
+        hex: cleanHexV1,
+        onPhase: (p) => {
+          const uiPhase = p === 'flashing' ? 'flashing'
+            : p === 'finalising' ? 'finalising'
+            : p === 'sending-init' ? 'check'
+            : 'reboot';
+          updateState((s) => ({
+            ...s,
+            flashPhase: uiPhase,
+            flashProgress: p === 'finalising' ? 100 : undefined,
+          }));
+        },
+        onProgress: (progress) => {
+          const intPct = Math.round(progress * 100);
+          updateState((s) => ({ ...s, flashPhase: 'flashing', flashProgress: intPct, flashPartial: false }));
+          appendLog({ direction: 'info', text: `Flash: ${intPct}%`, kind: 'flash-progress' });
+        },
+      });
+      updateState((s) => ({
+        ...s,
+        flashTransport: undefined,
+        flashProgress: undefined,
+        flashPhase: undefined,
+        flashPartial: undefined,
+        lastFlashAt: Date.now(),
+      }));
+      appendLog({ direction: 'info', text: `BLE-DFU flash finished: ${name}` });
+    } catch (err) {
+      updateState((s) => ({
+        ...s,
+        flashTransport: undefined,
+        flashProgress: undefined,
+        flashPhase: undefined,
+        flashPartial: undefined,
+      }));
+      appendLog({ direction: 'info', text: `BLE-DFU flash failed: ${(err as Error)?.message ?? err}` });
+      throw err;
+    }
+    return;
   }
 
   let boardVersion: 'V2' | undefined;
