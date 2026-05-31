@@ -44,16 +44,26 @@ const PENDING_FLASH_TTL_MS = 60_000;
  *  4. **BLE connected and can flash** → BLE partial → BLE-DFU → USB hybrid.
  *  5. **Nothing connected** → connection-choice modal.
  */
+export interface FlashOptions {
+  /**
+   * Skip partial flash and go straight to full Nordic DFU. Set when flashing
+   * the Blocks runtime, whose DAL hash collides with a pxt-calliope app so a
+   * partial flash would corrupt it. Honored on both the web and native paths.
+   */
+  forceFullDfu?: boolean;
+}
+
 export async function flashCalliope(
   hex: string,
   name: string = 'project',
   preferredTransport?: CalliopeTransport,
+  opts: FlashOptions = {},
 ): Promise<void> {
   if (isNativeMode()) {
-    // Native host owns transport choice, partial-vs-DFU routing, and
-    // reconnect. `preferredTransport` is currently ignored — there's only
+    // Native host owns transport choice and reconnect, but we still tell it
+    // when to force full DFU. `preferredTransport` is ignored — there's only
     // one path on mobile (BLE open-mode).
-    return nativeFlash(hex, name);
+    return nativeFlash(hex, name, opts.forceFullDfu ?? false);
   }
   let s = getState();
   if (s.status === 'flashing' || s.flashInProgress) {
@@ -71,7 +81,7 @@ export async function flashCalliope(
   // outside the registry.
   updateState((st) => ({ ...st, flashInProgress: true }));
   try {
-    await flashDispatch(hex, name, preferredTransport);
+    await flashDispatch(hex, name, preferredTransport, opts);
   } finally {
     updateState((st) => ({ ...st, flashInProgress: false }));
   }
@@ -81,6 +91,7 @@ async function flashDispatch(
   hex: string,
   name: string,
   preferredTransport?: CalliopeTransport,
+  opts: FlashOptions = {},
 ): Promise<void> {
   let s = getState();
 
@@ -144,7 +155,7 @@ async function flashDispatch(
   // would expect a different UI prompt if we wanted to switch.
   if (preferredTransport === 'ble' && s.bleStatus === 'connected') {
     try {
-      return await flashOverBle(hex, name, flavor, s.bleSessionKind);
+      return await flashOverBle(hex, name, flavor, s.bleSessionKind, opts.forceFullDfu);
     } finally {
       if (wasBleConnected) await scheduleBleReconnect();
     }
@@ -163,7 +174,7 @@ async function flashDispatch(
   // No USB. Try BLE.
   if (s.bleStatus === 'connected') {
     try {
-      await flashOverBle(hex, name, flavor, s.bleSessionKind);
+      await flashOverBle(hex, name, flavor, s.bleSessionKind, opts.forceFullDfu);
       if (wasBleConnected) await scheduleBleReconnect();
       return;
     } catch (err) {
@@ -233,6 +244,7 @@ async function flashOverBle(
   name: string,
   flavor: HexFlavor,
   sessionKind: ReturnType<typeof getState>['bleSessionKind'],
+  forceFullDfu = false,
 ): Promise<void> {
   // Stuck in DfuTarg from a previous interrupted DFU? Skip partial flash
   // (no app to host the partial-flashing service) and go straight to DFU.
@@ -241,6 +253,16 @@ async function flashOverBle(
       direction: 'info',
       text: 'Calliope ist im DFU-Bootloader — direkter BLE-DFU-Flash.',
     });
+    markExpectedReboot(45_000);
+    await flashCalliopeViaBleDfu(hex, name);
+    return;
+  }
+
+  // Caller demands full DFU (e.g. the Blocks runtime, whose DAL hash collides
+  // with a pxt-calliope app so partial flash would corrupt it). Skip the
+  // partial attempt entirely instead of relying on it to fail.
+  if (forceFullDfu) {
+    appendLog({ direction: 'info', text: 'Voll-DFU erzwungen — Partial-Flash übersprungen.' });
     markExpectedReboot(45_000);
     await flashCalliopeViaBleDfu(hex, name);
     return;

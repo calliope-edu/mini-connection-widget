@@ -75,7 +75,7 @@ export async function nativeDisconnectAndForget(transport: CalliopeTransport): P
  * through the bridge; on success we just await the reply. On failure the
  * promise rejects with the native message.
  */
-export async function nativeFlash(hex: string, name: string): Promise<void> {
+export async function nativeFlash(hex: string, name: string, forceFullDfu = false): Promise<void> {
   const s = getState();
   if (s.flashInProgress) {
     appendLog({
@@ -86,7 +86,11 @@ export async function nativeFlash(hex: string, name: string): Promise<void> {
   }
   updateState((st) => ({ ...st, flashInProgress: true, lastFlashName: name }));
   try {
-    await sendNative<void>('flash', { hex, name });
+    // `forceFullDfu` tells the host to skip partial flash and go straight to
+    // Nordic DFU — required for the Blocks runtime, whose DAL hash matches a
+    // pxt-calliope app so a partial flash would silently corrupt it. Both the
+    // Android and iOS proxies read this flag.
+    await sendNative<void>('flash', { hex, name, forceFullDfu });
     updateState((st) => ({ ...st, lastFlashAt: Date.now() }));
   } catch (err) {
     const msg = (err as Error)?.message ?? String(err);

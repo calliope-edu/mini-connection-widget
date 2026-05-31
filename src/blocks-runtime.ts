@@ -65,6 +65,9 @@ export async function ensureBlocksRuntime(
     direction: 'info',
     text: `ensureBlocksRuntime: flashing bundled blocks.hex (detected: ${info.type})`,
   });
-  await flashCalliope(hex, options.name ?? 'BlocksRuntime');
+  // Force full DFU: the bundled blocks.hex carries no MakeCode/MicroPython
+  // partial-flash marker and its DAL hash collides with a pxt-calliope app, so
+  // a partial flash would either fail or silently corrupt the runtime.
+  await flashCalliope(hex, options.name ?? 'BlocksRuntime', undefined, { forceFullDfu: true });
   return { flashed: true, detected: info.type };
 }
