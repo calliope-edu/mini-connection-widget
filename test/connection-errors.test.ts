@@ -9,67 +9,91 @@ import {
   clearExpectedReboot,
 } from '../src/connection-errors.ts';
 
-test('GATT disconnect with prior pairing → stale-bond', () => {
-  const err = new Error('BLE: GATT Server is disconnected. Cannot retrieve services.');
-  const c = classifyBleError(err, /*hadPaired*/ true);
-  assert.equal(c.kind, 'stale-bond');
-  assert.equal(c.staleBond, true);
-  assert.equal(c.showPairingModal, true);
-  assert.ok(c.userMessage.length > 0);
-});
+// Open-mode firmware (MICROBIT_BLE_OPEN=1) removes the OS bond, so BLE errors
+// collapse to: user-aborted, unsupported, or transient (the reconnect daemon
+// retries). USB errors stay structured because they drive concrete recovery UI.
 
-test('GATT disconnect with no prior pairing → pairing-missing', () => {
-  const err = new Error('GATT Server is disconnected.');
-  const c = classifyBleError(err, /*hadPaired*/ false);
-  assert.equal(c.kind, 'pairing-missing');
-  assert.equal(c.staleBond, false);
-  assert.equal(c.showPairingModal, true);
-});
+// ---- BLE -----------------------------------------------------------------
 
-test('"Connection attempt failed" with prior pairing → stale-bond', () => {
-  const err = new Error('Connection attempt failed');
-  const c = classifyBleError(err, /*hadPaired*/ true);
-  assert.equal(c.kind, 'stale-bond');
-  assert.equal(c.showPairingModal, true);
-});
-
-test('"Connection attempt failed" without prior pairing → pairing-missing', () => {
-  const err = new Error('Connection attempt failed');
-  const c = classifyBleError(err, /*hadPaired*/ false);
-  assert.equal(c.kind, 'pairing-missing');
-  assert.equal(c.showPairingModal, true);
-});
-
-test('DeviceError pairing-information-lost → stale-bond', () => {
-  const err = new DeviceError({ code: 'pairing-information-lost', message: 'lost' });
-  const c = classifyBleError(err, /*hadPaired*/ true);
-  assert.equal(c.kind, 'stale-bond');
-});
-
-test('DeviceError permission-denied → pairing-missing', () => {
-  const err = new DeviceError({ code: 'permission-denied', message: 'no' });
-  const c = classifyBleError(err, /*hadPaired*/ false);
-  assert.equal(c.kind, 'pairing-missing');
-});
-
-test('user-cancelled picker is not an error to surface', () => {
-  const err = new DeviceError({ code: 'no-device-selected', message: 'cancelled' });
-  const c = classifyBleError(err, false);
+test('user-cancelled picker → aborted with empty message', () => {
+  const c = classifyBleError(new DeviceError({ code: 'no-device-selected', message: 'cancelled' }));
   assert.equal(c.kind, 'aborted');
   assert.equal(c.userMessage, '');
 });
 
-test('USB transferOut transient error is recognized', () => {
-  const err = new Error("Failed to execute 'transferOut' on 'USBDevice': A transfer error has occurred.");
-  const c = classifyUsbError(err);
-  assert.equal(c.kind, 'transfer-transient');
+test('DeviceError aborted → aborted', () => {
+  const c = classifyBleError(new DeviceError({ code: 'aborted', message: 'x' }));
+  assert.equal(c.kind, 'aborted');
 });
 
-test('"Must be connected" maps to not-connected-yet', () => {
-  const err = new Error('Must be connected now');
-  const c = classifyUsbError(err);
-  assert.equal(c.kind, 'not-connected-yet');
+test('DeviceError unsupported → unsupported', () => {
+  const c = classifyBleError(new DeviceError({ code: 'unsupported', message: 'x' }));
+  assert.equal(c.kind, 'unsupported');
+  assert.ok(c.userMessage.length > 0);
 });
+
+test('pairing-information-lost → transient (no bond to lose in open mode)', () => {
+  const c = classifyBleError(new DeviceError({ code: 'pairing-information-lost', message: 'lost' }));
+  assert.equal(c.kind, 'transient');
+  assert.ok(c.userMessage.length > 0);
+});
+
+test('permission-denied → transient', () => {
+  const c = classifyBleError(new DeviceError({ code: 'permission-denied', message: 'no' }));
+  assert.equal(c.kind, 'transient');
+});
+
+test('GATT disconnect (plain Error) → transient', () => {
+  const c = classifyBleError(new Error('BLE: GATT Server is disconnected. Cannot retrieve services.'));
+  assert.equal(c.kind, 'transient');
+});
+
+test('"Connection attempt failed" → transient', () => {
+  const c = classifyBleError(new Error('Connection attempt failed'));
+  assert.equal(c.kind, 'transient');
+});
+
+// ---- USB -----------------------------------------------------------------
+
+test('USB transferOut transient error → transfer-transient', () => {
+  const err = new Error("Failed to execute 'transferOut' on 'USBDevice': A transfer error has occurred.");
+  assert.equal(classifyUsbError(err).kind, 'transfer-transient');
+});
+
+test('"Must be connected" → not-connected-yet', () => {
+  assert.equal(classifyUsbError(new Error('Must be connected now')).kind, 'not-connected-yet');
+});
+
+test('DeviceError device-in-use → device-in-use', () => {
+  const c = classifyUsbError(new DeviceError({ code: 'device-in-use', message: 'busy' }));
+  assert.equal(c.kind, 'device-in-use');
+  assert.ok(c.userMessage.length > 0);
+});
+
+test('DeviceError device-disconnected → device-disconnected', () => {
+  assert.equal(
+    classifyUsbError(new DeviceError({ code: 'device-disconnected', message: 'gone' })).kind,
+    'device-disconnected',
+  );
+});
+
+test('"Unable to claim interface" → device-in-use', () => {
+  assert.equal(classifyUsbError(new Error('Unable to claim interface.')).kind, 'device-in-use');
+});
+
+test('USB user-cancelled picker → no-device with empty message', () => {
+  const c = classifyUsbError(new DeviceError({ code: 'no-device-selected', message: 'x' }));
+  assert.equal(c.kind, 'no-device');
+  assert.equal(c.userMessage, '');
+});
+
+test('unrecognised USB error → unknown carries the raw message', () => {
+  const c = classifyUsbError(new Error('something weird'));
+  assert.equal(c.kind, 'unknown');
+  assert.equal(c.userMessage, 'something weird');
+});
+
+// ---- expected-reboot window ----------------------------------------------
 
 test('expected-reboot window opens and closes on demand', () => {
   clearExpectedReboot();
@@ -78,41 +102,4 @@ test('expected-reboot window opens and closes on demand', () => {
   assert.equal(isExpectedRebootWindow(), true);
   clearExpectedReboot();
   assert.equal(isExpectedRebootWindow(), false);
-});
-
-// ---- authVerified gate (rc07 campus-open / MICROBIT_BLE_OPEN=1 firmware) ----
-
-test('authVerified suppresses GATT-disconnect → pairing-modal', () => {
-  const err = new Error('GATT Server is disconnected.');
-  const c = classifyBleError(err, /*hadPaired*/ true, /*authVerified*/ true);
-  assert.equal(c.kind, 'gatt-transient');
-  assert.equal(c.showPairingModal, false);
-  assert.equal(c.staleBond, false);
-});
-
-test('authVerified downgrades pairing-information-lost to transient', () => {
-  const err = new DeviceError({ code: 'pairing-information-lost', message: 'lost' });
-  const c = classifyBleError(err, /*hadPaired*/ true, /*authVerified*/ true);
-  assert.equal(c.kind, 'gatt-transient');
-  assert.equal(c.showPairingModal, false);
-});
-
-test('authVerified downgrades permission-denied to transient', () => {
-  const err = new DeviceError({ code: 'permission-denied', message: 'no' });
-  const c = classifyBleError(err, /*hadPaired*/ false, /*authVerified*/ true);
-  assert.equal(c.kind, 'gatt-transient');
-  assert.equal(c.showPairingModal, false);
-});
-
-test('authVerified downgrades "Connection attempt failed" to transient', () => {
-  const err = new Error('Connection attempt failed');
-  const c = classifyBleError(err, /*hadPaired*/ true, /*authVerified*/ true);
-  assert.equal(c.kind, 'gatt-transient');
-  assert.equal(c.showPairingModal, false);
-});
-
-test('authVerified does NOT mask aborted', () => {
-  const err = new DeviceError({ code: 'aborted', message: 'cancel' });
-  const c = classifyBleError(err, false, /*authVerified*/ true);
-  assert.equal(c.kind, 'aborted');
 });

@@ -23,7 +23,7 @@
 import { getConnectedBleDevice } from './ble';
 import { getUsbConn, registerSerialDataListener } from './usb';
 import { calliopeState, updateState } from './state';
-import { buildBlocksFrame, BLOCKS_REQ } from './blocks-protocol';
+import { buildBlocksFrame, BLOCKS_REQ, BlocksUsbProbe } from './blocks-frame';
 import { isNativeMode } from './native-bridge';
 import { nativeGattRead } from './native-mode';
 
@@ -44,14 +44,8 @@ export interface CalliopeProgramInfo {
 const BLOCKS_BLE_SERVICE_UUID = '0b50f3e4-607f-4151-9091-7d008d6ffc5c';
 const BLOCKS_BLE_STATE_CHAR_UUID = '0b500101-607f-4151-9091-7d008d6ffc5c';
 
-// ---- USB constants --------------------------------------------------------
-
-const BLOCKS_USB_SFD = 0xff;
-// Blocks response types: 0x01 (read), 0x11 (write ack), 0x21 (notify).
-// Seeing SFD followed by one of these is a strong signal.
-const VALID_RES = new Set([0x01, 0x11, 0x21]);
-// Confirm after this many valid frame headers in a row.
-const USB_CONFIRM_HITS = 2;
+// The USB Blocks-frame matcher (`BlocksUsbProbe`) lives in `blocks-frame.ts`
+// so it can be unit-tested without a serial port.
 
 function readState(): { usbOn: boolean; bleOn: boolean } {
   let snap = { usbOn: false, bleOn: false };
@@ -123,8 +117,7 @@ function probeUsb(timeoutMs: number): Promise<CalliopeProgramInfo | null> {
     const conn = getUsbConn();
     if (!conn) { resolve(null); return; }
 
-    let hits = 0;
-    let prevByte = -1;
+    const probe = new BlocksUsbProbe();
     let settled = false;
     let unsubscribe: (() => void) | null = null;
     const finish = (val: CalliopeProgramInfo | null) => {
@@ -137,17 +130,9 @@ function probeUsb(timeoutMs: number): Promise<CalliopeProgramInfo | null> {
     unsubscribe = registerSerialDataListener((ev) => {
       const s = ev?.data;
       if (!s) return;
-      for (let i = 0; i < s.length; i++) {
-        const b = s.charCodeAt(i) & 0xff;
-        if (prevByte === BLOCKS_USB_SFD && VALID_RES.has(b)) {
-          hits++;
-          if (hits >= USB_CONFIRM_HITS) {
-            finish({ type: 'blocks', via: 'usb' });
-            return;
-          }
-        }
-        prevByte = b;
-      }
+      const bytes = new Uint8Array(s.length);
+      for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i) & 0xff;
+      if (probe.push(bytes)) finish({ type: 'blocks', via: 'usb' });
     });
     // Wake the firmware's serial broadcaster by sending a real Blocks
     // `REQ_READ on ch 0x0100` frame. The pxt-blocks runtime only starts

@@ -38,6 +38,11 @@ export const SERVICE_UUIDS = {
   uart: '6e400001-b5a3-f393-e0a9-e50e24dcca9e',
   deviceInfo: '0000180a-0000-1000-8000-00805f9b34fb',
   blocks: '0b50f3e4-607f-4151-9091-7d008d6ffc5c',
+  // Legacy micro:bit DFU-Control service — present on V1-class silicon
+  // (Mini 1 and Mini 2, nRF51/DAL), absent on V2-class (Mini 3, nRF52/CODAL).
+  // The shipping Android/iOS apps fingerprint the chip class on this exact
+  // presence test. See `boardVersionFromServices`.
+  legacyDfuControl: 'e95d93b0-251d-470a-a062-fa1922dfa9a8',
 } as const;
 
 /** Pure classification — feed in what we observe, get back a verdict. */

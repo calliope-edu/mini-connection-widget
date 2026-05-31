@@ -18,48 +18,28 @@ import { ConnectionStatus } from '@microbit/microbit-connection';
 import { getUsbConn, registerSerialDataListener } from './usb';
 import { appendLog } from './log';
 import { pushProxy } from './comms';
+import {
+  BLOCKS_REQ,
+  BLOCKS_RES,
+  BlocksFrameParser,
+  type BlocksFrame,
+} from './blocks-frame';
 
-// ---- Wire format constants ------------------------------------------------
-
-/** Start-of-frame delimiter — must precede every Blocks serial frame. */
-export const BLOCKS_SFD = 0xff;
-
-/** Request types we put in `frame[1]` when writing TO the device. */
-export const BLOCKS_REQ = {
-  READ: 0x01,
-  WRITE: 0x10,
-  WRITE_RESPONSE: 0x11,
-  NOTIFY_STOP: 0x20,
-  NOTIFY_START: 0x21,
-} as const;
-
-/** Response types the device puts in `frame[1]` when writing back to us. */
-export const BLOCKS_RES = {
-  READ: 0x01,
-  WRITE_RESPONSE: 0x11,
-  NOTIFY: 0x21,
-} as const;
+// The pure wire codec lives in `blocks-frame.ts` (no transport imports, so it
+// loads under the Node test runner). Re-export it so consumers keep importing
+// the Blocks protocol surface from this one module.
+export {
+  BLOCKS_SFD,
+  BLOCKS_REQ,
+  BLOCKS_RES,
+  buildBlocksFrame,
+  BlocksFrameParser,
+  characteristicToChannel,
+} from './blocks-frame';
+export type { BlocksFrame } from './blocks-frame';
 
 /** Service UUID — same as the BLE service. */
 export const BLOCKS_SERVICE_UUID = '0b50f3e4-607f-4151-9091-7d008d6ffc5c';
-
-/**
- * Map full 128-bit characteristic UUIDs (what the iframe carries) to the
- * 16-bit channel IDs (what Blocks serial frames carry). The middle 16 bits
- * of the UUID encode the channel — extract them or use this table.
- */
-const CHANNEL_BY_UUID: Record<string, number> = {
-  '0b500100-607f-4151-9091-7d008d6ffc5c': 0x0100, // COMMAND
-  '0b500101-607f-4151-9091-7d008d6ffc5c': 0x0101, // STATE
-  '0b500102-607f-4151-9091-7d008d6ffc5c': 0x0102, // MOTION
-  '0b500110-607f-4151-9091-7d008d6ffc5c': 0x0110, // PIN_EVENT
-  '0b500111-607f-4151-9091-7d008d6ffc5c': 0x0111, // ACTION_EVENT
-  '0b500120-607f-4151-9091-7d008d6ffc5c': 0x0120, // ANALOG_IN_P0
-  '0b500121-607f-4151-9091-7d008d6ffc5c': 0x0121, // ANALOG_IN_P1
-  '0b500122-607f-4151-9091-7d008d6ffc5c': 0x0122, // ANALOG_IN_P2
-  '0b500123-607f-4151-9091-7d008d6ffc5c': 0x0123, // ANALOG_IN_P3
-  '0b500130-607f-4151-9091-7d008d6ffc5c': 0x0130, // DATA
-};
 
 /** Friendly names for the channels we know about. Used in comms-panel
  *  proxy entries; unknown channels show as `0x????`. */
@@ -105,106 +85,6 @@ function formatBytes(data: Uint8Array, maxBytes = 32): string {
   }
   if (data.length > maxBytes) out += ` …(+${data.length - maxBytes})`;
   return out;
-}
-
-/**
- * Resolve an iframe-supplied characteristic identifier (full UUID, short
- * UUID number, or raw 16-bit) into the Blocks channel byte pair.
- */
-export function characteristicToChannel(id: number | string): number {
-  if (typeof id === 'number') return id & 0xffff;
-  const lower = String(id).toLowerCase();
-  if (lower in CHANNEL_BY_UUID) return CHANNEL_BY_UUID[lower];
-  // Fallback: extract bytes 2-3 from a 128-bit UUID like
-  // `0b50XXXX-607f-…` — these are the channel id.
-  const m = /^[0-9a-f]{4}([0-9a-f]{4})/.exec(lower);
-  if (m) return parseInt(m[1], 16);
-  return 0;
-}
-
-// ---- Frame codec ----------------------------------------------------------
-
-/** chksum8 over the bytes preceding it — sum mod 0xFF. */
-function chksum8(bytes: ArrayLike<number>, len: number): number {
-  let sum = 0;
-  for (let i = 0; i < len; i++) sum = (sum + bytes[i]) % 0xff;
-  return sum;
-}
-
-/** Build a TX frame to write to the wire: `[SFD, type, ch_hi, ch_lo, len, ...data, chk]`. */
-export function buildBlocksFrame(
-  type: number,
-  channel: number,
-  data: Uint8Array = new Uint8Array(0),
-): Uint8Array {
-  const len = data.byteLength;
-  const frame = new Uint8Array(6 + len);
-  frame[0] = BLOCKS_SFD;
-  frame[1] = type;
-  frame[2] = (channel >> 8) & 0xff;
-  frame[3] = channel & 0xff;
-  frame[4] = len;
-  frame.set(data, 5);
-  frame[5 + len] = chksum8(frame, 5 + len);
-  return frame;
-}
-
-export interface BlocksFrame {
-  /** Response type byte (RES_READ / RES_WRITE_RESPONSE / RES_NOTIFY). */
-  type: number;
-  /** 16-bit channel id. */
-  channel: number;
-  /** Payload bytes (length excludes header + checksum). */
-  data: Uint8Array;
-}
-
-/**
- * Stateful streaming parser — feed bytes in any chunking, get back zero or
- * more complete frames. Invalid checksums and out-of-range types are dropped.
- */
-export class BlocksFrameParser {
-  private buf: number[] = [];
-
-  push(bytes: Iterable<number>): BlocksFrame[] {
-    for (const b of bytes) this.buf.push(b & 0xff);
-    return this.drain();
-  }
-
-  private drain(): BlocksFrame[] {
-    const out: BlocksFrame[] = [];
-    while (this.buf.length > 0) {
-      // Resync on SFD.
-      const sfdIdx = this.buf.indexOf(BLOCKS_SFD);
-      if (sfdIdx === -1) {
-        this.buf.length = 0;
-        return out;
-      }
-      if (sfdIdx > 0) this.buf.splice(0, sfdIdx);
-      if (this.buf.length < 5) return out;
-      const type = this.buf[1];
-      const validType = type === BLOCKS_RES.READ || type === BLOCKS_RES.WRITE_RESPONSE || type === BLOCKS_RES.NOTIFY;
-      if (!validType) {
-        // Drop this SFD candidate, scan for next.
-        this.buf.shift();
-        continue;
-      }
-      const len = this.buf[4];
-      const totalNoChk = 5 + len;
-      if (this.buf.length < totalNoChk + 1) return out;
-      const chk = this.buf[totalNoChk];
-      const computed = chksum8(this.buf, totalNoChk);
-      if (chk !== computed) {
-        // Bad checksum — drop SFD, resync.
-        this.buf.shift();
-        continue;
-      }
-      const channel = (this.buf[2] << 8) | this.buf[3];
-      const data = new Uint8Array(this.buf.slice(5, 5 + len));
-      out.push({ type, channel, data });
-      this.buf.splice(0, totalNoChk + 1);
-    }
-    return out;
-  }
 }
 
 // ---- USB transport --------------------------------------------------------

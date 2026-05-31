@@ -1,0 +1,23 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Runs the TypeScript unit suite directly via node --experimental-strip-types
+      # (see package.json "test"). Gates ble-state, connection-errors, blocks-frame,
+      # helpers, program-type, hex-inspect and log-parser.
+      - run: pnpm test
