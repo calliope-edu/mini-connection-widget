@@ -108,6 +108,10 @@ export type { CommsEntry, CommsDirection, CommsTransport } from './comms';
 export { LogParser } from './log-parser';
 export type { Parsed, ParsedHeader, ParsedRow, ParsedSeparator } from './log-parser';
 export { extractFriendlyName, friendlyNameToPattern, friendlyNameFromDeviceId } from './friendly-name';
+// Mini 2 (J-Link) USB guidance primitives — hosts that learn a connected
+// device's USB vendor id can swap a confusing CMSIS-DAP failure for the
+// download+drag hint. Full WebUSB J-Link routing stays in segger-jlink.ts.
+export { SEGGER_JLINK_VENDOR_ID, MINI2_JLINK_USB_HINT, usbHintForVendorId } from './connection-errors';
 export { DEFAULT_LABELS, mergeLabels } from './ui/labels';
 export type { ConnectLabels } from './ui/labels';
 

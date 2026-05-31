@@ -165,3 +165,24 @@ export function isExpectedRebootWindow(): boolean {
 export function clearExpectedReboot(): void {
   expectedRebootUntil = 0;
 }
+
+// ---- Mini 2 (J-Link) USB guidance -----------------------------------------
+
+/** SEGGER J-Link OB vendor id — the interface chip on Calliope Mini 2 units
+ *  that don't ship DAPLink. The standard CMSIS-DAP USB flash path (VID 0x0d28)
+ *  can't drive it; the dedicated WebUSB transport lives in `segger-jlink.ts`
+ *  and is not auto-routed (and is itself blocked on older J-Link OB firmware). */
+export const SEGGER_JLINK_VENDOR_ID = 0x1366;
+
+/** Shown when a Mini 2 J-Link device is the only thing present: rather than a
+ *  raw CMSIS-DAP failure, point the user at the reliable download+drag route. */
+export const MINI2_JLINK_USB_HINT =
+  'Calliope Mini 2 (J-Link) lässt sich nicht über den Standard-USB-Weg flashen. '
+  + 'Bitte die .hex-Datei herunterladen und auf das Calliope-Laufwerk ziehen.';
+
+/** Returns the Mini 2 J-Link hint for a 0x1366 device, else undefined. Hosts
+ *  that learn the connected device's USB vendor id can use this to swap a
+ *  confusing DAP error for actionable guidance. */
+export function usbHintForVendorId(vendorId: number | undefined): string | undefined {
+  return vendorId === SEGGER_JLINK_VENDOR_ID ? MINI2_JLINK_USB_HINT : undefined;
+}
