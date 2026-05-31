@@ -19,6 +19,7 @@ import {
 import { BluetoothDfuServiceMissingError } from './ble-dfu-web';
 import { inspectHex, type HexFlavor } from './hex-inspect';
 import { clearExpectedReboot, markExpectedReboot } from './connection-errors';
+import { showBleOfflineInfo } from './ble-offline-info';
 import { isNativeMode } from './native-bridge';
 import { nativeFlash } from './native-mode';
 
@@ -413,7 +414,28 @@ async function scheduleBleReconnect(): Promise<void> {
       });
     }
   }
-  appendLog({ direction: 'info', text: 'Auto-reconnect post-flash burst done — handing off to daemon.' });
+  // The burst exhausted without reconnecting. BLE was up before the flash but
+  // didn't come back — the freshly-flashed program almost certainly ships
+  // without BLE (accepted limitations a/b/c: MakeCode on Mini 1, any Radio
+  // program, or MicroPython on Mini 1/2). Tell the user how to get it back
+  // instead of silently retrying forever in the background.
+  const s = getState();
+  if (s.bleStatus !== 'connected' && !s.userDisconnectedBle) {
+    appendLog({
+      direction: 'info',
+      text: 'BLE did not return after flash — likely a program without BLE; prompting A+B+Reset.',
+    });
+    updateState((st) => ({
+      ...st,
+      bleErrorMessage:
+        'Nach dem Flashen ist keine Bluetooth-Verbindung zurückgekommen. Wenn dein Programm kein Bluetooth einschaltet '
+        + '(z. B. MakeCode auf Mini 1, ein Radio-Programm, oder MicroPython auf Mini 1/2), halte A+B gedrückt und drücke Reset, '
+        + 'um Bluetooth wieder zu starten.',
+    }));
+    showBleOfflineInfo();
+  } else {
+    appendLog({ direction: 'info', text: 'Auto-reconnect post-flash burst done — handing off to daemon.' });
+  }
   clearExpectedReboot();
 }
 
