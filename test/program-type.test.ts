@@ -2,38 +2,45 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 // BlocksUsbProbe drives program-type.ts's USB Blocks detection; it lives in the
 // dependency-free leaf so it (and this test) load under the Node test runner.
-import { BlocksUsbProbe } from '../src/blocks-frame.ts';
+import { BlocksUsbProbe, buildBlocksFrame, BLOCKS_RES } from '../src/blocks-frame.ts';
 
-const SFD = 0xff;
+const frame = (type: number, ch: number, data: number[] = []) =>
+  buildBlocksFrame(type, ch, new Uint8Array(data));
 
-test('two SFD + valid-response-type pairs confirm Blocks', () => {
+test('two checksum-valid frames confirm Blocks', () => {
   const p = new BlocksUsbProbe(2);
-  assert.equal(p.push([SFD, 0x01, SFD, 0x21]), true);
+  assert.equal(p.push(frame(BLOCKS_RES.READ, 0x0100, [0x01])), false);
+  assert.equal(p.push(frame(BLOCKS_RES.NOTIFY, 0x0101, [0x02, 0x03])), true);
 });
 
-test('a single pair does not confirm (needs two)', () => {
-  const p = new BlocksUsbProbe(2);
-  assert.equal(p.push([SFD, 0x01]), false);
+test('a single valid frame does not confirm (needs two)', () => {
+  assert.equal(new BlocksUsbProbe(2).push(frame(BLOCKS_RES.READ, 0x0100, [0x01])), false);
 });
 
-test('state carries across chunk boundaries', () => {
+test('a bare SFD + response byte (no valid frame) does NOT false-positive', () => {
+  // The pre-hardening heuristic confirmed on this; the checksum-validated probe
+  // must not — there is no complete frame with a matching checksum here.
   const p = new BlocksUsbProbe(2);
-  assert.equal(p.push([SFD]), false);      // SFD at end of chunk
-  assert.equal(p.push([0x11]), false);     // valid RES → 1 hit
-  assert.equal(p.push([SFD, 0x21]), true); // second pair → confirm
+  assert.equal(p.push([0xff, 0x01, 0xff, 0x21]), false);
 });
 
-test('SFD followed by a non-response byte is not a hit', () => {
-  const p = new BlocksUsbProbe(2);
-  // 0x05 is not a Blocks response type (0x01/0x11/0x21)
-  assert.equal(p.push([SFD, 0x05, SFD, 0x06]), false);
+test('a frame with a corrupted checksum does not count', () => {
+  const f = frame(BLOCKS_RES.READ, 0x0100, [0x01]);
+  f[f.length - 1] ^= 0xff;
+  assert.equal(new BlocksUsbProbe(1).push(f), false);
 });
 
-test('arbitrary serial without the SFD+RES shape does not confirm', () => {
-  const p = new BlocksUsbProbe(2);
-  assert.equal(p.push([0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x0a]), false); // "Hello\n"
+test('state carries across chunk boundaries (frame split mid-stream)', () => {
+  const f = frame(BLOCKS_RES.WRITE_RESPONSE, 0x0100, [0xaa, 0xbb]);
+  const p = new BlocksUsbProbe(1);
+  assert.equal(p.push(f.slice(0, 3)), false);
+  assert.equal(p.push(f.slice(3)), true);
 });
 
-test('confirmHits=1 confirms on the first pair', () => {
-  assert.equal(new BlocksUsbProbe(1).push([SFD, 0x11]), true);
+test('arbitrary serial without valid frames does not confirm', () => {
+  assert.equal(new BlocksUsbProbe(1).push([0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x0a]), false); // "Hello\n"
+});
+
+test('confirmHits=1 confirms on the first valid frame', () => {
+  assert.equal(new BlocksUsbProbe(1).push(frame(BLOCKS_RES.NOTIFY, 0x0130, [0x05])), true);
 });

@@ -150,37 +150,27 @@ export class BlocksFrameParser {
 export const BLOCKS_USB_CONFIRM_HITS = 2;
 
 /**
- * Stateful matcher for the USB Blocks-frame heuristic, kept dependency-free so
- * it can be unit-tested without a serial port. Feed serial bytes in any
- * chunking; confirms once it has seen `confirmHits` SFD-then-valid-response-type
- * pairs.
+ * Detects a live Blocks runtime on USB by counting CHECKSUM-VALID frames, kept
+ * dependency-free so it can be unit-tested without a serial port. Feed serial
+ * bytes in any chunking; confirms once `confirmHits` fully-validated frames
+ * (correct SFD, response type, length and chksum8) have arrived.
  *
- * Note: header-shape heuristic only (no checksum validation) — arbitrary binary
- * serial containing `0xFF` followed by 0x01/0x11/0x21 can false-positive.
- * Hardening to full `BlocksFrameParser` validation is tracked as T2.6.
+ * Counting validated frames — not bare `SFD`+response-byte pairs — means
+ * arbitrary binary serial that merely contains `0xFF` followed by 0x01/0x11/0x21
+ * can't false-positive: it has to parse as a real frame with a matching checksum.
  */
 export class BlocksUsbProbe {
-  private prev = -1;
-  private hits = 0;
+  private readonly parser = new BlocksFrameParser();
+  private count = 0;
   private readonly confirmHits: number;
 
   constructor(confirmHits: number = BLOCKS_USB_CONFIRM_HITS) {
     this.confirmHits = confirmHits;
   }
 
-  /** Returns true once enough valid frame headers have been seen. */
-  push(bytes: ArrayLike<number>): boolean {
-    for (let i = 0; i < bytes.length; i++) {
-      const b = bytes[i] & 0xff;
-      if (this.prev === BLOCKS_SFD && (b === 0x01 || b === 0x11 || b === 0x21)) {
-        this.hits++;
-        if (this.hits >= this.confirmHits) {
-          this.prev = b;
-          return true;
-        }
-      }
-      this.prev = b;
-    }
-    return false;
+  /** Returns true once enough checksum-valid frames have been seen. */
+  push(bytes: Iterable<number>): boolean {
+    this.count += this.parser.push(bytes).length;
+    return this.count >= this.confirmHits;
   }
 }
