@@ -581,7 +581,7 @@ class BluetoothPartialFlashSession {
 
     // DAL region — must match the hex's expected DAL hash.
     const dal = await this.requestRegion(Region.Dal);
-    log(`DAL on device: 0x${dal.startAddr.toString(16)}-0x${dal.endAddr.toString(16)} hash=${hexFmt(dal.hash)} / file hash=${hexFmt(parsed.dalHash)}`);
+    log(`DAL on device: 0x${dal.start.toString(16)}-0x${dal.end.toString(16)} hash=${hexFmt(dal.hash)} / file hash=${hexFmt(parsed.dalHash)}`);
 
     // Defensive check: the partial-flash GATT service can be present on a
     // device whose firmware never wrote a memory-map layout table (e.g.
@@ -594,7 +594,7 @@ class BluetoothPartialFlashSession {
     // all-zero (or a partial-flash session gets confused by the empty
     // ranges later in the protocol) would silently no-op and leave the
     // wrong app on the device.
-    if (dal.startAddr === 0 && dal.endAddr === 0) {
+    if (dal.start === 0 && dal.end === 0) {
       log('DAL region reports zero range — device has no partial-flash layout table');
       throw new BluetoothPartialFlashServiceMissingError();
     }
@@ -604,9 +604,9 @@ class BluetoothPartialFlashSession {
     }
 
     const mc = await this.requestRegion(Region.MakeCode);
-    log(`MC on device: 0x${mc.startAddr.toString(16)}-0x${mc.endAddr.toString(16)} hash=${hexFmt(mc.hash)} / file hash=${hexFmt(parsed.makeCodeHash)}`);
+    log(`MC on device: 0x${mc.start.toString(16)}-0x${mc.end.toString(16)} hash=${hexFmt(mc.hash)} / file hash=${hexFmt(parsed.makeCodeHash)}`);
 
-    if (mc.startAddr === 0 && mc.endAddr === 0) {
+    if (mc.start === 0 && mc.end === 0) {
       log('MakeCode region reports zero range — partial-flash layout table malformed');
       throw new BluetoothPartialFlashServiceMissingError();
     }
