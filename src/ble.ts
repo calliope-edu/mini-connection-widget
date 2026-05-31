@@ -35,7 +35,8 @@ import {
   classifyBleError,
   isExpectedRebootWindow,
 } from './connection-errors';
-import { classifyBleSessionFromDevice } from './ble-state';
+import { classifyBleSessionFromDevice, boardVersionFromServices } from './ble-state';
+import type { CalliopeVersion } from './helpers';
 
 // Standard Bluetooth SIG Device Information Service — every micro:bit /
 // Calliope firmware exposes it. The Serial Number string characteristic
@@ -320,20 +321,23 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
         // to wait on. Mark capabilities optimistically; the classifier
         // below will downgrade if the device turns out to be in DfuTarg.
         const name = getBleDeviceName(c);
-        let boardVersion: 'V1' | 'V2' | undefined;
-        try { boardVersion = c.getBoardVersion(); } catch { /* not ready yet */ }
-        // BLE name only carries the friendly suffix when the OS cached
-        // it during a prior pairing operation. Often it's just
-        // "Calliope mini" — in that case the regex returns undefined and
-        // we keep whatever friendlyName USB (or a prior connect) supplied.
+        // Hardware version is derived authoritatively from the GATT service
+        // fingerprint by the classifier below (boardVersionFromServices) — the
+        // same signal the native apps use. We deliberately do NOT seed it from
+        // the upstream name-based getBoardVersion(), which defaults any
+        // "Calliope mini" to V2 and so mislabels Mini 1/2 as a Mini 3. Keep
+        // whatever USB (or a prior session) captured until the fingerprint
+        // resolves a few hundred ms later.
+        //
+        // BLE name only carries the friendly suffix when the OS cached it
+        // during a prior pairing operation. Often it's just "Calliope mini" —
+        // the regex then returns undefined and we keep the existing friendlyName.
         const friendly = extractFriendlyName(name);
         updateState((s) => ({
           ...s,
           bleStatus: 'connected',
           bleErrorMessage: undefined,
           bleDeviceName: name ?? s.bleDeviceName,
-          boardVersion: boardVersion ?? s.boardVersion,
-          calliopeVersion: boardVersion === 'V2' ? 'V3' : (boardVersion === 'V1' ? 'V1' : s.calliopeVersion),
           friendlyName: friendly ?? s.friendlyName,
           bleCanCommunicate: true,
           bleCanFlash: true,
@@ -373,8 +377,26 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
               direction: 'info',
               text: `BLE state: ${result.kind} — ${result.reason}; services=[${summary}]`,
             });
+            // Authoritative hardware-version verdict from the service set
+            // (legacy DFU-Control ⇒ V1-class Mini 1/2; Nordic Secure DFU or
+            // partial-flash ⇒ V2-class Mini 3). Leave the captured version
+            // untouched when the services don't fingerprint (UNIDENTIFIED) —
+            // never default to V2.
+            const bv = boardVersionFromServices(result.services);
+            const versionPatch = bv
+              ? {
+                  boardVersion: bv,
+                  calliopeVersion: (bv === 'V2' ? 'V3' : 'V1') as CalliopeVersion,
+                }
+              : {};
+            if (bv) {
+              appendLog({
+                direction: 'info',
+                text: `BLE hardware: ${bv === 'V2' ? 'Mini 3 (V2-class)' : 'Mini 1/2 (V1-class)'} (service fingerprint)`,
+              });
+            }
             updateState((s) => {
-              if (s.flashTransport === 'ble') return { ...s, bleSessionKind: result.kind };
+              if (s.flashTransport === 'ble') return { ...s, ...versionPatch, bleSessionKind: result.kind };
               // 'dfu-bootloader' is the one classification that downgrades
               // capabilities: the bootloader doesn't host UART or
               // partial-flash, so neither comms nor partial-flash work
@@ -382,6 +404,7 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
               if (result.kind === 'dfu-bootloader') {
                 return {
                   ...s,
+                  ...versionPatch,
                   bleSessionKind: 'dfu-bootloader',
                   bleCanFlash: false,
                   bleCanCommunicate: false,
@@ -389,7 +412,7 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
                     'Calliope ist im DFU-Bootloader. Reset drücken, um zurück in die Anwendung zu kommen.',
                 };
               }
-              return { ...s, bleSessionKind: result.kind };
+              return { ...s, ...versionPatch, bleSessionKind: result.kind };
             });
           } catch (err) {
             appendLog({

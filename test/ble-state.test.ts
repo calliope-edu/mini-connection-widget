@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { classifyBleSession, SERVICE_UUIDS } from '../src/ble-state.ts';
+import { classifyBleSession, boardVersionFromServices, SERVICE_UUIDS } from '../src/ble-state.ts';
 
 // Open-mode firmware (MICROBIT_BLE_OPEN=1) has no SMP gate, so the classifier
 // only distinguishes a running application from the Nordic DFU bootloader.
@@ -91,6 +91,35 @@ test('UUIDs are case-insensitive', () => {
     connected: true,
   });
   assert.equal(r.kind, 'app-mode');
+});
+
+// ---- boardVersionFromServices (DFU service fingerprint) ------------------
+
+test('legacy DFU-Control present → V1 (V1-class Mini 1/2), even with partial-flash', () => {
+  assert.equal(
+    boardVersionFromServices([SERVICE_UUIDS.legacyDfuControl, SERVICE_UUIDS.partialFlash, SERVICE_UUIDS.uart]),
+    'V1',
+  );
+});
+
+test('Nordic Secure DFU present (no legacy) → V2 (Mini 3)', () => {
+  assert.equal(
+    boardVersionFromServices([SERVICE_UUIDS.nordicDfu, SERVICE_UUIDS.partialFlash, SERVICE_UUIDS.uart]),
+    'V2',
+  );
+});
+
+test('partial-flash only, no DFU service → V2 (Mini 3 app mode)', () => {
+  assert.equal(boardVersionFromServices([SERVICE_UUIDS.partialFlash, SERVICE_UUIDS.uart]), 'V2');
+});
+
+test('no fingerprint signal → undefined (UNIDENTIFIED, do not guess V2)', () => {
+  assert.equal(boardVersionFromServices([SERVICE_UUIDS.deviceInfo]), undefined);
+  assert.equal(boardVersionFromServices([]), undefined);
+});
+
+test('fingerprint is case-insensitive', () => {
+  assert.equal(boardVersionFromServices([SERVICE_UUIDS.legacyDfuControl.toUpperCase()]), 'V1');
 });
 
 test('reason field is populated for every kind', () => {

@@ -45,6 +45,29 @@ export const SERVICE_UUIDS = {
   legacyDfuControl: 'e95d93b0-251d-470a-a062-fa1922dfa9a8',
 } as const;
 
+/**
+ * Derive the chip class from the GATT service set — the same fingerprint the
+ * shipping Android/iOS Calliope apps use (they read no Device Information
+ * Service and never use the advertised name for version). Returns micro:bit
+ * `BoardVersion` semantics:
+ *
+ *   - legacy DFU-Control `e95d93b0` present → 'V1' (V1-class: Mini 1 **and** 2, nRF51/DAL)
+ *   - else Nordic Secure DFU `fe59` present → 'V2' (V2-class: Mini 3, nRF52/CODAL = micro:bit v2)
+ *   - else partial-flash present, no DFU    → 'V2' (Mini 3 in application mode)
+ *   - else                                  → undefined (UNIDENTIFIED — do not guess)
+ *
+ * Mini 1 vs Mini 2 is not distinguishable over BLE (both are V1-class) and is
+ * not required. The DFU-Control check is first so a Mini 1/2 app that also
+ * exposes partial-flash is still correctly V1-class.
+ */
+export function boardVersionFromServices(services: string[]): 'V1' | 'V2' | undefined {
+  const has = (u: string): boolean => services.some((s) => s.toLowerCase() === u.toLowerCase());
+  if (has(SERVICE_UUIDS.legacyDfuControl)) return 'V1';
+  if (has(SERVICE_UUIDS.nordicDfu)) return 'V2';
+  if (has(SERVICE_UUIDS.partialFlash)) return 'V2';
+  return undefined;
+}
+
 /** Pure classification — feed in what we observe, get back a verdict. */
 export function classifyBleSession(args: {
   services: string[];
@@ -149,6 +172,10 @@ export async function classifyBleSessionFromDevice(
     SERVICE_UUIDS.uart,
     SERVICE_UUIDS.nordicDfu,
     SERVICE_UUIDS.deviceInfo,
+    // Needed for the V1-class fingerprint (boardVersionFromServices) — a Mini
+    // 1/2 app exposes this; getPrimaryServices() can omit it if the per-origin
+    // permission predates its addition to optionalServices.
+    SERVICE_UUIDS.legacyDfuControl,
   ];
   await Promise.all(probeUuids.map(async (uuid) => {
     if (seen.has(uuid)) return;
