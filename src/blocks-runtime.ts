@@ -7,27 +7,40 @@
  * handed to `flashCalliope`, which routes through whichever transport is
  * active.
  *
- * The bundled hex tracks `calliope-edu/pxt-blocks` and targets Calliope
- * mini 3 (CODAL). Update by copying a fresh build into `src/assets/`.
+ * Two runtime builds are bundled and chosen by detected board version:
+ * `assets/blocks.hex` (CODAL, Calliope mini 3 / `V3`) and `assets/blocks-dal.hex`
+ * (DAL / MbitMore, Calliope mini 1 & 2 / `V1`). Update by copying a fresh build
+ * into `src/assets/`.
  */
 
 import { flashCalliope } from './flash';
 import { getRunningProgramType } from './program-type';
 import { appendLog } from './log';
+import { getState } from './state';
+import type { CalliopeVersion } from './helpers';
 
-let loadPromise: Promise<string> | null = null;
+type BlocksVariant = 'codal' | 'dal';
 
-async function loadBundledBlocksHex(): Promise<string> {
-  if (loadPromise) return loadPromise;
-  loadPromise = (async () => {
-    const url = new URL('./assets/blocks.hex', import.meta.url);
+const loadPromises: Partial<Record<BlocksVariant, Promise<string>>> = {};
+
+async function loadBundledBlocksHex(variant: BlocksVariant): Promise<string> {
+  const cached = loadPromises[variant];
+  if (cached) return cached;
+  const promise = (async () => {
+    // Vite requires a static string literal inside `new URL(..., import.meta.url)`,
+    // so branch on two separate literals rather than building the path from a variable.
+    const url =
+      variant === 'dal'
+        ? new URL('./assets/blocks-dal.hex', import.meta.url)
+        : new URL('./assets/blocks.hex', import.meta.url);
     const res = await fetch(url);
     if (!res.ok) {
-      throw new Error(`Bundled blocks.hex fetch failed: ${res.status} ${res.statusText}`);
+      throw new Error(`Bundled ${variant} blocks hex fetch failed: ${res.status} ${res.statusText}`);
     }
     return res.text();
   })();
-  return loadPromise;
+  loadPromises[variant] = promise;
+  return promise;
 }
 
 export interface EnsureBlocksRuntimeOptions {
@@ -37,6 +50,11 @@ export interface EnsureBlocksRuntimeOptions {
   name?: string;
   /** Probe timeout in ms. Defaults to 1500. */
   probeTimeoutMs?: number;
+  /**
+   * Override the board version used to pick the runtime build. Falls back to
+   * the widget-detected `calliopeVersion`. `V1` → DAL (mini 1/2), else CODAL.
+   */
+  version?: CalliopeVersion;
 }
 
 export interface EnsureBlocksRuntimeResult {
@@ -60,10 +78,15 @@ export async function ensureBlocksRuntime(
   if (info.type === 'blocks' && !options.force) {
     return { flashed: false, detected: 'blocks' };
   }
-  const hex = await loadBundledBlocksHex();
+  // Calliope mini 1 & 2 (DAL, calliopeVersion 'V1') need the MbitMore DAL
+  // runtime; mini 3 (CODAL, 'V3') and the unknown/default case use the CODAL
+  // build. There is no 'V2' in practice — mini 2 fingerprints as 'V1'.
+  const variant: BlocksVariant =
+    (options.version ?? getState().calliopeVersion) === 'V1' ? 'dal' : 'codal';
+  const hex = await loadBundledBlocksHex(variant);
   appendLog({
     direction: 'info',
-    text: `ensureBlocksRuntime: flashing bundled blocks.hex (detected: ${info.type})`,
+    text: `ensureBlocksRuntime: flashing bundled ${variant} blocks hex (detected: ${info.type})`,
   });
   // Force full DFU: the bundled blocks.hex carries no MakeCode/MicroPython
   // partial-flash marker and its DAL hash collides with a pxt-calliope app, so
