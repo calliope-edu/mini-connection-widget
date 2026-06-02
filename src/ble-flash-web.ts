@@ -648,12 +648,19 @@ class BluetoothPartialFlashSession {
       block.set(parsed.bin.subarray(offset, Math.min(offset + 64, totalBytes)), 0);
 
       const packets = buildFlashPackets(blockAddr, packetNumber, block);
-      for (let i = 0; i < 4; i++) {
+      // Write the first 3 packets, then ARM the block-ack resolver BEFORE the
+      // 4th (final) packet. The device acks immediately after the 4th packet;
+      // registering the resolver after the write (as before) could drop a fast
+      // notification and cost a 5 s timeout on every affected block.
+      for (let i = 0; i < 3; i++) {
         if (chunkDelayMs > 0) await delay(chunkDelayMs);
         await this.writeNoNotify(packets[i]);
       }
+      const ackPromise = this.waitForResponse(5000, 'flash-block-ack');
+      if (chunkDelayMs > 0) await delay(chunkDelayMs);
+      await this.writeNoNotify(packets[3]);
 
-      const ack = await this.waitForResponse(5000, 'flash-block-ack');
+      const ack = await ackPromise;
       if (ack[0] !== Cmd.FlashData) {
         throw new Error(`expected FLASH_DATA ack, got 0x${ack[0].toString(16)}`);
       }
@@ -761,8 +768,11 @@ class BluetoothPartialFlashSession {
   }
 
   private async requestStatus(): Promise<PfStatus> {
+    // Arm the resolver before the write (see flash-block-ack note) so a fast
+    // status notification isn't dropped into a 3 s timeout.
+    const respPromise = this.waitForResponse(3000, 'status');
     await this.writeNoNotify(new Uint8Array([Cmd.Status]));
-    const data = await this.waitForResponse(3000, 'status');
+    const data = await respPromise;
     if (data[0] !== Cmd.Status) {
       throw new Error(`expected STATUS, got 0x${data[0].toString(16)}`);
     }
@@ -770,8 +780,10 @@ class BluetoothPartialFlashSession {
   }
 
   private async requestRegion(regionId: number): Promise<PfRegion> {
+    // Arm the resolver before the write (see flash-block-ack note).
+    const respPromise = this.waitForResponse(3000, `region-${regionId}`);
     await this.writeNoNotify(new Uint8Array([Cmd.RegionInfo, regionId]));
-    const data = await this.waitForResponse(3000, `region-${regionId}`);
+    const data = await respPromise;
     if (data[0] !== Cmd.RegionInfo) {
       throw new Error(`expected REGION_INFO, got 0x${data[0].toString(16)}`);
     }

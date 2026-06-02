@@ -156,7 +156,7 @@ export async function flashOverLegacyDfuWeb(opts: FlashOverLegacyDfuOptions): Pr
   const onDisconnect = () => {
     ctx.disconnected = true;
     trace('!!! GATT disconnected during DFU');
-    ctx.rejectPending?.(new BluetoothDfuFailedError('GATT disconnected mid-DFU'));
+    ctx.rejectAllPending(new BluetoothDfuFailedError('GATT disconnected mid-DFU'));
   };
   opts.device.addEventListener('gattserverdisconnected', onDisconnect);
 
@@ -300,6 +300,8 @@ interface LegacyDfuContext {
   dispose: () => void;
   disconnected: boolean;
   rejectPending: ((e: unknown) => void) | null;
+  /** Reject the in-flight response AND every queued PRN waiter (disconnect path). */
+  rejectAllPending: (e: unknown) => void;
 }
 
 async function openLegacyDfuChannel(
@@ -343,8 +345,18 @@ async function openLegacyDfuChannel(
           reject(new BluetoothDfuFailedError('Timed out waiting for packet-receipt notification'));
         }, timeoutMs);
         const wrappedResolve = (n: number) => { clearTimeout(timer); resolve(n); };
-        prnWaiters.push({ resolve: wrappedResolve, reject });
+        const wrappedReject = (e: unknown) => { clearTimeout(timer); reject(e); };
+        prnWaiters.push({ resolve: wrappedResolve, reject: wrappedReject });
       }),
+    // Reject the in-flight control-point response (if any) AND every queued PRN
+    // waiter. awaitPrn does not register into ctx.rejectPending, so without this
+    // a GATT disconnect mid-stream stalls the firmware loop until the 20s PRN
+    // timeout. Invoked from onDisconnect.
+    rejectAllPending: (e: unknown) => {
+      ctx.rejectPending?.(e);
+      const waiters = prnWaiters.splice(0, prnWaiters.length);
+      for (const w of waiters) w.reject(e);
+    },
     dispose: () => {
       control.removeEventListener('characteristicvaluechanged', onNotify);
       try { void control.stopNotifications(); } catch { /* ignore */ }

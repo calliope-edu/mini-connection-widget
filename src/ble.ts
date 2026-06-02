@@ -849,7 +849,7 @@ export async function flashCalliopeViaBleDfu(hex: string, name: string): Promise
  * cached by Chrome, so this is effectively a memo lookup after the first
  * call.
  */
-async function deviceHasService(device: BluetoothDevice, uuid: string): Promise<boolean> {
+async function deviceHasService(device: BluetoothDevice, uuid: BluetoothServiceUUID): Promise<boolean> {
   if (!device.gatt?.connected) return false;
   try {
     await device.gatt.getPrimaryService(uuid);
