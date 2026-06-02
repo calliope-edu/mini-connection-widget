@@ -15,6 +15,18 @@ import { nativeSerialWrite } from './native-mode';
 const HEARTBEAT_MS = 1000;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
+/**
+ * Encode an outgoing serial string as raw bytes using Latin-1/ISO-8859-1
+ * (one byte per code unit, masked to 0x00–0xFF). This mirrors the RX decode
+ * (`charCodeAt(i) & 0xff`) so TX and RX stay byte-symmetric. Passing the
+ * Uint8Array to the widget's patched `serialWrite` preserves bytes ≥ 0x80,
+ * whereas a plain string would be UTF-8-encoded and mangle every high byte
+ * (e.g. 0xFF → 0xC3 0xBF).
+ */
+function latin1Bytes(str: string): Uint8Array {
+  return Uint8Array.from(str, (c) => c.charCodeAt(0) & 0xff);
+}
+
 function isFlashGated(): boolean {
   return getState().flashInProgress;
 }
@@ -58,6 +70,19 @@ export function stopHeartbeat(): void {
   }
 }
 
+// Drive the heartbeat from the overall connection status rather than from
+// transport-specific connect handlers. The previous wiring started it from
+// the web BLE/USB `status` event listeners, which never run in native mode —
+// so the Blocks-runtime broadcaster was never woken there. `status` rolls up
+// USB + BLE + native (the native bridge mutates `bleStatus` through the same
+// `updateState`), so a single subscription covers all three transports.
+// `startHeartbeat`/`stopHeartbeat` are idempotent, so the redundant calls
+// still made by the web connect handlers are harmless.
+calliopeState.subscribe((s) => {
+  if (s.status === 'connected') startHeartbeat();
+  else stopHeartbeat();
+});
+
 /**
  * Send a newline-terminated line to the board. Routes over USB when
  * connected, else BLE. Suppresses heartbeat 'H' echoes from the log so the
@@ -75,7 +100,7 @@ export async function sendSerialLine(line: string): Promise<void> {
     const usb = getUsbConn();
     let transport: 'usb' | 'ble' | null = null;
     if (usb?.status === ConnectionStatus.Connected) {
-      await usb.serialWrite(out);
+      await usb.serialWrite(latin1Bytes(out));
       transport = 'usb';
     } else {
       const ble = getBleConn();
@@ -107,7 +132,7 @@ export async function sendSerialData(data: string): Promise<void> {
   try {
     const usb = getUsbConn();
     if (usb?.status === ConnectionStatus.Connected) {
-      await usb.serialWrite(data);
+      await usb.serialWrite(latin1Bytes(data));
       pushTx('usb', data);
       return;
     }

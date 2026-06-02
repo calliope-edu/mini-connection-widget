@@ -20,9 +20,9 @@
 import { connectCalliope } from './connect';
 import { registerSerialDataListener } from './usb';
 import { addBleRawSubscriber, refreshPairedBleStatus } from './ble';
-import { attachCommsFeeds } from './comms';
+import { attachCommsFeeds, pushRx } from './comms';
 import { installReconnectDaemon, triggerReconnectEvaluation } from './reconnect-daemon';
-import { isNativeMode, installNativeApi } from './native-bridge';
+import { isNativeMode, installNativeApi, addNativeSerialListener } from './native-bridge';
 import { installNativeReconnectDaemon } from './native-mode';
 
 // ---- Public API ------------------------------------------------------------
@@ -155,6 +155,9 @@ export type { JlinkFlashOptions } from './segger-jlink';
  * Idempotent — calling more than once is a no-op after the first run.
  */
 let initialized = false;
+// Guards the native serial→comms RX feed so repeated bootstrap calls can't
+// double-wire it (mirrors `feedsAttached` in comms.ts for the web path).
+let nativeCommsFeedAttached = false;
 export function initializeCalliopeConnection(): void {
   if (initialized) return;
   initialized = true;
@@ -166,6 +169,15 @@ export function initializeCalliopeConnection(): void {
     // catches up after the host drops a session (mini restart, brief
     // out-of-range, post-flash reboot).
     installNativeApi();
+    // Feed native serial chunks into the Comms panel. Without this the web
+    // path (attachCommsFeeds) is the only producer, so native-mode hosts show
+    // an empty Comms panel even while data flows. The native `serialData`
+    // event carries no transport tag, so RX is attributed to 'ble' — native
+    // mode's primary link. Guarded so repeat init can't double-wire the feed.
+    if (!nativeCommsFeedAttached) {
+      nativeCommsFeedAttached = true;
+      addNativeSerialListener((chunk) => pushRx('ble', chunk));
+    }
     installNativeReconnectDaemon();
     // Auto-fire a BLE connect once on bootstrap. The Android side resolves
     // the target device from the parent app's paired-device pref, so this

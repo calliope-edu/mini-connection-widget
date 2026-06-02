@@ -254,6 +254,13 @@ async function refreshGatt(device: BluetoothDevice): Promise<void> {
 interface ParsedHex {
   /** Binary contents of the MakeCode region (and onwards). */
   bin: Uint8Array;
+  /**
+   * The parsed hex memory map, kept so the flash loop can slice
+   * region-clamped, 0xFF-padded blocks by absolute address (matching
+   * upstream's unprogrammed-tail-is-0xFF behaviour) rather than relying on
+   * `bin`'s zero-padded contiguous segment.
+   */
+  map: MemoryMap;
   /** Offset of the magic marker within `bin` — always 0 by construction. */
   magicOffset: number;
   /** First absolute address of the MakeCode region. */
@@ -280,6 +287,7 @@ export function parseMakeCodeHex(hex: string): ParsedHex {
       if (match) {
         return {
           bin: u8.slice(i),
+          map,
           magicOffset: 0,
           baseAddr: segStart + i,
           dalHash: u8.slice(i + MAGIC_MARKER.length, i + MAGIC_MARKER.length + 8),
@@ -500,6 +508,7 @@ export function parseMicroPythonHex(hex: string): ParsedHex {
 
         return {
           bin: fsBytes,
+          map,
           magicOffset: 0,
           baseAddr: fs.startAddr,
           // Device's Region.Dal (slot 1, codal index 1) returns the
@@ -633,8 +642,18 @@ class BluetoothPartialFlashSession {
     }
 
     // Write data: 4 BLE packets per 64-byte block, ack after each block.
+    //
+    // Clamp the streamed length to the device's MakeCode region
+    // (mc.end - mc.start) rather than streaming the whole contiguous hex
+    // segment captured in parsed.bin (which can run past the region and is
+    // zero-padded). Round the end UP to a 64-byte block boundary so the final
+    // partial block is sent whole, matching upstream's region-clamped,
+    // 64-aligned end. Each block is sliced 0xFF-padded by absolute address via
+    // map.slicePad so unprogrammed tail/gap bytes are 0xFF (flash-erased
+    // state) instead of zero — again matching upstream.
     const startAddr = mc.start;
-    const totalBytes = parsed.bin.length;
+    const regionBytes = Math.max(0, mc.end - mc.start);
+    const totalBytes = Math.ceil(regionBytes / 64) * 64;
     let offset = 0;
     let packetNumber = 0;
     let chunkDelayMs = 0;
@@ -644,8 +663,9 @@ class BluetoothPartialFlashSession {
     while (offset < totalBytes) {
       if (this.aborted) throw new DOMException('Aborted', 'AbortError');
       const blockAddr = startAddr + offset;
-      const block = new Uint8Array(64);
-      block.set(parsed.bin.subarray(offset, Math.min(offset + 64, totalBytes)), 0);
+      // 0xFF-pad short/trailing blocks (flash-erased state) instead of the
+      // zero-fill a fresh Uint8Array(64) would give.
+      const block = parsed.map.slicePad(blockAddr, 64, 0xff);
 
       const packets = buildFlashPackets(blockAddr, packetNumber, block);
       // Write the first 3 packets, then ARM the block-ack resolver BEFORE the

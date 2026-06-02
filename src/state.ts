@@ -177,6 +177,23 @@ function recomputeOverall(s: CalliopeState): CalliopeState {
   else if (s.usbStatus === 'error' || s.bleStatus === 'error') status = 'error';
   else if (!s.usbSupported && !s.bleSupported) status = 'unsupported';
   else status = 'disconnected';
+
+  // When the device is usably connected (or flashing) on one transport, a
+  // lingering error on the *other*, non-connected transport is a background
+  // failure — typically a silent auto-reconnect attempt that lost the race.
+  // Surfacing it as a scary red box alarms a user who is happily connected /
+  // flashing on the working transport, so suppress it. Genuine errors on a
+  // transport the user is actively on are kept: those transports never sit at
+  // `'connected'`, so we only ever clear the idle one's message here.
+  if (status === 'connected' || status === 'flashing') {
+    if (s.usbStatus !== 'connected' && s.usbErrorMessage !== undefined) {
+      s = { ...s, usbErrorMessage: undefined };
+    }
+    if (s.bleStatus !== 'connected' && s.bleErrorMessage !== undefined) {
+      s = { ...s, bleErrorMessage: undefined };
+    }
+  }
+
   return { ...s, status };
 }
 

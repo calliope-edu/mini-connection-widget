@@ -267,6 +267,14 @@ function clearFlashState(): void {
     flashTransport: undefined,
     flashPhase: undefined,
     flashProgress: undefined,
+    // Bump `lastFlashAt` so the program-type auto-refresh re-probes the
+    // freshly-flashed program. `nativeFlash` only sets this when its reply
+    // resolves; the `flashDone` event can arrive first (or the reply can be
+    // lost), so anchoring the re-probe on flash completion here makes the
+    // program-type subscription independent of reply timing. Also clear
+    // `flashInProgress` — its true→false edge is the re-probe trigger.
+    flashInProgress: false,
+    lastFlashAt: Date.now(),
   }));
 }
 

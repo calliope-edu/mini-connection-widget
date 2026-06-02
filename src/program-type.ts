@@ -22,10 +22,10 @@
 
 import { getConnectedBleDevice } from './ble';
 import { getUsbConn, registerSerialDataListener } from './usb';
-import { calliopeState, updateState } from './state';
+import { calliopeState, updateState, getState } from './state';
 import { buildBlocksFrame, BLOCKS_REQ, BlocksUsbProbe } from './blocks-frame';
 import { isNativeMode } from './native-bridge';
-import { nativeGattRead } from './native-mode';
+import { nativeGattRead, nativeGattWrite } from './native-mode';
 
 export type CalliopeProgramType = 'blocks' | 'unknown' | 'disconnected';
 
@@ -43,6 +43,20 @@ export interface CalliopeProgramInfo {
 
 const BLOCKS_BLE_SERVICE_UUID = '0b50f3e4-607f-4151-9091-7d008d6ffc5c';
 const BLOCKS_BLE_STATE_CHAR_UUID = '0b500101-607f-4151-9091-7d008d6ffc5c';
+const BLOCKS_BLE_COMMAND_CHAR_UUID = '0b500100-607f-4151-9091-7d008d6ffc5c';
+
+/** Interval between STATE samples while waiting for the broadcaster to fill it. */
+const BLE_STATE_POLL_MS = 200;
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** True when any non-zero byte is present — the broadcaster filled STATE. */
+function hasNonZero(bytes: ArrayLike<number>): boolean {
+  for (let i = 0; i < bytes.length; i++) {
+    if (bytes[i] !== 0) return true;
+  }
+  return false;
+}
 
 // The USB Blocks-frame matcher (`BlocksUsbProbe`) lives in `blocks-frame.ts`
 // so it can be unit-tested without a serial port.
@@ -58,23 +72,37 @@ function readState(): { usbOn: boolean; bleOn: boolean } {
 
 // ---- Probes ---------------------------------------------------------------
 
-async function probeBle(): Promise<CalliopeProgramInfo | null> {
+async function probeBle(timeoutMs: number): Promise<CalliopeProgramInfo | null> {
+  // Don't read GATT while a flash is active — the post-flash window has the
+  // device rebooting through the bootloader and the native/DAP queue busy
+  // with flash control. See `flashInProgress` in state.ts.
+  if (getState().flashInProgress) return null;
+
+  const deadline = Date.now() + timeoutMs;
+
   if (isNativeMode()) {
-    // Native host owns GATT. Reuse the same proof-of-life heuristic: STATE
-    // returns non-zero only when the real Blocks runtime is filling it
-    // with sensor data; the CODAL stub leaves it all-zero. A failed read
-    // (bridge replies empty/throws) is treated as "no Blocks" — same
-    // semantics as the web path.
+    // Native host owns GATT. Same proof-of-life heuristic as web: STATE
+    // returns non-zero only when the real Blocks runtime is filling it with
+    // sensor data; the CODAL stub leaves it all-zero. Kick the broadcaster
+    // (the runtime only fills STATE once it sees a read/notify request),
+    // then sample a few times across the probe window. A read error is
+    // retryable within the window — only after the deadline is it "no Blocks".
     try {
-      const bytes = await nativeGattRead(BLOCKS_BLE_SERVICE_UUID, BLOCKS_BLE_STATE_CHAR_UUID);
-      if (bytes.length === 0) return null;
-      for (let i = 0; i < bytes.length; i++) {
-        if (bytes[i] !== 0) return { type: 'blocks', via: 'ble' };
-      }
-      return null;
-    } catch {
-      return null;
-    }
+      await nativeGattWrite(
+        BLOCKS_BLE_SERVICE_UUID,
+        BLOCKS_BLE_COMMAND_CHAR_UUID,
+        buildBlocksFrame(BLOCKS_REQ.READ, 0x0100),
+      );
+    } catch { /* wake is best-effort */ }
+    do {
+      try {
+        const bytes = await nativeGattRead(BLOCKS_BLE_SERVICE_UUID, BLOCKS_BLE_STATE_CHAR_UUID);
+        if (hasNonZero(bytes)) return { type: 'blocks', via: 'ble' };
+      } catch { /* retryable within the window */ }
+      if (Date.now() + BLE_STATE_POLL_MS >= deadline) break;
+      await sleep(BLE_STATE_POLL_MS);
+    } while (Date.now() < deadline);
+    return null;
   }
 
   const device = await getConnectedBleDevice();
@@ -85,33 +113,46 @@ async function probeBle(): Promise<CalliopeProgramInfo | null> {
   } catch {
     return null;
   }
+  let service: BluetoothRemoteGATTService;
+  let ch: BluetoothRemoteGATTCharacteristic;
   try {
-    const service = await server.getPrimaryService(BLOCKS_BLE_SERVICE_UUID);
-    // Service presence is no longer enough — the CODAL stub registers it
-    // unconditionally so partial-flash DAL hashes line up. Discriminate by
-    // reading STATE: real runtime continuously fills it with sensor data
-    // (byte 5 = temperature + 128, byte 4 = light level, …); the stub's
-    // buffer stays all-zero. Any non-zero byte → real runtime.
-    let isReal = false;
-    try {
-      const ch = await service.getCharacteristic(BLOCKS_BLE_STATE_CHAR_UUID);
-      const v = await ch.readValue();
-      for (let i = 0; i < v.byteLength; i++) {
-        if (v.getUint8(i) !== 0) { isReal = true; break; }
-      }
-    } catch {
-      // STATE read failed — without proof of life, treat as unknown.
-      return null;
-    }
-    if (!isReal) return null;
-    return { type: 'blocks', via: 'ble' };
+    service = await server.getPrimaryService(BLOCKS_BLE_SERVICE_UUID);
+    ch = await service.getCharacteristic(BLOCKS_BLE_STATE_CHAR_UUID);
   } catch {
+    // Service / characteristic not present → not the Blocks runtime.
     return null;
   }
+  // Service presence is no longer enough — the CODAL stub registers it
+  // unconditionally so partial-flash DAL hashes line up. Discriminate by
+  // reading STATE: real runtime continuously fills it with sensor data
+  // (byte 5 = temperature + 128, byte 4 = light level, …); the stub's
+  // buffer stays all-zero. Any non-zero byte → real runtime.
+  //
+  // A single quiescent read is an unstable false-negative: the broadcaster
+  // hasn't necessarily filled STATE yet at the instant we probe. Kick it
+  // (start notifications, which the runtime treats as the read/notify
+  // request that starts its STATE fiber) and sample across the window. A
+  // read error is retryable within the window, not an immediate null.
+  try { await ch.startNotifications(); } catch { /* wake is best-effort */ }
+  do {
+    try {
+      const v = await ch.readValue();
+      if (hasNonZero(new Uint8Array(v.buffer, v.byteOffset, v.byteLength))) {
+        return { type: 'blocks', via: 'ble' };
+      }
+    } catch { /* retryable within the window */ }
+    if (Date.now() + BLE_STATE_POLL_MS >= deadline) break;
+    await sleep(BLE_STATE_POLL_MS);
+  } while (Date.now() < deadline);
+  return null;
 }
 
 function probeUsb(timeoutMs: number): Promise<CalliopeProgramInfo | null> {
   return new Promise((resolve) => {
+    // Don't write serial while a flash is active — the probe would share the
+    // DAP `sendQueue` with the flash control commands. See `flashInProgress`
+    // in state.ts.
+    if (getState().flashInProgress) { resolve(null); return; }
     // Use the already-initialised connection only — never trigger a
     // requestDevice prompt from a passive program-type probe.
     const conn = getUsbConn();
@@ -169,10 +210,15 @@ export async function getRunningProgramType(
   const { usbOn, bleOn } = readState();
   if (!usbOn && !bleOn) return { type: 'disconnected' };
 
+  // Never probe during a flash: the post-flash window has serial / GATT busy
+  // and the device mid-reboot. The auto-refresh subscription re-probes once
+  // `flashInProgress` clears. Report 'unknown' so a stale result isn't latched.
+  if (getState().flashInProgress) return { type: 'unknown' };
+
   // Kick off whichever probes are available. Skip a probe if its transport
   // isn't connected — saves opening a stray serial subscription.
   const probes: Promise<CalliopeProgramInfo | null>[] = [];
-  if (bleOn) probes.push(probeBle());
+  if (bleOn) probes.push(probeBle(timeoutMs));
   if (usbOn) probes.push(probeUsb(timeoutMs));
 
   // Resolve on first positive hit, else wait for all and report 'unknown'.
@@ -202,14 +248,24 @@ export async function getRunningProgramType(
 let probeTimer: ReturnType<typeof setTimeout> | null = null;
 let lastConnectedKey = '<init>';
 let lastFlashAtSeen = 0;
+let flashWasInProgress = false;
 
 if (typeof window !== 'undefined') {
   calliopeState.subscribe((s) => {
     const key = `${s.usbStatus === 'connected' ? 'u' : ''}${s.bleStatus === 'connected' ? 'b' : ''}`;
-    // Re-probe whenever transports change OR a flash just completed
-    // (`lastFlashAt` advances). Post-flash the device runs a different
-    // program — the previous probe result is stale.
-    const flashEdge = s.lastFlashAt && s.lastFlashAt !== lastFlashAtSeen;
+    // Re-probe whenever transports change OR a flash just completed. We detect
+    // "flash completed" two ways and take whichever the backend gives us:
+    //   - `lastFlashAt` advances (set by the web/native flash dispatchers), or
+    //   - `flashInProgress` falls true→false (native `flashDone`, web `finally`).
+    // Native flashing in particular drives `programType` updates ONLY through
+    // these edges — there's no serial reply to piggyback on — so the falling
+    // edge of `flashInProgress` is what re-arms the probe there.
+    // Post-flash the device runs a different program → the previous result is
+    // stale.
+    const flashAtEdge = s.lastFlashAt && s.lastFlashAt !== lastFlashAtSeen;
+    const flashDoneEdge = flashWasInProgress && !s.flashInProgress;
+    const flashEdge = flashAtEdge || flashDoneEdge;
+    flashWasInProgress = s.flashInProgress;
     if (key === lastConnectedKey && !flashEdge) return;
     lastConnectedKey = key;
     if (s.lastFlashAt) lastFlashAtSeen = s.lastFlashAt;
@@ -224,6 +280,12 @@ if (typeof window !== 'undefined') {
       updateState((st) => (st.programType === 'disconnected' ? st : { ...st, programType: 'disconnected' }));
       return;
     }
+
+    // Defer the probe while a flash is still running. `getRunningProgramType`
+    // bails out during `flashInProgress`, and probing the device mid-reboot is
+    // pointless — the falling edge of `flashInProgress` re-enters here and
+    // schedules the real re-probe once the flash window closes.
+    if (s.flashInProgress) return;
 
     // Give GATT/service discovery (or the post-flash reboot) a moment to
     // settle, then probe. Post-flash needs longer because the device is

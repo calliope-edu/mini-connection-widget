@@ -211,6 +211,14 @@ async function flashDispatch(
       setPendingFlash(hex, name, 'ble', opts);
       appendLog({ direction: 'info', text: `User chose BLE — opening picker, flash will resume after connect` });
       await connectCalliope('ble', true);
+      // Picker aborted / connect failed? `connectCalliope` returns without
+      // leaving bleStatus in 'connecting'/'connected' (it sets 'disconnected'
+      // on abort, 'error' on failure). Drop the pending flash we just set so
+      // the auto-resume hook doesn't silently fire it on a later connect.
+      const after = getState();
+      if (after.bleStatus !== 'connecting' && after.bleStatus !== 'connected') {
+        clearPendingFlash();
+      }
       return;
     }
     case 'usb': {

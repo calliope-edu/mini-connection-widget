@@ -166,15 +166,25 @@ const PACKET_PAYLOAD_MAX = PACKET_PAYLOAD_STEPS[0];
  *
  * The v3-bootloader build deployed 2026-05-21 derives MAX_DFU_BUFFERS from
  * `((CODE_PAGE_SIZE / MAX_DFU_PKT_LEN) + 1) == (4096 / 244) + 1 == 17` at
- * compile time, so 12 leaves plenty of headroom. Older bootloaders shipped
- * with the SDK default 8 → 12 is too high there and the first PRN-cycle
- * mismatch surfaces; the adaptive step-down in sendDataObjectStream
- * recovers by retrying with smaller writes (which also reduces the per-
- * 85 ms-erase packet count, masking the buffer shortage). Compromise
- * value picked deliberately: 12 wins on the new bootloader, still
- * recovers gracefully on the old.
+ * compile time, so 6 leaves plenty of headroom. Older bootloaders shipped
+ * with the SDK default 8 → a value of 6 stays *under* that buffer too, so
+ * the RX queue can't overflow on either bootloader. (The previous default
+ * of 12 exceeded the old bootloader's 8-deep buffer and relied on the
+ * adaptive step-down to recover — but that recovery only fired on chunk 1,
+ * so an overflow on chunk 2+ failed the whole DFU. 6 removes the gamble.)
+ *
+ * This is the *initial* PRN interval; the adaptive step-down in
+ * sendDataObjectStream can lower it further (alongside the write payload)
+ * if a PRN/offset/CRC mismatch still surfaces.
  */
-const PRN_INTERVAL = 12;
+const PRN_INTERVAL = 6;
+
+/**
+ * Floor the adaptive step-down won't drop PRN below — at PRN=1 the
+ * bootloader acks every single packet, which is the most conservative
+ * flow-control possible (and slowest). No point going lower.
+ */
+const PRN_INTERVAL_MIN = 1;
 
 /** Timeout for every CalcChecksum / PRN ack — chunk size × write rate worst case. */
 const CHECKSUM_TIMEOUT_MS = 15_000;
@@ -209,6 +219,20 @@ export class BluetoothDfuServiceMissingError extends BluetoothDfuFailedError {
   }
 }
 
+/**
+ * Is this error an offset/CRC divergence between our local state and the
+ * bootloader's? Those are the symptoms of an RX-buffer overflow (we sent
+ * packets faster than the bootloader could drain them during page-erase),
+ * which the data-stream loop recovers from by lowering the PRN interval.
+ * Matched on the failure messages thrown by `streamChunkWithPrn` and
+ * `sendDataObjectStream` ("PRN offset mismatch", "PRN CRC mismatch",
+ * "Data offset mismatch…", "Data CRC mismatch…"). Distinct from a generic
+ * GATT/protocol error, which we don't retry.
+ */
+function isDfuStateMismatch(err: unknown): boolean {
+  return err instanceof BluetoothDfuFailedError && /mismatch/i.test(err.message);
+}
+
 // ---- Public entry point ----------------------------------------------------
 
 export type BluetoothDfuPhase =
@@ -218,6 +242,19 @@ export type BluetoothDfuPhase =
   | 'sending-init'
   | 'flashing'
   | 'finalising';
+
+/**
+ * Which DFU role the device is currently in.
+ *   - `'app'`        — running the application; exposes the buttonless
+ *                      characteristic (8EC90004 / 8EC90003). Needs the
+ *                      buttonless-enter dance before we can flash.
+ *   - `'bootloader'` — already in the Nordic secure-DFU bootloader; exposes
+ *                      the control + packet characteristics (8EC90001 /
+ *                      8EC90002). Skip the enter dance, resume on the
+ *                      existing connection.
+ *   - `'auto'`       — probe the characteristics to decide (the default).
+ */
+export type BluetoothDfuSessionKind = 'app' | 'bootloader' | 'auto';
 
 export interface FlashOverNordicDfuOptions {
   /** The already-permitted Web Bluetooth device. Must currently be running the application. */
@@ -236,6 +273,20 @@ export interface FlashOverNordicDfuOptions {
   onProgress?: (progress: number) => void;
   onPhase?: (phase: BluetoothDfuPhase) => void;
   signal?: AbortSignal;
+  /**
+   * Whether the device is currently running the application or is already
+   * sitting in the bootloader (e.g. a previous BLE-DFU was interrupted
+   * mid-transfer, or the user entered DFU mode with A+B+Reset). Drives the
+   * resume path.
+   *
+   * Defaults to `'auto'`, which probes the GATT characteristics:
+   * `device.name` is NOT used — Web Bluetooth caches the name from the
+   * pre-reboot advertisement and does not refresh it to "DfuTarg" after the
+   * bootloader takes over, so a name check silently misclassifies a
+   * just-rebooted device as still-in-app. Pass an explicit kind from the
+   * caller (which knows how the device got here) to skip the probe.
+   */
+  sessionKind?: BluetoothDfuSessionKind;
 }
 
 /**
@@ -274,20 +325,31 @@ export async function flashOverNordicDfuWeb(opts: FlashOverNordicDfuOptions): Pr
   const appBin = extractAppBin(opts.hex);
   trace(`app bin extracted: ${appBin.length} bytes`);
 
-  // Detect: is the device already advertising as DfuTarg? Happens when a
-  // previous BLE-DFU was interrupted mid-transfer — the bootloader stays
-  // in its DFU-in-progress state (showing "+" on the LED matrix from the
-  // progress histogram) and keeps advertising the Nordic DFU service.
-  // In that case we skip the buttonless-enter dance entirely — there's
-  // no app running to host the buttonless characteristic, and trying to
-  // write 0x01 to it throws and drops the link. A fresh
-  // Select/Create on the existing bootloader connection resets the
-  // in-progress object's offset/CRC, so we can resume from a clean
-  // state without an Abort (the v2-bootloader disconnects on Abort).
-  const alreadyInBootloader = /DfuTarg/i.test(opts.device.name ?? '');
+  // Detect: is the device already in the bootloader? Happens when a
+  // previous BLE-DFU was interrupted mid-transfer (the bootloader stays in
+  // its DFU-in-progress state, showing "+" on the LED matrix from the
+  // progress histogram and keeping the Nordic DFU service advertised), or
+  // when the user forced DFU mode with A+B+Reset.
+  //
+  // In that case we skip the buttonless-enter dance entirely — there's no
+  // app running to host the buttonless characteristic, and trying to write
+  // 0x01 to it throws and drops the link. A fresh Select/Create on the
+  // existing bootloader connection resets the in-progress object's
+  // offset/CRC, so we can resume from a clean state without an Abort (the
+  // v2-bootloader disconnects on Abort).
+  //
+  // We do NOT classify by `device.name === 'DfuTarg'`: Web Bluetooth caches
+  // the name from the device's pre-reboot advertisement and does not refresh
+  // it after the bootloader takes over, so a name check silently
+  // misclassifies a just-rebooted bootloader as still-in-app. Instead we
+  // honour an explicit `sessionKind` from the caller (which knows how the
+  // device got here) and otherwise probe the GATT characteristics directly:
+  // the control char (8EC90001) exists only in the bootloader, the
+  // buttonless char (8EC90004/3) only in the app.
+  const alreadyInBootloader = await resolveSessionKind(opts.device, opts.sessionKind, trace);
   let dfuServer: BluetoothRemoteGATTServer;
   if (alreadyInBootloader) {
-    trace('device is already DfuTarg — skipping buttonless enter, reusing the existing bootloader connection');
+    trace('device is already in the bootloader — skipping buttonless enter, reusing the existing bootloader connection');
     phase('reconnecting');
     // The device might still be advertising or we might still have a live
     // GATT — either way, ensure we have a server handle. If the link
@@ -392,7 +454,8 @@ export async function flashOverNordicDfuWeb(opts: FlashOverNordicDfuOptions): Pr
     // bootloader can keep up. `onProgress` only fires from here on, so the
     // 0..1 the caller sees is firmware-streaming progress.
     phase('flashing');
-    await setPRN(ctx, PRN_INTERVAL, trace);
+    ctx.prnInterval = PRN_INTERVAL;
+    await setPRN(ctx, ctx.prnInterval, trace);
     await sendDataObjectStream(
       ctx,
       appBin,
@@ -406,6 +469,88 @@ export async function flashOverNordicDfuWeb(opts: FlashOverNordicDfuOptions): Pr
   } finally {
     opts.device.removeEventListener('gattserverdisconnected', onDisconnect);
     try { ctx.dispose(); } catch { /* ignore */ }
+  }
+}
+
+// ---- Session classification (app vs bootloader) ----------------------------
+
+/**
+ * Decide whether the device is already in the bootloader (`true`) or still
+ * running the application (`false`).
+ *
+ * An explicit `sessionKind` from the caller wins — `ble.ts` knows whether it
+ * just triggered a reboot or found the device already advertising the DFU
+ * service. When it's `'auto'` (or absent) we probe the GATT characteristics
+ * rather than trusting `device.name`, which Web Bluetooth never refreshes to
+ * "DfuTarg" after the bootloader takes over:
+ *
+ *   - The secure-DFU control characteristic (8EC90001) exists ONLY in the
+ *     bootloader — its presence is a definitive "in bootloader" signal.
+ *   - The buttonless characteristic (8EC90004 / 8EC90003) exists ONLY in the
+ *     application.
+ *
+ * If neither is reachable (no GATT, service missing, probe error) we fall
+ * back to the application path: `enterBootloader` then surfaces a precise
+ * `BluetoothDfuServiceMissingError` if the buttonless characteristic really
+ * is absent, which is a cleaner failure than guessing "bootloader" and
+ * blowing up later on a missing control point.
+ */
+async function resolveSessionKind(
+  device: BluetoothDevice,
+  sessionKind: BluetoothDfuSessionKind | undefined,
+  trace: (m: string) => void,
+): Promise<boolean> {
+  if (sessionKind === 'bootloader') {
+    trace('sessionKind=bootloader (from caller) — treating device as already in bootloader');
+    return true;
+  }
+  if (sessionKind === 'app') {
+    trace('sessionKind=app (from caller) — treating device as running the application');
+    return false;
+  }
+
+  // sessionKind is 'auto' or undefined — probe the characteristics.
+  if (!device.gatt) {
+    trace('sessionKind=auto: device has no GATT to probe — assuming application');
+    return false;
+  }
+  try {
+    const server = device.gatt.connected ? device.gatt : await device.gatt.connect();
+    const service = await withTimeout(
+      server.getPrimaryService(NORDIC_DFU_SERVICE),
+      5000,
+      'getPrimaryService(session-probe)',
+    );
+    // Control point present → bootloader. Probe it first: it's the
+    // definitive bootloader-only characteristic.
+    try {
+      await withTimeout(
+        service.getCharacteristic(SECURE_DFU_CONTROL_POINT),
+        3000,
+        'getCharacteristic(control-point session-probe)',
+      );
+      trace('sessionKind=auto: control point (8EC90001) present — device is in the bootloader');
+      return true;
+    } catch { /* not the bootloader — fall through to the app probe */ }
+
+    // Buttonless present → application.
+    for (const uuid of [BUTTONLESS_DFU_WITH_BONDS, BUTTONLESS_DFU_WITHOUT_BONDS]) {
+      try {
+        await withTimeout(
+          service.getCharacteristic(uuid),
+          3000,
+          `getCharacteristic(${uuid} session-probe)`,
+        );
+        trace(`sessionKind=auto: buttonless characteristic (${uuid}) present — device is running the application`);
+        return false;
+      } catch { /* try next */ }
+    }
+
+    trace('sessionKind=auto: neither control point nor buttonless characteristic found — defaulting to application path');
+    return false;
+  } catch (e) {
+    trace(`sessionKind=auto: probe failed (${(e as Error).message}) — defaulting to application path`);
+    return false;
   }
 }
 
@@ -589,6 +734,14 @@ interface SecureDfuContext {
    */
   payloadSize: number;
   /**
+   * Packets per PRN currently in force for the data-streaming phase. Starts
+   * at `PRN_INTERVAL` and can be lowered by the adaptive step-down in
+   * `sendDataObjectStream` when a PRN/offset/CRC mismatch points at an RX
+   * buffer overflow. `streamChunkWithPrn` reads this each packet so a
+   * mid-stream change takes effect on the next PRN cycle.
+   */
+  prnInterval: number;
+  /**
    * Set to true by the outer `gattserverdisconnected` handler when the
    * link drops mid-DFU. Hot-path code (packet writes, control writes,
    * stream loops) checks this and bails immediately with a clear error
@@ -697,6 +850,7 @@ async function openSecureDfuChannel(
     packet,
     awaitResponse,
     payloadSize: PACKET_PAYLOAD_SAFE,
+    prnInterval: PRN_INTERVAL,
     disconnected: false,
     // Reads through to whatever the in-flight `awaitResponse` registered.
     // The outer disconnect handler reaches in via this getter so it can
@@ -790,9 +944,12 @@ async function sendDataObjectStream(
   let sent = 0;
   let cumulativeCrc = 0xffffffff;
   let chunkIndex = 0;
-  // Track which step in `PACKET_PAYLOAD_STEPS` we're on. We only fall
-  // back during chunk 1 — if anything past that fails it's a real
-  // protocol error, not an MTU mismatch.
+  // Track which step in `PACKET_PAYLOAD_STEPS` we're on. The payload
+  // step-down (MTU mismatch) is only meaningful on chunk 1 — if the
+  // negotiated ATT MTU were too small we'd have failed the very first
+  // chunk. The *PRN* step-down, by contrast, can fire on any chunk: an
+  // RX-buffer overflow only shows up once page-erase timing lines up
+  // unfavourably, which can be a later chunk. See the catch block.
   let payloadStepIdx = PACKET_PAYLOAD_STEPS.indexOf(ctx.payloadSize);
   if (payloadStepIdx < 0) payloadStepIdx = PACKET_PAYLOAD_STEPS.length - 1;
   const totalChunks = Math.ceil(data.length / maxChunk);
@@ -843,6 +1000,18 @@ async function sendDataObjectStream(
       trace(`chunk ${chunkIndex}/${totalChunks} done in ${elapsed}ms — ${sent}/${data.length} B (${pct}%)`);
       onProgress(sent, data.length);
     } catch (err) {
+      // Any step-down only helps if the GATT link survived the failed
+      // attempt. Some oversized writes (PACKET_PAYLOAD_STEPS[0] above the
+      // negotiated ATT MTU) cause the bootloader to drop the link as a
+      // side effect — every subsequent step then fails with "GATT
+      // disconnected mid-DFU" and we'd bury the real cause under noise.
+      // Bail early in that case and let the dispatcher surface a clean
+      // failure to the user.
+      if (ctx.disconnected) {
+        trace(`chunk ${chunkIndex} disconnected the GATT (payload=${ctx.payloadSize}); skipping step-down — link is gone`);
+        throw err;
+      }
+
       // First-chunk-only retry: step down through `PACKET_PAYLOAD_STEPS`.
       // Most likely cause when we started at a large payload is that
       // Chrome's negotiated ATT MTU is smaller than our optimistic
@@ -850,20 +1019,9 @@ async function sendDataObjectStream(
       // fragmented silently and our PRN offset diverged. Drop one step
       // and retry chunk 1 from scratch (CreateObject resets the
       // bootloader's per-chunk state, and `sent`/`cumulativeCrc` only
-      // advance on success). Failure past chunk 1, or after all steps
-      // exhausted, is a real protocol error and gets thrown.
+      // advance on success). The MTU can only mismatch on the first
+      // chunk, so this path stays chunk-1-only.
       if (chunkIndex === 1 && payloadStepIdx + 1 < PACKET_PAYLOAD_STEPS.length) {
-        // The step-down only helps if the GATT link survived the failed
-        // attempt. Some oversized writes (PACKET_PAYLOAD_STEPS[0] above the
-        // negotiated ATT MTU) cause the bootloader to drop the link as a
-        // side effect — every subsequent step then fails with "GATT
-        // disconnected mid-DFU" and we bury the real cause under noise.
-        // Bail early instead and let the dispatcher surface a clean
-        // failure to the user.
-        if (ctx.disconnected) {
-          trace(`chunk 1 disconnected the GATT (payload=${ctx.payloadSize}); skipping step-down — link is gone`);
-          throw err;
-        }
         const oldPayload = ctx.payloadSize;
         payloadStepIdx++;
         ctx.payloadSize = PACKET_PAYLOAD_STEPS[payloadStepIdx];
@@ -871,6 +1029,32 @@ async function sendDataObjectStream(
         chunkIndex--;
         continue;
       }
+
+      // Any-chunk PRN step-down: a PRN/offset/CRC mismatch points at an
+      // RX-buffer overflow (we outran the bootloader's NRF_DFU_BLE_BUFFERS
+      // during the page-erase window), which — unlike an MTU mismatch —
+      // can surface on a later chunk when erase timing lines up badly.
+      // Halve the PRN interval (more frequent acks → fewer in-flight
+      // packets during erase) and retry the same chunk. CreateObject
+      // resets the bootloader's per-chunk state, and `sent`/`cumulativeCrc`
+      // only advance on success, so retrying is safe. Bounded by
+      // PRN_INTERVAL_MIN: once PRN bottoms out (every packet acked) the
+      // guard below is false and a persisting mismatch is thrown as a real
+      // protocol error.
+      if (isDfuStateMismatch(err) && ctx.prnInterval > PRN_INTERVAL_MIN) {
+        const oldPrn = ctx.prnInterval;
+        ctx.prnInterval = Math.max(PRN_INTERVAL_MIN, Math.floor(ctx.prnInterval / 2));
+        trace(`chunk ${chunkIndex} mismatch with PRN=${oldPrn} (${(err as Error).message}) — lowering PRN to ${ctx.prnInterval} and retrying`);
+        try {
+          await setPRN(ctx, ctx.prnInterval, trace);
+        } catch (prnErr) {
+          trace(`could not re-set PRN after mismatch: ${(prnErr as Error).message}`);
+          throw err;
+        }
+        chunkIndex--;
+        continue;
+      }
+
       throw err;
     }
   }
@@ -878,7 +1062,7 @@ async function sendDataObjectStream(
 
 /**
  * Stream one chunk's bytes with Packet Receipt Notification throttling.
- * Every `PRN_INTERVAL` packets, we expect a notification on the Control
+ * Every `ctx.prnInterval` packets, we expect a notification on the Control
  * Point with the running offset+CRC; we set up the awaitResponse *before*
  * writing the Nth packet so the notification finds a resolver waiting.
  *
@@ -913,8 +1097,9 @@ async function streamChunkWithPrn(
     // a resolver in place (notifications without a pending resolver get
     // dropped). A PRN at end-of-chunk is fine — we just consume it; the
     // outer loop's explicit CalcChecksum gets its own response.
+    const prnInterval = ctx.prnInterval;
     const nextCount = packetsSincePrn + 1;
-    const isPrnPacket = PRN_INTERVAL > 0 && nextCount === PRN_INTERVAL;
+    const isPrnPacket = prnInterval > 0 && nextCount >= prnInterval;
     let prnPending: Promise<Uint8Array> | null = null;
     if (isPrnPacket) {
       prnPending = ctx.awaitResponse(Op.CalcChecksum, CHECKSUM_TIMEOUT_MS);

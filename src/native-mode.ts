@@ -164,21 +164,56 @@ export async function nativeGattWrite(
   });
 }
 
+// Host-subscribe refcount per characteristic. We send the host a single
+// `gattSubscribe` on the 0->1 transition and a single `gattUnsubscribe` on the
+// 1->0 transition — mirroring `addNativeGattListener`'s Set-size check on the
+// bridge side. Without this, re-subscribing the same characteristic only ever
+// sends one host subscribe while unsubscribing one of several listeners would
+// tear down the host notification for the others.
+const hostSubscribeCounts = new Map<string, number>();
+
+function hostSubscribeKey(serviceId: string | number, characteristicId: string | number): string {
+  return `${String(serviceId).toLowerCase()}|${String(characteristicId).toLowerCase()}`;
+}
+
 export async function nativeGattSubscribe(
   serviceId: string | number,
   characteristicId: string | number,
   cb: (data: Uint8Array) => void,
 ): Promise<() => void> {
+  // Attach the local listener immediately so notifications that arrive before
+  // the host's subscribe reply (and any added while a sibling subscribe is
+  // still pending) are delivered rather than dropped.
   const unsubLocal = addNativeGattListener(serviceId, characteristicId, cb);
-  try {
-    await sendNative<void>('gattSubscribe', { serviceId, characteristicId });
-  } catch (err) {
-    unsubLocal();
-    throw err;
+  const key = hostSubscribeKey(serviceId, characteristicId);
+  const prevCount = hostSubscribeCounts.get(key) ?? 0;
+  hostSubscribeCounts.set(key, prevCount + 1);
+  if (prevCount === 0) {
+    // 0->1 transition: this is the first listener for the characteristic, so
+    // ask the host to start delivering notifications.
+    try {
+      await sendNative<void>('gattSubscribe', { serviceId, characteristicId });
+    } catch (err) {
+      unsubLocal();
+      const count = hostSubscribeCounts.get(key) ?? 0;
+      if (count <= 1) hostSubscribeCounts.delete(key);
+      else hostSubscribeCounts.set(key, count - 1);
+      throw err;
+    }
   }
+  let released = false;
   return () => {
+    if (released) return;
+    released = true;
     unsubLocal();
-    void sendNative<void>('gattUnsubscribe', { serviceId, characteristicId }).catch(() => { /* ignore */ });
+    const count = hostSubscribeCounts.get(key) ?? 0;
+    if (count <= 1) {
+      // 1->0 transition: last listener gone, tell the host to stop.
+      hostSubscribeCounts.delete(key);
+      void sendNative<void>('gattUnsubscribe', { serviceId, characteristicId }).catch(() => { /* ignore */ });
+    } else {
+      hostSubscribeCounts.set(key, count - 1);
+    }
   };
 }
 

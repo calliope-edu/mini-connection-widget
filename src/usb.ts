@@ -20,7 +20,7 @@ import { appendLog } from './log';
 import { detectCalliopeVersion, stripMakeCodeMetadata } from './helpers';
 import { friendlyNameFromDeviceId } from './friendly-name';
 import { startHeartbeat, stopHeartbeat } from './serial';
-import { classifyUsbError, isExpectedRebootWindow } from './connection-errors';
+import { classifyUsbError, isExpectedRebootWindow, SEGGER_JLINK_VENDOR_ID } from './connection-errors';
 import { showUsbErrorInfo } from './usb-error-info';
 
 let usbConn: MicrobitUSBConnection | null = null;
@@ -599,7 +599,15 @@ export async function forgetAllUsbDevices(): Promise<void> {
     const devices = await nav.usb.getDevices();
     let forgotAny = false;
     for (const d of devices) {
-      if (d.vendorId !== 0x0d28 || d.productId !== 0x0204) continue;
+      // Forget both the standard DAPLink (CMSIS-DAP flash path) AND any SEGGER
+      // J-Link OB unit (Calliope Mini 2 interface chip, VID 0x1366). Without
+      // the J-Link case a paired Mini 2 keeps getting auto-attempted after the
+      // user clicked "Trennen & vergessen". The VID 0x1366 match covers every
+      // PID the J-Link picker (SEGGER_USB_FILTERS) can authorize, since they
+      // all share that vendor id.
+      const isDapLink = d.vendorId === 0x0d28 && d.productId === 0x0204;
+      const isJLink = d.vendorId === SEGGER_JLINK_VENDOR_ID;
+      if (!isJLink && !isDapLink) continue;
       if (typeof d.forget === 'function') {
         try { await d.forget(); forgotAny = true; } catch { /* ignore */ }
       }
