@@ -208,13 +208,13 @@ async function flashDispatch(
   }
   switch (choice) {
     case 'ble': {
-      setPendingFlash(hex, name, 'ble');
+      setPendingFlash(hex, name, 'ble', opts);
       appendLog({ direction: 'info', text: `User chose BLE — opening picker, flash will resume after connect` });
       await connectCalliope('ble', true);
       return;
     }
     case 'usb': {
-      setPendingFlash(hex, name, 'usb');
+      setPendingFlash(hex, name, 'usb', opts);
       appendLog({ direction: 'info', text: `User chose USB — opening picker, flash will resume after connect` });
       await flashCalliopeHybrid(hex, name);
       clearPendingFlash();
@@ -306,10 +306,15 @@ async function flashOverBle(
 
 // ---- Pending-flash plumbing -----------------------------------------------
 
-function setPendingFlash(hex: string, name: string, preferredTransport?: CalliopeTransport): void {
+function setPendingFlash(
+  hex: string,
+  name: string,
+  preferredTransport?: CalliopeTransport,
+  opts: FlashOptions = {},
+): void {
   updateState((st) => ({
     ...st,
-    pendingFlash: { hex, name, createdAt: Date.now(), preferredTransport },
+    pendingFlash: { hex, name, createdAt: Date.now(), preferredTransport, forceFullDfu: opts.forceFullDfu },
   }));
 }
 
@@ -353,7 +358,9 @@ calliopeState.subscribe((s) => {
     text: `Transport ${bleConnected ? 'BLE' : 'USB'} connected — auto-resuming pending flash "${pending.name}"${pending.preferredTransport ? ` (user picked ${pending.preferredTransport})` : ''}`,
   });
   clearPendingFlash();
-  flashCalliope(pending.hex, pending.name, pending.preferredTransport).catch((err) => {
+  flashCalliope(pending.hex, pending.name, pending.preferredTransport, {
+    forceFullDfu: pending.forceFullDfu,
+  }).catch((err) => {
     appendLog({
       direction: 'error',
       text: `Auto-resumed flash failed: ${(err as Error)?.message ?? err}`,

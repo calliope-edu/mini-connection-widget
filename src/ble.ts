@@ -752,14 +752,22 @@ export async function flashCalliopeViaBleDfu(hex: string, name: string): Promise
     return;
   }
 
-  let boardVersion: 'V2' | undefined;
-  try {
-    const v = c.getBoardVersion();
-    if (v === 'V2') boardVersion = 'V2';
-  } catch { /* not ready yet */ }
-  if (boardVersion !== 'V2') {
-    throw new BluetoothDfuFailedError('Full BLE flash is only supported on Calliope mini 1, 2 or 3.');
+  // Decide the Nordic Secure-DFU (nRF52) path by an ACTUAL DFU service, NOT
+  // c.getBoardVersion(): the name-based heuristic returns 'V2' for EVERY
+  // Calliope mini, so an nRF51 (mini 1/2) that reached here — i.e. the legacy
+  // e95d93b0 V1 path above already returned, so it's NOT in legacy DFU — would
+  // be misrouted into Secure-DFU, which physically cannot work on nRF51. Gate
+  // on the Nordic Secure DFU service (0xfe59) being present; if it isn't, fail
+  // fast with an actionable message so flash.ts can fall back to USB instead of
+  // attempting an impossible flash.
+  const hasSecureDfu = await deviceHasService(device, 0xfe59);
+  if (!hasSecureDfu) {
+    throw new BluetoothDfuFailedError(
+      'Kein BLE-DFU-Dienst gefunden. Halte A + B und drücke Reset (DFU-Modus) ' +
+      'und verbinde erneut — oder flashe per USB.',
+    );
   }
+  const boardVersion: 'V2' = 'V2';
   const cleanHex = stripMakeCodeMetadata(hex);
   appendLog({
     direction: 'info',

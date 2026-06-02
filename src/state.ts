@@ -124,6 +124,10 @@ export interface CalliopeState {
      *  When set, the dispatcher honors it instead of defaulting to USB-first
      *  routing. */
     preferredTransport?: CalliopeTransport;
+    /** Carried through so the auto-resume preserves it. Without this a
+     *  forced-full-DFU flash (e.g. the Blocks runtime) deferred until connect
+     *  resumes WITHOUT the flag and can be BLE-partial-flashed → corruption. */
+    forceFullDfu?: boolean;
   };
 
   /**

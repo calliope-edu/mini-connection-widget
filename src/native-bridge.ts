@@ -74,6 +74,8 @@ export function isNativeMode(): boolean {
 interface PendingReply {
   resolve: (data: unknown) => void;
   reject: (err: Error) => void;
+  /** Per-request timeout so a dropped/forgotten host reply can't hang forever. */
+  timer?: ReturnType<typeof setTimeout>;
 }
 
 const pending = new Map<string, PendingReply>();
@@ -95,14 +97,27 @@ export function sendNative<T = unknown>(op: string, args: Record<string, unknown
   }
   const id = makeId();
   const envelope = JSON.stringify({ id, op, args });
+  // Without a timeout a dropped/forgotten host reply hangs the caller forever:
+  // nativeConnect stuck 'connecting' (daemon never re-arms), nativeFlash stuck
+  // flashInProgress (gates serial + all future flashes), nativeGattRead/
+  // Subscribe never settling. On iOS postMessage returns void and never throws,
+  // so the catch below cannot cover a silently-dropped message. DFU is slow, so
+  // give 'flash' a longer budget.
+  const timeoutMs = op === 'flash' ? 180_000 : 30_000;
   return new Promise<T>((resolve, reject) => {
-    pending.set(id, { resolve: resolve as (d: unknown) => void, reject });
+    const timer = setTimeout(() => {
+      if (pending.delete(id)) {
+        reject(new Error(`native ${op} timed out after ${timeoutMs}ms`));
+      }
+    }, timeoutMs);
+    pending.set(id, { resolve: resolve as (d: unknown) => void, reject, timer });
     try {
       // Android wants a string; iOS WKScriptMessageHandler accepts JSON-typed
       // objects but the string form works for both and keeps the envelope
       // identical.
       (bridgeRef as AndroidBridge).postMessage(envelope);
     } catch (err) {
+      clearTimeout(timer);
       pending.delete(id);
       reject(err instanceof Error ? err : new Error(String(err)));
     }
@@ -318,6 +333,7 @@ function handleMessage(envelope: string | NativeMessage): void {
     const slot = pending.get(msg.id);
     if (!slot) return;
     pending.delete(msg.id);
+    if (slot.timer) clearTimeout(slot.timer);
     if (msg.error) slot.reject(new Error(msg.error));
     else slot.resolve(msg.data);
     return;
