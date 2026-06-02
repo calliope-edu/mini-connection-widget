@@ -56,14 +56,52 @@ export async function connectCalliope(
           bleCanCommunicate: false,
         }));
       }
-      // With rc07-open firmware there's no SMP gate to negotiate — the
-      // bondMode flag the Capacitor native plugin used to take is now a
-      // no-op on every supported transport.
-      await c.connect();
-      // `connect()` returning means the browser now remembers the device
-      // for this origin. Reflect that in state so the daemon and UI can
-      // make decisions without re-querying getDevices().
-      updateState((s) => ({ ...s, bleHasPermission: true }));
+      // Retry transient connect failures BEFORE surfacing the destructive
+      // A+B+Reset offline modal — mirrors the USB connectWithRetry. A momentary
+      // RF glitch / Windows-BT hiccup / device-asleep on a BLE-capable device
+      // must not tell a child to A+B+Reset (which drops the running program
+      // into the bootloader). The chooser (if any) ran inside the first
+      // c.connect(); retries reuse the already-picked device — no re-prompt.
+      const BLE_TRIES = 3;
+      const BLE_BACKOFF_MS = [600, 1400];
+      let lastErr: unknown;
+      for (let i = 0; i < BLE_TRIES; i++) {
+        try {
+          await c.connect();
+          // `connect()` returning means the browser now remembers the device
+          // for this origin. Reflect that so the daemon and UI can decide
+          // without re-querying getDevices().
+          updateState((s) => ({ ...s, bleHasPermission: true }));
+          return;
+        } catch (err) {
+          const classified = classifyBleError(err);
+          if (classified.kind === 'aborted') {
+            // User cancelled the picker — not an error; don't retry or modal.
+            updateState((s) => ({ ...s, bleStatus: 'disconnected', bleErrorMessage: undefined }));
+            return;
+          }
+          // User hit "Abbrechen / give up" mid-retry → stop quietly.
+          if (getState().userDisconnectedBle) return;
+          lastErr = err;
+          appendLog({
+            direction: 'info',
+            text: `BLE connect attempt ${i + 1}/${BLE_TRIES} failed (kind=${classified.kind}): ${(err as Error)?.message ?? err}`,
+          });
+          if (i < BLE_TRIES - 1) {
+            await new Promise((r) => setTimeout(r, BLE_BACKOFF_MS[Math.min(i, BLE_BACKOFF_MS.length - 1)]));
+          }
+        }
+      }
+      // Retries exhausted — now surface the error + recovery modal.
+      if (getState().userDisconnectedBle) return;
+      const classified = classifyBleError(lastErr);
+      appendLog({
+        direction: 'info',
+        text: `BLE connect failed after ${BLE_TRIES} attempts (kind=${classified.kind}): ${(lastErr as Error)?.message ?? lastErr}`,
+      });
+      updateState((s) => ({ ...s, bleStatus: 'error', bleErrorMessage: classified.userMessage }));
+      if (classified.kind === 'transient') showBleOfflineInfo();
+      return;
     } else {
       if (!SUPPORT.usb) return;
       updateState((s) => ({

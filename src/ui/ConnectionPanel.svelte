@@ -116,6 +116,11 @@
   function doConnectBle() { fire(); void connectCalliope('ble'); }
   function doForgetUsb() { fire(); void disconnectAndForget('usb'); }
   function doForgetBle() { fire(); void disconnectAndForget('ble'); }
+  // Give up on an in-flight / retrying BLE attempt: disconnectAndForget sets
+  // userDisconnectedBle (which stops the reconnect daemon) and forgets the
+  // device, so the next "Verbinden" opens a fresh picker — no page reload.
+  function doCancelBle() { fire(); void disconnectAndForget('ble'); }
+  function doCancelUsb() { fire(); void disconnectAndForget('usb'); }
 </script>
 
 <div class="panel">
@@ -212,9 +217,18 @@
             <button type="button" class="row-btn ghost" onclick={doForgetUsb} disabled={usbBusy}>
               {labels.disconnect}
             </button>
+          {:else if s.usbStatus === 'connecting' || s.usbStatus === 'error'}
+            <button type="button" class="row-btn ghost" onclick={doCancelUsb}>
+              {labels.cancel}
+            </button>
+            {#if s.usbStatus === 'error'}
+              <button type="button" class="row-btn primary" onclick={doConnectUsb}>
+                {labels.connect}
+              </button>
+            {/if}
           {:else}
             <button type="button" class="row-btn primary" onclick={doConnectUsb} disabled={usbBusy}>
-              {usbBusy ? labels.connecting : labels.connect}
+              {labels.connect}
             </button>
           {/if}
         </div>
@@ -238,9 +252,21 @@
             <button type="button" class="row-btn ghost" onclick={doForgetBle} disabled={bleBusy}>
               {labels.forget}
             </button>
+          {:else if s.bleStatus === 'connecting' || s.bleStatus === 'error'}
+            <!-- Connecting / retrying / error: always give the user an out.
+                 Abbrechen stops the reconnect daemon + frees the picker (no
+                 page reload needed); on error we also offer a direct retry. -->
+            <button type="button" class="row-btn ghost" onclick={doCancelBle}>
+              {labels.cancel}
+            </button>
+            {#if s.bleStatus === 'error'}
+              <button type="button" class="row-btn primary" onclick={doConnectBle}>
+                {labels.connect}
+              </button>
+            {/if}
           {:else}
             <button type="button" class="row-btn primary" onclick={doConnectBle} disabled={bleBusy}>
-              {bleBusy ? labels.connecting : labels.connect}
+              {labels.connect}
             </button>
           {/if}
         </div>

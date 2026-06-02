@@ -1,7 +1,7 @@
 <script lang="ts">
   import { calliopeBleOfflineInfo, dismissBleOfflineInfo } from '../ble-offline-info';
   import { calliopeState } from '../state';
-  import { connectCalliope } from '../connect';
+  import { connectCalliope, disconnectAndForget } from '../connect';
 
   const visible = $derived($calliopeBleOfflineInfo);
 
@@ -38,6 +38,15 @@
   function useUsbInstead(): void {
     dismissBleOfflineInfo();
     void connectCalliope('usb');
+  }
+
+  // Give up entirely: stop the reconnect daemon (disconnectAndForget sets
+  // userDisconnectedBle) and forget the device so the next "Verbinden" opens a
+  // fresh picker. Without this the daemon keeps retrying after the modal is
+  // closed, and the user has to reload the page to connect a different mini.
+  function cancelConnection(): void {
+    dismissBleOfflineInfo();
+    void disconnectAndForget('ble');
   }
 </script>
 
@@ -105,6 +114,9 @@
         </button>
       </div>
       <div class="dismiss-row">
+        <button type="button" class="link-btn" onclick={cancelConnection}>
+          Verbindung abbrechen
+        </button>
         <button type="button" class="link-btn" onclick={() => dismissBleOfflineInfo()}>
           Schließen
         </button>

@@ -36,6 +36,8 @@ export interface ConnectLabels {
   connect: string;
   disconnect: string;
   forget: string;
+  /** Stop an in-flight / retrying connection attempt and free the picker. */
+  cancel: string;
 
   // Flash block
   flashVia: (transport: 'usb' | 'ble') => string;
@@ -91,6 +93,7 @@ export const DEFAULT_LABELS: ConnectLabels = {
   connect: 'Verbinden',
   disconnect: 'Trennen',
   forget: 'Trennen & vergessen',
+  cancel: 'Abbrechen',
 
   flashVia: (t) => `Flashen via ${t === 'ble' ? 'Bluetooth' : 'USB'}`,
   partialFlash: 'Schnelles Flashen',
