@@ -185,6 +185,13 @@ export async function getUsbConnection(): Promise<MicrobitUSBConnection> {
   usbInitPromise = (async () => {
     const c = createUSBConnection({ deviceSelectionMode: DeviceSelectionMode.UseAnyAllowed });
     await c.initialize();
+    // Exclude SEGGER J-Link OB (Calliope Mini 2 interface chip, VID 0x1366)
+    // from the WebUSB picker AND the auto-attempt-on-load: the CMSIS-DAP /
+    // DAPLink flash path can't drive a J-Link, so offering it here only yields
+    // a confusing "Unable to claim interface"-style CMSIS-DAP failure. Mini 2
+    // USB flashing goes through the dedicated segger-jlink transport instead.
+    // (getFilteredAllowedDevices + chooseDevice both honor exclusionFilters.)
+    c.setRequestDeviceExclusionFilters([{ vendorId: 0x1366 }]);
     c.addEventListener('status', (ev) => {
       const mapped = mapStatus(ev.status);
       const dev = c.getDevice();
