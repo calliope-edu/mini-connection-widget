@@ -277,6 +277,32 @@ async function flashOverBle(
     return;
   }
 
+  // Device is currently running the Blocks/MbitMore runtime → force full DFU.
+  //
+  // Blocks, pxt-calliope (MakeCode) and codal-MicroPython are all built on the
+  // same codal base, so they share the same DAL-region hash. The partial-flash
+  // DAL check (`ble-flash-web` line ~611) therefore PASSES when flashing a
+  // MakeCode/MicroPython hex onto a Blocks-running device even though the app
+  // layout is incompatible. The partial flash then switches the device into
+  // pairing mode and fails mid-stream; by that point the device sits in the
+  // partial-flash bootloader where the Nordic-DFU fallback can't reach it, so
+  // the flow dead-ends at the USB-plug modal (observed e2e 2026-06-02, Blocks→
+  // MakeCode on Mini 3). A runtime change away from Blocks always needs a full
+  // DFU — mirroring `forceFullDfu`, which already covers the reverse direction
+  // (flashing *into* Blocks). `programType` is kept fresh by the probe in
+  // program-type.ts and only ever reads 'blocks' for the Blocks runtime
+  // (MakeCode/MicroPython read as 'unknown'), so MakeCode→MakeCode and
+  // MicroPython→MicroPython partial flashes are unaffected.
+  if (getState().programType === 'blocks') {
+    appendLog({
+      direction: 'info',
+      text: 'Gerät läuft Blocks-Runtime — Laufzeitwechsel erfordert Voll-DFU (Partial-Flash übersprungen).',
+    });
+    markExpectedReboot(45_000);
+    await flashCalliopeViaBleDfu(hex, name);
+    return;
+  }
+
   // Try partial flash first (fast path). The partial-flash parser now
   // accepts both MakeCode and MicroPython hex formats; MicroPython hexes
   // flash just the 24 KB filesystem region (~3-5 s) instead of the whole
