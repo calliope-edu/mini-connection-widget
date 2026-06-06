@@ -409,19 +409,19 @@ export async function flashOverNordicDfuWeb(opts: FlashOverNordicDfuOptions): Pr
   // that sendDataObjectStream's in-loop step-down cannot (it needs a live link
   // to step down on). When MTU_GET *is* available we trust it and skip the
   // ladder entirely.
-  const mtu = await probeMtuOnce(dfuServer, opts.device, trace);
-  const initialPayload = mtu && mtu > 0
-    ? PACKET_PAYLOAD_STEPS.find((p) => p <= mtu - 3) ?? PACKET_PAYLOAD_SAFE
-    : PACKET_PAYLOAD_MAX;
-  // If MTU is known we only ever use that one payload (no reconnect ladder);
-  // if it's unknown we allow reconnect-and-step-down from the optimistic max.
-  const ladder = mtu && mtu > 0
-    ? [initialPayload]
-    : PACKET_PAYLOAD_STEPS.filter((p) => p <= initialPayload);
+  // The payload ladder. We start optimistically at 244 and, only if a large
+  // write drops the link, reconnect and retry the whole init+stream one step
+  // smaller (244 → 64 → 20). MTU is queried on the SAME channel we stream on
+  // (not a throwaway probe channel — opening two channels back-to-back
+  // destabilised the bootloader GATT and killed the init packet with
+  // "GATT Error Unknown", observed 2026-06-06). When MTU_GET answers we trust
+  // it and use a single payload (no ladder).
+  const ladder = PACKET_PAYLOAD_STEPS.slice(); // [244, 64, 20]
 
   let lastErr: unknown;
+  let mtuResolved = false;
   for (let li = 0; li < ladder.length; li++) {
-    const payload = ladder[li];
+    let payload = ladder[li];
     const isLastStep = li === ladder.length - 1;
 
     // (Re)connect for retries — the previous attempt dropped the link.
@@ -433,16 +433,9 @@ export async function flashOverNordicDfuWeb(opts: FlashOverNordicDfuOptions): Pr
     }
 
     const ctx = await openSecureDfuChannel(dfuServer, trace);
-    ctx.payloadSize = payload;
-    trace(
-      mtu && mtu > 0
-        ? `bootloader reports MTU=${mtu}; using ${payload}-byte writes`
-        : `bootloader MTU_GET unsupported; trying ${payload}-byte writes${isLastStep ? '' : ' (will reconnect+step down on link drop)'}`,
-    );
 
-    // Watch for mid-DFU disconnect. If the bootloader's GATT drops while we
-    // think we're streaming, every subsequent write would silently queue or
-    // throw a generic GATT error — surface the disconnect immediately.
+    // Watch for mid-DFU disconnect. Register BEFORE any control writes so a
+    // drop during MTU_GET / init unblocks the in-flight awaitResponse.
     const onDisconnect = () => {
       ctx.disconnected = true;
       trace('!!! GATT disconnected during DFU — bootloader may have aborted (inactivity, link loss, or rejection)');
@@ -451,6 +444,22 @@ export async function flashOverNordicDfuWeb(opts: FlashOverNordicDfuOptions): Pr
     opts.device.addEventListener('gattserverdisconnected', onDisconnect);
 
     try {
+      // On the first channel, ask the bootloader for its MTU on this very
+      // channel. If it answers, jump the ladder straight to the right payload
+      // and disable further step-down (a known MTU never overflows).
+      if (!mtuResolved) {
+        mtuResolved = true;
+        const mtu = await mtuGet(ctx).catch(() => null);
+        if (mtu && mtu > 0) {
+          payload = PACKET_PAYLOAD_STEPS.find((p) => p <= mtu - 3) ?? PACKET_PAYLOAD_SAFE;
+          ladder.length = li + 1; // pin to this payload — no reconnect ladder
+          trace(`bootloader reports MTU=${mtu}; using ${payload}-byte writes`);
+        } else {
+          trace(`bootloader MTU_GET unsupported; trying ${payload}-byte writes${isLastStep ? '' : ' (will reconnect+step down on link drop)'}`);
+        }
+      }
+      ctx.payloadSize = payload;
+
       // Phase 4 — init packet. Small enough (~56 bytes = 3 packets) that PRN
       // doesn't help; send it without PRN to keep the protocol exchange simple.
       phase('sending-init');
@@ -476,12 +485,18 @@ export async function flashOverNordicDfuWeb(opts: FlashOverNordicDfuOptions): Pr
       return;
     } catch (err) {
       lastErr = err;
-      // A link-drop at a non-minimal payload is the MTU-overflow signature:
-      // reconnect and retry one step smaller. Anything else (or the last
-      // step) propagates to the caller.
-      const linkDropped = ctx.disconnected || /GATT disconnected mid-DFU/i.test((err as Error)?.message ?? '');
+      // A link-drop is recoverable by reconnecting and retrying smaller. Match
+      // both our own clean "disconnected mid-DFU" and Chrome's generic GATT
+      // errors ("GATT Error Unknown", "GATT operation failed/not permitted",
+      // "Device disconnected") that surface when the SoftDevice drops the link
+      // out from under an in-flight write.
+      const msg = (err as Error)?.message ?? '';
+      const linkDropped = ctx.disconnected
+        || /GATT disconnected mid-DFU/i.test(msg)
+        || /GATT (Error Unknown|operation|Server is disconnected)/i.test(msg)
+        || /disconnected|connection/i.test(msg);
       if (linkDropped && !isLastStep) {
-        trace(`DFU attempt at payload=${payload} failed with a link drop — will retry smaller`);
+        trace(`DFU attempt at payload=${payload} failed (${msg}) — reconnecting to retry smaller`);
         continue;
       }
       throw err;
@@ -492,34 +507,6 @@ export async function flashOverNordicDfuWeb(opts: FlashOverNordicDfuOptions): Pr
   }
   // Ladder exhausted without success.
   throw lastErr ?? new BluetoothDfuFailedError('BLE-DFU failed at all payload sizes');
-}
-
-/**
- * Probe the bootloader's MTU_GET DFU opcode once, on a throwaway channel.
- * Returns the reported ATT MTU, or null if the opcode is unsupported (this
- * Calliope build compiles MTU_GET out behind NRF_DFU_PROTOCOL_REDUCED). The
- * caller uses null to mean "MTU unknown — try optimistically, step down on a
- * link drop".
- */
-async function probeMtuOnce(
-  server: BluetoothRemoteGATTServer,
-  device: BluetoothDevice,
-  trace: (m: string) => void,
-): Promise<number | null> {
-  // openSecureDfuChannel + a single mtuGet, then dispose. We keep this on its
-  // own channel so the per-attempt channel below starts clean.
-  const ctx = await openSecureDfuChannel(server, trace);
-  // A disconnect during the probe shouldn't throw unhandled.
-  const onDisc = () => { ctx.disconnected = true; ctx.rejectPending?.(new BluetoothDfuFailedError('GATT disconnected mid-DFU')); };
-  device.addEventListener('gattserverdisconnected', onDisc);
-  try {
-    return await mtuGet(ctx);
-  } catch {
-    return null;
-  } finally {
-    device.removeEventListener('gattserverdisconnected', onDisc);
-    try { ctx.dispose(); } catch { /* ignore */ }
-  }
 }
 
 // ---- Session classification (app vs bootloader) ----------------------------
