@@ -30,9 +30,8 @@ import { appendLog } from './log';
  * there during debugging.
  */
 function pfLog(m: string): void {
+  // appendLog mirrors info/error to the console in dev (see log.ts).
   appendLog({ direction: 'info', text: `pf-ble: ${m}` });
-  // eslint-disable-next-line no-console
-  console.info(`%c[pf-ble]%c ${m}`, 'color: #a78bfa; font-weight: bold;', 'color: inherit;');
 }
 
 // ---- Service / characteristic UUIDs ----------------------------------------

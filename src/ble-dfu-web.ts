@@ -306,12 +306,9 @@ export async function flashOverNordicDfuWeb(opts: FlashOverNordicDfuOptions): Pr
   const trace = (m: string) => {
     const elapsed = Date.now() - startedAt;
     const line = `+${(elapsed / 1000).toFixed(2)}s ${m}`;
+    // appendLog mirrors info/error to the console in dev (see log.ts), so the
+    // dfu-ble timing trace is visible in DevTools without a separate mirror.
     appendLog({ direction: 'info', text: `dfu-ble: ${line}` });
-    // Also mirror to console — the widget's log panel isn't always
-    // visible (e.g. inside an iframe-embedded blocks editor), but
-    // DevTools is. Use console.info so it's visible at default level.
-    // eslint-disable-next-line no-console
-    console.info(`%c[dfu-ble]%c ${line}`, 'color: #06b6d4; font-weight: bold;', 'color: inherit;');
   };
   const phase = (p: BluetoothDfuPhase) => {
     trace(`phase=${p}`);

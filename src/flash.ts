@@ -24,6 +24,16 @@ import { isNativeMode } from './native-bridge';
 import { nativeFlash } from './native-mode';
 
 /**
+ * Flash-dispatcher log. Routes through appendLog, which mirrors info/error to
+ * the browser console in dev (see log.ts setLogConsoleMirror) — so the
+ * dispatcher's routing + post-flash reconnect decisions are visible in DevTools
+ * (they were previously panel-only, making "no autoreconnect" hard to diagnose).
+ */
+function flashLog(text: string): void {
+  appendLog({ direction: 'info', text: `flash: ${text}` });
+}
+
+/**
  * If a pending flash sits unfulfilled for longer than this, clear it on the
  * next inspection. Prevents a stale request from a previous session firing
  * unexpectedly when the user finally connects.
@@ -517,24 +527,22 @@ function downloadHexFile(hex: string, name: string): void {
 async function scheduleBleReconnect(): Promise<void> {
   if (!SUPPORT.ble) return;
   const delays = [1500, 2500, 3500, 5000, 7000];
+  flashLog(`Post-flash BLE auto-reconnect: ${delays.length}-attempt burst starting`);
   for (const delay of delays) {
     await new Promise((r) => setTimeout(r, delay));
     const s = getState();
-    if (s.bleStatus === 'connected') return;
+    if (s.bleStatus === 'connected') { flashLog('Post-flash BLE already connected — reconnect burst done'); return; }
     if (s.userDisconnectedBle) return;       // user clicked Trennen mid-flash
-    appendLog({ direction: 'info', text: `Auto-reconnecting BLE after flash (delay ${delay}ms, status=${s.bleStatus})` });
+    flashLog(`Auto-reconnecting BLE after flash (delay ${delay}ms, status=${s.bleStatus})`);
     try {
       const c = await getBleConnection();
       await c.connect();
       updateState((st) => ({ ...st, bleHasPermission: true }));
       clearExpectedReboot();
-      appendLog({ direction: 'info', text: 'Auto-reconnect succeeded' });
+      flashLog('Auto-reconnect succeeded');
       return;
     } catch (err) {
-      appendLog({
-        direction: 'info',
-        text: `Auto-reconnect attempt failed: ${(err as Error)?.message ?? err}`,
-      });
+      flashLog(`Auto-reconnect attempt failed: ${(err as Error)?.message ?? err}`);
     }
   }
   // The burst exhausted without reconnecting. BLE was up before the flash but
