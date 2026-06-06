@@ -659,6 +659,16 @@ class BluetoothPartialFlashSession {
     let chunkDelayMs = 0;
     let lastReport = 0;
     const updateMs = opts.progressUpdateMs ?? 100;
+    // Diagnostics: partial flash was measured at ~29 s (Chrome ceiling). If a
+    // run is much slower, the cause is almost always the OutOfOrder back-off
+    // self-throttle below ramping chunkDelayMs (applied 4× per 64-byte block),
+    // which is otherwise silent. Track it so a slow flash is explainable from
+    // the log alone instead of needing a re-run with a debugger.
+    const streamStartedAt = Date.now();
+    let outOfOrderCount = 0;
+    let maxChunkDelayMs = 0;
+    const totalBlocks = Math.max(1, totalBytes / 64);
+    log(`partial-flash stream: region=${regionBytes}B (${totalBlocks} blocks @ 64B, 4 packets/block)`);
 
     while (offset < totalBytes) {
       if (this.aborted) throw new DOMException('Aborted', 'AbortError');
@@ -686,6 +696,13 @@ class BluetoothPartialFlashSession {
       }
       if (ack[1] === FlashAck.OutOfOrder) {
         chunkDelayMs = Math.min(chunkDelayMs + 10, 75);
+        outOfOrderCount++;
+        if (chunkDelayMs > maxChunkDelayMs) {
+          maxChunkDelayMs = chunkDelayMs;
+          // Log only on a new high-water mark — one line per ramp step, not
+          // per retried block, so a chatty device doesn't flood the log.
+          log(`OutOfOrder ack at offset ${offset} — backing off, chunkDelay now ${chunkDelayMs}ms (×4/block)`);
+        }
         packetNumber += 4;
         continue;
       }
@@ -704,6 +721,12 @@ class BluetoothPartialFlashSession {
       }
     }
 
+    const elapsedMs = Date.now() - streamStartedAt;
+    const kbps = regionBytes > 0 ? (regionBytes / 1024) / (elapsedMs / 1000) : 0;
+    log(
+      `partial-flash stream done: ${regionBytes}B in ${(elapsedMs / 1000).toFixed(1)}s ` +
+      `(${kbps.toFixed(1)} KB/s) — OutOfOrder=${outOfOrderCount}, maxChunkDelay=${maxChunkDelayMs}ms`,
+    );
     log('end of transmission');
     await this.writeNoNotify(new Uint8Array([Cmd.EndOfTransmission]));
     onProgress(1);
