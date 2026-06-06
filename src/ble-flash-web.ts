@@ -721,16 +721,21 @@ class BluetoothPartialFlashSession {
     log: (m: string) => void;
   }): Promise<void> {
     const { startAddr, totalBytes, totalBlocks, map, updateMs, onProgress, log } = args;
-    const WINDOW_MIN = 1;
-    const WINDOW_MAX = 16;     // ceiling; device RX buffers cap effective depth
-    const GROW_AFTER = 4;      // clean acks before growing the window by 1
+    // Conservative bound. writeWithoutResponse has no backpressure, so a window
+    // larger than the device's RX buffer can silently drop a packet during the
+    // per-block flash-burn — and a dropped packet that isn't immediately
+    // followed by an in-sequence one (e.g. near the tail) is NOT caught by the
+    // firmware's OutOfOrder check (it only looks 8 packets ahead), leaving a
+    // hole → corrupt app → blank display on reboot (HW Mini 3, 2026-06-06).
+    // Keep the window small; grow only slightly on a clean run.
+    const WINDOW_MAX = 6;      // ceiling; device RX buffers (NRF_DFU_BLE_BUFFERS) are small
+    const GROW_AFTER = 8;      // clean acks before growing the window by 1
     const ACK_TIMEOUT_MS = 5000;
 
     let acked = 0;            // blocks confirmed Written (== next byte offset / 64)
     let sent = 0;             // blocks written to the wire (may be ahead of acked)
-    let window = 4;           // current max in-flight blocks
+    let window = 2;           // current max in-flight blocks (start conservative)
     let cleanRun = 0;
-    let outOfOrderCount = 0;
     let lastReport = 0;
 
     // Incoming acks arrive strictly in order (the device is sequential): the
@@ -786,26 +791,21 @@ class BluetoothPartialFlashSession {
             lastReport = now;
           }
         } else {
-          // OutOfOrder: the device dropped a packet and resynced to the last
-          // completed block boundary (== `acked`). Anything we wrote ahead is
-          // discarded by the device; rewind and retransmit from `acked` with a
-          // smaller window. Drain any further queued acks from the aborted
-          // burst so they don't desync our counting.
-          outOfOrderCount++;
-          ackQueue.length = 0;
-          sent = acked;
-          window = Math.max(WINDOW_MIN, window >> 1);
-          cleanRun = 0;
-          log(`OutOfOrder at block ${acked}/${totalBlocks} — rewind + shrink window to ${window}`);
-          // Brief settle so the device's RX queue drains before we refill.
-          await delay(20);
+          // OutOfOrder: the device detected a sequence gap (a packet was
+          // dropped). Resyncing a pipelined stream correctly is unsafe — the
+          // device resets its packetCount to its *received* block boundary
+          // (blockPacketCount), which can be several blocks AHEAD of our
+          // flash-ack position `acked`, so a naive rewind to `acked` desyncs.
+          // Rather than risk a silently-corrupt app region, abort the partial
+          // flash. The dispatcher (flashOverBle) catches this and falls back to
+          // a full BLE-DFU, which rewrites the whole app cleanly.
+          this.onAck = null;
+          throw new Error(`partial-flash OutOfOrder at block ${acked}/${totalBlocks} — aborting to DFU fallback`);
         }
       }
     } finally {
       this.onAck = null;
     }
-
-    if (outOfOrderCount > 0) log(`partial-flash: ${outOfOrderCount} OutOfOrder resync(s); final window=${window}`);
   }
 
   /** Release listeners. Safe to call even if the GATT server is gone. */
