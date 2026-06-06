@@ -22,6 +22,19 @@
 import MemoryMap from 'nrf-intel-hex';
 import { appendLog } from './log';
 
+/**
+ * Partial-flash trace. Goes to the widget log panel AND mirrors to the
+ * browser console (like `ble-dfu-web`'s dfu-ble trace) — the widget's panel
+ * isn't always visible (e.g. inside an iframe-embedded editor), but DevTools
+ * is, and the partial-flash timing/OutOfOrder diagnostics are most useful
+ * there during debugging.
+ */
+function pfLog(m: string): void {
+  appendLog({ direction: 'info', text: `pf-ble: ${m}` });
+  // eslint-disable-next-line no-console
+  console.info(`%c[pf-ble]%c ${m}`, 'color: #a78bfa; font-weight: bold;', 'color: inherit;');
+}
+
 // ---- Service / characteristic UUIDs ----------------------------------------
 
 const PARTIAL_FLASH_SERVICE_UUID = 'e97dd91d-251d-470a-a062-fa1922dfa9a8';
@@ -129,7 +142,7 @@ export interface FlashOverBluetoothOptions {
 export async function flashOverBluetoothWeb(
   opts: FlashOverBluetoothOptions,
 ): Promise<void> {
-  const trace = (m: string) => appendLog({ direction: 'info', text: `pf-ble: ${m}` });
+  const trace = pfLog;
   const phase = (p: BluetoothFlashPhase) => {
     trace(`phase=${p}`);
     opts.onPhase?.(p);
@@ -573,7 +586,7 @@ class BluetoothPartialFlashSession {
 
   async run(hex: string, opts: PartialFlashOptions = {}): Promise<void> {
     const onProgress = opts.onProgress ?? (() => {});
-    const log = (m: string) => appendLog({ direction: 'info', text: `pf-ble: ${m}` });
+    const log = pfLog;
 
     if (opts.signal) {
       if (opts.signal.aborted) throw new DOMException('Aborted', 'AbortError');
@@ -845,7 +858,7 @@ class BluetoothPartialFlashSession {
       throw new Error('device in application mode — caller must supply reconnect()');
     }
     const device = this.server.device;
-    const log = (m: string) => appendLog({ direction: 'info', text: `pf-ble: ${m}` });
+    const log = pfLog;
 
     // Up to three attempts: write the RESET-into-pairing command and wait
     // for the device to drop the GATT link. Chrome's
