@@ -8,7 +8,7 @@ import {
   flashCalliopeViaBle,
   flashCalliopeViaBleDfu,
   getBleConn,
-  getBleConnection,
+  reconnectBleIfPermitted,
 } from './ble';
 import { flashCalliopeViaUsb, getUsbConn, primeBlocksRuntimeProbe } from './usb';
 import {
@@ -126,22 +126,16 @@ async function flashDispatch(
     s.bleStatus !== 'connecting' &&
     s.usbStatus !== 'connected'
   ) {
-    appendLog({
-      direction: 'info',
-      text: `Flash requested but BLE not connected — trying silent reconnect with cached device`,
-    });
-    try {
-      const c = await getBleConnection();
-      updateState((st) => ({ ...st, bleStatus: 'connecting', bleErrorMessage: undefined }));
-      await c.connect();
-      updateState((st) => ({ ...st, bleHasPermission: true }));
-      appendLog({ direction: 'info', text: 'Silent BLE reconnect succeeded' });
-    } catch (err) {
+    flashLog('Flash requested but BLE not connected — trying silent reconnect with cached device');
+    updateState((st) => ({ ...st, bleStatus: 'connecting', bleErrorMessage: undefined }));
+    // Gesture-free reconnect: must not pop a chooser here (this is meant to be
+    // silent), so never call requestDevice().
+    const silent = await reconnectBleIfPermitted();
+    if (silent === 'connected') {
+      flashLog('Silent BLE reconnect succeeded');
+    } else {
       updateState((st) => ({ ...st, bleStatus: 'disconnected', bleErrorMessage: undefined }));
-      appendLog({
-        direction: 'info',
-        text: `Silent BLE reconnect failed (${(err as Error)?.message ?? err}) — continuing to dispatcher`,
-      });
+      flashLog(`Silent BLE reconnect: ${silent === 'no-device' ? 'no cached device available' : 'connect error'} — continuing to dispatcher`);
     }
     s = getState();
   }
@@ -534,16 +528,16 @@ async function scheduleBleReconnect(): Promise<void> {
     if (s.bleStatus === 'connected') { flashLog('Post-flash BLE already connected — reconnect burst done'); return; }
     if (s.userDisconnectedBle) return;       // user clicked Trennen mid-flash
     flashLog(`Auto-reconnecting BLE after flash (delay ${delay}ms, status=${s.bleStatus})`);
-    try {
-      const c = await getBleConnection();
-      await c.connect();
-      updateState((st) => ({ ...st, bleHasPermission: true }));
+    // Gesture-free: only connects when the permitted device is actually back
+    // (getDevices), never calls requestDevice() — which from this background
+    // timer would throw "Must be handling a user gesture" on every attempt.
+    const result = await reconnectBleIfPermitted();
+    if (result === 'connected') {
       clearExpectedReboot();
       flashLog('Auto-reconnect succeeded');
       return;
-    } catch (err) {
-      flashLog(`Auto-reconnect attempt failed: ${(err as Error)?.message ?? err}`);
     }
+    flashLog(`Auto-reconnect attempt: ${result === 'no-device' ? 'device not back yet — retrying' : 'connect error'}`);
   }
   // The burst exhausted without reconnecting. BLE was up before the flash but
   // didn't come back — the freshly-flashed program almost certainly ships

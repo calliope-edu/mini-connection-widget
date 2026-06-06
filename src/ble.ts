@@ -940,6 +940,49 @@ export async function forgetAllBleDevices(): Promise<void> {
   clearBleConn();
 }
 
+/** Outcome of a gesture-free reconnect attempt. */
+export type QuietReconnectResult = 'connected' | 'no-device' | 'error';
+
+/**
+ * Reconnect to an already-permitted BLE device WITHOUT triggering a
+ * `requestDevice()` chooser (which needs a user gesture and throws
+ * "Must be handling a user gesture" from a background timer/daemon).
+ *
+ * We first confirm the device is still permitted via
+ * `navigator.bluetooth.getDevices()`. Only then do we call the lib's
+ * `connect()`, which reuses the cached handle. If `getDevices()` is empty —
+ * which happens transiently right after a flash reboot while the device is
+ * still coming back up — we return `'no-device'` so the caller can RETRY
+ * rather than treat it as a permanent "permission gone" stop.
+ */
+export async function reconnectBleIfPermitted(): Promise<QuietReconnectResult> {
+  if (!SUPPORT.ble) return 'error';
+  if (typeof navigator === 'undefined' || !('bluetooth' in navigator)) return 'error';
+  const bt = (navigator as unknown as {
+    bluetooth: { getDevices?: () => Promise<BluetoothDevice[]> };
+  }).bluetooth;
+  // Without getDevices() we cannot reconnect silently — only the explicit
+  // Connect button (a user gesture) can call requestDevice(). Report no-device
+  // so the daemon keeps waiting for a gesture-driven connect rather than
+  // throwing a gesture error in the background.
+  if (!bt.getDevices) return 'no-device';
+  let devices: BluetoothDevice[];
+  try {
+    devices = await bt.getDevices();
+  } catch {
+    return 'error';
+  }
+  if (!devices || devices.length === 0) return 'no-device';
+  try {
+    const c = await getBleConnection();
+    await c.connect();
+    updateState((s) => ({ ...s, bleHasPermission: true }));
+    return 'connected';
+  } catch {
+    return 'error';
+  }
+}
+
 /**
  * Refresh whether the browser remembers a previously-permitted BLE device
  * for this origin. Called on init so the UI can show a remembered name even

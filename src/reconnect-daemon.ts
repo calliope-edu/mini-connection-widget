@@ -25,7 +25,7 @@
 
 import { calliopeState, getState, updateState, SUPPORT } from './state';
 import { appendLog } from './log';
-import { getBleConnection } from './ble';
+import { reconnectBleIfPermitted } from './ble';
 import { getUsbConnection } from './usb';
 
 const BACKOFF_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000, 30_000];
@@ -89,15 +89,15 @@ function shouldRunUsb(): boolean {
 }
 
 async function tryReconnectBle(): Promise<boolean> {
-  if (typeof navigator === 'undefined' || !('bluetooth' in navigator)) return false;
-  const bt = (navigator as { bluetooth?: { getDevices?: () => Promise<unknown[]> } }).bluetooth;
-  if (!bt?.getDevices) return false;
-  const devices = await bt.getDevices();
-  if (!devices || devices.length === 0) return false;
-  const c = await getBleConnection();
-  await c.connect();
-  updateState((st) => ({ ...st, bleHasPermission: true }));
-  return true;
+  // 'connected' → done; 'no-device'/'error' → THROW so the daemon treats it as
+  // a transient failure and keeps retrying on backoff. Returning `false` here
+  // would make scheduleNext stop the daemon permanently ("no authorized
+  // device") — wrong during the post-flash reboot window, when the device is
+  // simply not advertising yet and WILL come back. (Bug observed 2026-06-06:
+  // daemon stopped one attempt after a partial flash and BLE never returned.)
+  const result = await reconnectBleIfPermitted();
+  if (result === 'connected') return true;
+  throw new Error(`BLE not reconnectable yet (${result})`);
 }
 
 async function tryReconnectUsb(): Promise<boolean> {
