@@ -165,8 +165,14 @@ async function flashDispatch(
   // ---- USB-first default --------------------------------------------------
 
   if (s.usbStatus === 'connected') {
-    markExpectedReboot(20_000);
     await flashCalliopeViaUsb(hex, name);
+    // Mark the expected reboot AFTER the transfer completes, not before: the
+    // device reboots once flashing finishes, and a large universal hex over a
+    // slow DAPLink can take >20 s. Setting a fixed window at flash *start*
+    // could expire mid-transfer, so the post-flash reboot disconnect would be
+    // classified+surfaced as a spurious USB error toast. Anchoring the window
+    // here covers the reboot regardless of how long the transfer took.
+    markExpectedReboot(30_000);
     await primeBlocksRuntimeProbe();
     if (wasBleConnected) await scheduleBleReconnect();
     return;
@@ -238,6 +244,82 @@ async function flashDispatch(
 }
 
 /**
+ * A BLE-DFU failure that happened *after* the device entered the bootloader
+ * (i.e. it's parked in DfuTarg, "+" on the LED matrix) is resumable: the
+ * Nordic bootloader keeps the in-progress object and a fresh Select/Create
+ * resets its offset/CRC, so we can reconnect and resume on the same device
+ * handle. We recognise these by the messages `ble-dfu-web` throws once it's
+ * past `entering-bootloader` — a mid-stream GATT drop or a reconnect that
+ * exhausted its backoff. A `BluetoothDfuServiceMissingError`, by contrast,
+ * means the device never exposed a DFU service at all (never entered the
+ * bootloader) — NOT resumable, let it escape so the dispatcher can fall back
+ * to USB.
+ */
+function isResumableDfuError(err: unknown): boolean {
+  if (err instanceof BluetoothDfuServiceMissingError) return false;
+  const msg = (err as Error)?.message ?? '';
+  return (
+    /GATT disconnected mid-DFU/i.test(msg) ||
+    /reconnect.*bootloader/i.test(msg) ||
+    /bootloader.*reconnect/i.test(msg)
+  );
+}
+
+/**
+ * Flash via Nordic Secure DFU with a bounded resume-on-disconnect retry.
+ *
+ * The bare `flashCalliopeViaBleDfu` throws on any failure, and the dispatcher's
+ * BLE-connected catch treats *every* throw as "BLE exhausted → open the USB
+ * plug modal" (flashDispatch line ~187). That turned a recoverable mid-transfer
+ * hiccup — the device sitting happily in DfuTarg, ready to resume — into a
+ * dead-end USB dialog (reported symptoms #5 Blocks-DFU and #7 MicroPython-DFU:
+ * "device enters DFU, first bytes transfer, then the USB modal appears").
+ *
+ * Here we keep the failure inside the BLE-DFU world: on a *resumable* error
+ * (device still in the bootloader) we reconnect and resume via
+ * `sessionKind: 'bootloader'`, up to `DFU_RESUME_ATTEMPTS` times, before the
+ * error is allowed to escape to the dispatcher's USB fallback. The USB modal
+ * becomes a genuine last resort, not the first reaction to a dropped link.
+ */
+const DFU_RESUME_ATTEMPTS = 2;
+
+async function flashViaBleDfuWithResume(hex: string, name: string): Promise<void> {
+  // First attempt: let the DFU path auto-detect whether the device is in the
+  // app (buttonless-enter) or already in the bootloader.
+  try {
+    await flashCalliopeViaBleDfu(hex, name);
+    return;
+  } catch (err) {
+    if (!isResumableDfuError(err)) throw err;
+    appendLog({
+      direction: 'info',
+      text: `BLE-DFU interrupted (${(err as Error)?.message ?? err}) — device is in DFU mode, attempting to resume.`,
+    });
+  }
+
+  // Retry: the device is parked in the bootloader. Skip the buttonless-enter
+  // dance and resume the stream on the (reconnected) bootloader link.
+  for (let attempt = 1; attempt <= DFU_RESUME_ATTEMPTS; attempt++) {
+    markExpectedReboot(45_000);
+    try {
+      await flashCalliopeViaBleDfu(hex, name, 'bootloader');
+      appendLog({ direction: 'info', text: `BLE-DFU resume succeeded (attempt ${attempt}).` });
+      return;
+    } catch (err) {
+      const last = attempt === DFU_RESUME_ATTEMPTS;
+      appendLog({
+        direction: 'info',
+        text: `BLE-DFU resume attempt ${attempt}/${DFU_RESUME_ATTEMPTS} failed (${(err as Error)?.message ?? err})${last || !isResumableDfuError(err) ? '' : ' — retrying'}.`,
+      });
+      // Stop early if the error is no longer a resumable in-bootloader drop
+      // (e.g. the device left DFU mode), or we've used our attempts. The throw
+      // propagates to the dispatcher, which then offers USB as a last resort.
+      if (last || !isResumableDfuError(err)) throw err;
+    }
+  }
+}
+
+/**
  * Run the full BLE flash sequence. Tries the right transport for the device's
  * current mode:
  *  - DfuTarg → direct BLE-DFU
@@ -263,7 +345,7 @@ async function flashOverBle(
       text: 'Calliope ist im DFU-Bootloader — direkter BLE-DFU-Flash.',
     });
     markExpectedReboot(45_000);
-    await flashCalliopeViaBleDfu(hex, name);
+    await flashViaBleDfuWithResume(hex, name);
     return;
   }
 
@@ -273,7 +355,7 @@ async function flashOverBle(
   if (forceFullDfu) {
     appendLog({ direction: 'info', text: 'Voll-DFU erzwungen — Partial-Flash übersprungen.' });
     markExpectedReboot(45_000);
-    await flashCalliopeViaBleDfu(hex, name);
+    await flashViaBleDfuWithResume(hex, name);
     return;
   }
 
@@ -299,7 +381,7 @@ async function flashOverBle(
       text: 'Gerät läuft Blocks-Runtime — Laufzeitwechsel erfordert Voll-DFU (Partial-Flash übersprungen).',
     });
     markExpectedReboot(45_000);
-    await flashCalliopeViaBleDfu(hex, name);
+    await flashViaBleDfuWithResume(hex, name);
     return;
   }
 
@@ -334,7 +416,7 @@ async function flashOverBle(
       text: `BLE partial flash failed (${reason}) — trying full BLE-DFU flash.`,
     });
     markExpectedReboot(45_000);
-    await flashCalliopeViaBleDfu(hex, name);
+    await flashViaBleDfuWithResume(hex, name);
   }
 }
 
@@ -503,7 +585,9 @@ async function flashCalliopeHybrid(hex: string, name: string): Promise<void> {
     try { await ble.disconnect(); } catch { /* ignore */ }
   }
   void getUsbConn;
-  markExpectedReboot(20_000);
   await flashCalliopeViaUsb(hex, name);
+  // Anchor the reboot window after the transfer (see the USB-first branch):
+  // a long flash must not let the window expire before the device reboots.
+  markExpectedReboot(30_000);
   await primeBlocksRuntimeProbe();
 }

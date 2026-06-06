@@ -28,6 +28,7 @@ import {
   BluetoothDfuFailedError,
   BluetoothDfuServiceMissingError,
   type BluetoothDfuPhase,
+  type BluetoothDfuSessionKind,
 } from './ble-dfu-web';
 import { flashOverLegacyDfuWeb } from './ble-legacy-dfu-web';
 import { extractFriendlyName, friendlyNameFromDeviceId } from './friendly-name';
@@ -657,7 +658,11 @@ export async function flashCalliopeViaBle(hex: string, name: string): Promise<vo
  * Nordic DFU service at all. Both are recoverable by the caller; the
  * dispatcher falls back to USB.
  */
-export async function flashCalliopeViaBleDfu(hex: string, name: string): Promise<void> {
+export async function flashCalliopeViaBleDfu(
+  hex: string,
+  name: string,
+  sessionKind?: BluetoothDfuSessionKind,
+): Promise<void> {
   if (!SUPPORT.ble) {
     throw new BluetoothDfuFailedError('Web Bluetooth not supported');
   }
@@ -787,6 +792,11 @@ export async function flashCalliopeViaBleDfu(hex: string, name: string): Promise
       device,
       hex: cleanHex,
       boardVersion,
+      // When the caller knows the device is already parked in the bootloader
+      // (e.g. a mid-DFU disconnect-retry — the device stays in DfuTarg), pass
+      // it through so flashOverNordicDfuWeb skips the buttonless-enter dance
+      // and resumes on the existing/reconnected bootloader link.
+      sessionKind,
       onPhase: (p: BluetoothDfuPhase) => {
         // Setup phases (everything before firmware streaming) keep
         // `flashProgress: undefined` so the UI shows an indeterminate
