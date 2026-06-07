@@ -409,14 +409,20 @@ export async function flashOverNordicDfuWeb(opts: FlashOverNordicDfuOptions): Pr
   // that sendDataObjectStream's in-loop step-down cannot (it needs a live link
   // to step down on). When MTU_GET *is* available we trust it and skip the
   // ladder entirely.
-  // The payload ladder. We start optimistically at 244 and, only if a large
-  // write drops the link, reconnect and retry the whole init+stream one step
-  // smaller (244 → 64 → 20). MTU is queried on the SAME channel we stream on
-  // (not a throwaway probe channel — opening two channels back-to-back
+  // The reconnect ladder. We start optimistically at 244 and, only if a large
+  // write DROPS THE LINK, reconnect and retry the whole init+stream at a
+  // smaller payload. We go 244 → 20 (NOT 244 → 64 → 20): a link drop means the
+  // SoftDevice rejected an oversized write, i.e. the negotiated ATT MTU is the
+  // tiny default 23 (HW-confirmed 2026-06-07 on Windows: mwwr reports 244 but
+  // 24-byte writes already drop the link; MTU is binary 23-or-247 here, never
+  // an intermediate). 64 would just drop too and waste a ~6 s reconnect, so we
+  // skip straight to the safe 20. (A truncating stack that keeps the link
+  // alive — some Android caps ~67 — is handled separately by the in-loop
+  // chunk-1 step-down in sendDataObjectStream, which still walks 244→64→20.)
+  // MTU is queried on the SAME channel we stream on (a throwaway probe channel
   // destabilised the bootloader GATT and killed the init packet with
-  // "GATT Error Unknown", observed 2026-06-06). When MTU_GET answers we trust
-  // it and use a single payload (no ladder).
-  const ladder = PACKET_PAYLOAD_STEPS.slice(); // [244, 64, 20]
+  // "GATT Error Unknown"). When MTU_GET answers we trust it (single payload).
+  const ladder = [PACKET_PAYLOAD_MAX, PACKET_PAYLOAD_SAFE]; // [244, 20]
 
   let lastErr: unknown;
   let mtuResolved = false;
