@@ -579,10 +579,6 @@ interface PartialFlashOptions {
 class BluetoothPartialFlashSession {
   private characteristic: BluetoothRemoteGATTCharacteristic | null = null;
   private pendingResponse: ((data: Uint8Array) => void) | null = null;
-  // When set (during the pipelined data stream), every incoming notification is
-  // routed here instead of `pendingResponse`, so block-acks can be counted
-  // asynchronously while many blocks are in flight.
-  private onAck: ((data: Uint8Array) => void) | null = null;
   private aborted = false;
 
   constructor(private server: BluetoothRemoteGATTServer) {}
@@ -671,141 +667,78 @@ class BluetoothPartialFlashSession {
     const regionBytes = Math.max(0, mc.end - mc.start);
     const totalBytes = Math.ceil(regionBytes / 64) * 64;
     const totalBlocks = Math.max(1, totalBytes / 64);
+    let offset = 0;
+    let packetNumber = 0;
+    let chunkDelayMs = 0;
+    let lastReport = 0;
     const updateMs = opts.progressUpdateMs ?? 100;
     const streamStartedAt = Date.now();
+    let outOfOrderCount = 0;
+    let maxChunkDelayMs = 0;
     log(`partial-flash stream: region=${regionBytes}B (${totalBlocks} blocks @ 64B, 4 packets/block)`);
 
-    await this.streamBlocksPipelined({
-      startAddr, totalBytes, totalBlocks, map: parsed.map, updateMs, onProgress, log,
-    });
+    // Serial one-ack-per-block. Reliable: writeWithoutResponse has no
+    // backpressure, and a write-ahead window overran the device RX during the
+    // per-block flash-burn, silently dropping packets → ack timeout → the
+    // whole flash failed mid-stream and the firmware's flashIncomplete flag
+    // (set on first FLASH_DATA, cleared only at END_OF_TRANSMISSION) left the
+    // mini booting into BLE mode instead of the program (HW Mini 3,
+    // 2026-06-07). Keep it strictly serial; optimise only with HW proof.
+    while (offset < totalBytes) {
+      if (this.aborted) throw new DOMException('Aborted', 'AbortError');
+      const blockAddr = startAddr + offset;
+      // 0xFF-pad short/trailing blocks (flash-erased state).
+      const block = parsed.map.slicePad(blockAddr, 64, 0xff);
+
+      const packets = buildFlashPackets(blockAddr, packetNumber, block);
+      // Write the first 3 packets, then ARM the block-ack resolver BEFORE the
+      // 4th (final) packet so a fast notification isn't dropped into a 5 s
+      // timeout.
+      for (let i = 0; i < 3; i++) {
+        if (chunkDelayMs > 0) await delay(chunkDelayMs);
+        await this.writeNoNotify(packets[i]);
+      }
+      const ackPromise = this.waitForResponse(5000, 'flash-block-ack');
+      if (chunkDelayMs > 0) await delay(chunkDelayMs);
+      await this.writeNoNotify(packets[3]);
+
+      const ack = await ackPromise;
+      if (ack[0] !== Cmd.FlashData) {
+        throw new Error(`expected FLASH_DATA ack, got 0x${ack[0].toString(16)}`);
+      }
+      if (ack[1] === FlashAck.OutOfOrder) {
+        chunkDelayMs = Math.min(chunkDelayMs + 10, 75);
+        outOfOrderCount++;
+        if (chunkDelayMs > maxChunkDelayMs) {
+          maxChunkDelayMs = chunkDelayMs;
+          log(`OutOfOrder ack at offset ${offset} — backing off, chunkDelay now ${chunkDelayMs}ms (×4/block)`);
+        }
+        packetNumber += 4;
+        continue;
+      }
+      if (ack[1] !== FlashAck.Written) {
+        throw new Error(`unexpected flash ack 0x${ack[1].toString(16)}`);
+      }
+
+      chunkDelayMs = Math.max(chunkDelayMs - 1, 0);
+      offset += 64;
+      packetNumber = (packetNumber + 4) & 0xff;
+
+      const now = Date.now();
+      if (now - lastReport >= updateMs) {
+        onProgress(Math.min(offset / totalBytes, 1));
+        lastReport = now;
+      }
+    }
 
     const elapsedMs = Date.now() - streamStartedAt;
     const kbps = regionBytes > 0 ? (regionBytes / 1024) / (elapsedMs / 1000) : 0;
     log(
-      `partial-flash stream done: ${regionBytes}B in ${(elapsedMs / 1000).toFixed(1)}s (${kbps.toFixed(1)} KB/s)`,
+      `partial-flash stream done: ${regionBytes}B in ${(elapsedMs / 1000).toFixed(1)}s (${kbps.toFixed(1)} KB/s) — OutOfOrder=${outOfOrderCount}, maxChunkDelay=${maxChunkDelayMs}ms`,
     );
     log('end of transmission');
     await this.writeNoNotify(new Uint8Array([Cmd.EndOfTransmission]));
     onProgress(1);
-  }
-
-  /**
-   * Stream the MakeCode region with an ADAPTIVE SLIDING WINDOW.
-   *
-   * The old code wrote one 64-byte block (4 packets) then *awaited* its ack
-   * before the next block — one full BLE round-trip (~45 ms ≈ 3 connection
-   * intervals on Windows) per 64 bytes, so a 184 KB region took ~130 s even
-   * with the device never throttling (OutOfOrder=0).
-   *
-   * The codal partial-flashing service processes packets as they arrive and
-   * only needs them in sequence (`MicroBitPartialFlashingService.cpp`: running
-   * `packetCount`, acks 0xAA OutOfOrder only on a gap, flash-writes+acks once
-   * per completed 4-packet block). So we can keep several blocks in flight and
-   * count acks asynchronously, paying ~one round-trip per *window* instead of
-   * per block.
-   *
-   * Adaptive (TCP-like): grow the window after each clean Written ack up to
-   * `WINDOW_MAX`; on an OutOfOrder ack the device has resynced to the last
-   * completed block boundary, so we halve the window and REWIND our send
-   * pointer to the last acked block and retransmit from there. The 8-bit
-   * `packetNumber` (4/block) is derived from the absolute block index so it
-   * always matches what the device expects after a rewind.
-   */
-  private async streamBlocksPipelined(args: {
-    startAddr: number;
-    totalBytes: number;
-    totalBlocks: number;
-    map: MemoryMap;
-    updateMs: number;
-    onProgress: (p: number) => void;
-    log: (m: string) => void;
-  }): Promise<void> {
-    const { startAddr, totalBytes, totalBlocks, map, updateMs, onProgress, log } = args;
-    // Conservative bound. writeWithoutResponse has no backpressure, so a window
-    // larger than the device's RX buffer can silently drop a packet during the
-    // per-block flash-burn — and a dropped packet that isn't immediately
-    // followed by an in-sequence one (e.g. near the tail) is NOT caught by the
-    // firmware's OutOfOrder check (it only looks 8 packets ahead), leaving a
-    // hole → corrupt app → blank display on reboot (HW Mini 3, 2026-06-06).
-    // Keep the window small; grow only slightly on a clean run.
-    const WINDOW_MAX = 6;      // ceiling; device RX buffers (NRF_DFU_BLE_BUFFERS) are small
-    const GROW_AFTER = 8;      // clean acks before growing the window by 1
-    const ACK_TIMEOUT_MS = 5000;
-
-    let acked = 0;            // blocks confirmed Written (== next byte offset / 64)
-    let sent = 0;             // blocks written to the wire (may be ahead of acked)
-    let window = 2;           // current max in-flight blocks (start conservative)
-    let cleanRun = 0;
-    let lastReport = 0;
-
-    // Incoming acks arrive strictly in order (the device is sequential): the
-    // k-th ack after `acked` confirms block `acked` (or signals OutOfOrder,
-    // meaning a gap — resync). We resolve them through a small queue.
-    type Ack = { ok: boolean; raw: Uint8Array };
-    const ackQueue: Ack[] = [];
-    let ackWaiter: (() => void) | null = null;
-    this.onAck = (data: Uint8Array) => {
-      if (data[0] !== Cmd.FlashData) return; // ignore stray non-flash notifications
-      ackQueue.push({ ok: data[1] === FlashAck.Written, raw: data });
-      const w = ackWaiter; ackWaiter = null; w?.();
-    };
-
-    const writeBlock = async (blockIdx: number): Promise<void> => {
-      const blockAddr = startAddr + blockIdx * 64;
-      const block = map.slicePad(blockAddr, 64, 0xff);
-      const packetNumber = (blockIdx * 4) & 0xff;
-      const packets = buildFlashPackets(blockAddr, packetNumber, block);
-      for (const p of packets) await this.writeNoNotify(p);
-    };
-
-    const nextAck = (timeoutMs: number): Promise<Ack> =>
-      new Promise<Ack>((resolve, reject) => {
-        if (ackQueue.length) { resolve(ackQueue.shift()!); return; }
-        const t = setTimeout(() => { ackWaiter = null; reject(new Error('timeout waiting for flash-block-ack')); }, timeoutMs);
-        ackWaiter = () => { clearTimeout(t); resolve(ackQueue.shift()!); };
-      });
-
-    try {
-      while (acked < totalBlocks) {
-        if (this.aborted) throw new DOMException('Aborted', 'AbortError');
-
-        // Fill the window: write blocks until `sent - acked` reaches `window`
-        // or we've sent the last block.
-        while (sent - acked < window && sent < totalBlocks) {
-          await writeBlock(sent);
-          sent++;
-        }
-
-        // Wait for the next ack (confirms block `acked`).
-        const ack = await nextAck(ACK_TIMEOUT_MS);
-        if (ack.ok) {
-          acked++;
-          cleanRun++;
-          if (cleanRun >= GROW_AFTER && window < WINDOW_MAX) {
-            window++;
-            cleanRun = 0;
-          }
-          const now = Date.now();
-          if (now - lastReport >= updateMs) {
-            onProgress(Math.min((acked * 64) / totalBytes, 1));
-            lastReport = now;
-          }
-        } else {
-          // OutOfOrder: the device detected a sequence gap (a packet was
-          // dropped). Resyncing a pipelined stream correctly is unsafe — the
-          // device resets its packetCount to its *received* block boundary
-          // (blockPacketCount), which can be several blocks AHEAD of our
-          // flash-ack position `acked`, so a naive rewind to `acked` desyncs.
-          // Rather than risk a silently-corrupt app region, abort the partial
-          // flash. The dispatcher (flashOverBle) catches this and falls back to
-          // a full BLE-DFU, which rewrites the whole app cleanly.
-          this.onAck = null;
-          throw new Error(`partial-flash OutOfOrder at block ${acked}/${totalBlocks} — aborting to DFU fallback`);
-        }
-      }
-    } finally {
-      this.onAck = null;
-    }
   }
 
   /** Release listeners. Safe to call even if the GATT server is gone. */
@@ -848,12 +781,6 @@ class BluetoothPartialFlashSession {
     const value = ch.value;
     if (!value) return;
     const u8 = new Uint8Array(value.buffer.slice(0));
-    // Data-stream acks (pipelined) take priority when streaming; otherwise the
-    // single-shot pendingResponse handles status/region/etc.
-    if (this.onAck) {
-      this.onAck(u8);
-      return;
-    }
     const cb = this.pendingResponse;
     if (cb) {
       this.pendingResponse = null;
