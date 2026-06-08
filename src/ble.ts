@@ -961,24 +961,36 @@ export async function reconnectBleIfPermitted(): Promise<QuietReconnectResult> {
   const bt = (navigator as unknown as {
     bluetooth: { getDevices?: () => Promise<BluetoothDevice[]> };
   }).bluetooth;
-  // Without getDevices() we cannot reconnect silently — only the explicit
-  // Connect button (a user gesture) can call requestDevice(). Report no-device
-  // so the daemon keeps waiting for a gesture-driven connect rather than
-  // throwing a gesture error in the background.
-  if (!bt.getDevices) return 'no-device';
-  let devices: BluetoothDevice[];
-  try {
-    devices = await bt.getDevices();
-  } catch {
-    return 'error';
+  // Decide whether a previously-permitted device is available to reconnect to
+  // WITHOUT a chooser. `getDevices()` is the documented way — BUT on some
+  // Chrome/Windows builds it returns an EMPTY list even for a device that is
+  // permitted AND actively advertising (HW-observed 2026-06-08: post-flash
+  // auto-reconnect got 'no-device' for 13 straight attempts, then a manual
+  // Connect succeeded immediately). So getDevices() alone is not a reliable
+  // gate. Our durable `trackedDevices` cache (populated by the requestDevice
+  // intercept, module-level, survives disconnects/flash reboots) is the
+  // reliable fallback signal that we hold a reconnectable BluetoothDevice.
+  let permitted = false;
+  if (bt.getDevices) {
+    try {
+      const devices = await bt.getDevices();
+      if (devices && devices.length > 0) permitted = true;
+    } catch { /* fall through to the cache check */ }
   }
-  if (!devices || devices.length === 0) return 'no-device';
+  if (!permitted && trackedDevices.size > 0) permitted = true;
+  if (!permitted) return 'no-device';
   try {
     const c = await getBleConnection();
     await c.connect();
     updateState((s) => ({ ...s, bleHasPermission: true }));
     return 'connected';
-  } catch {
+  } catch (err) {
+    // A "must be handling a user gesture" rejection means the lib fell back to
+    // requestDevice() (it had no retained device) — not silently reconnectable.
+    // Report no-device so the daemon keeps waiting for an explicit Connect
+    // instead of surfacing a hard error.
+    const msg = (err as Error)?.message ?? '';
+    if (/user gesture/i.test(msg)) return 'no-device';
     return 'error';
   }
 }

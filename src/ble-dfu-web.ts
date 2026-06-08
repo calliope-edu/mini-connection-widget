@@ -422,7 +422,30 @@ export async function flashOverNordicDfuWeb(opts: FlashOverNordicDfuOptions): Pr
   // MTU is queried on the SAME channel we stream on (a throwaway probe channel
   // destabilised the bootloader GATT and killed the init packet with
   // "GATT Error Unknown"). When MTU_GET answers we trust it (single payload).
-  const ladder = [PACKET_PAYLOAD_MAX, PACKET_PAYLOAD_SAFE]; // [244, 20]
+  // Diagnostic override: set localStorage.calliopeDfuLadder = "244,128,64,40,24,20"
+  // to make the reconnect ladder fine-grained — one DFU then prints exactly which
+  // payload size the link tolerates (= negotiated ATT MTU − 3). Used to measure,
+  // in real Chrome, whether the link caps at 20 (MTU 23) or accepts a larger size.
+  // Unset → normal [244, 20] behaviour.
+  const diagLadder = (() => {
+    try {
+      const raw = typeof localStorage !== 'undefined' ? localStorage.getItem('calliopeDfuLadder') : null;
+      if (raw) {
+        const arr = raw.split(',').map((s) => parseInt(s.trim(), 10)).filter((n) => n >= 4 && n <= PACKET_PAYLOAD_MAX);
+        if (arr.length) return arr;
+      }
+    } catch { /* localStorage may throw in sandboxed iframes */ }
+    return null;
+  })();
+  // HW-measured 2026-06-08 (Chrome 148/Win11, this host): a fine-grained sweep
+  // (244→128→64→40→24→20) showed ONLY 20 lands — every size ≥24 drops the link,
+  // i.e. the negotiated ATT MTU is the default 23 (the central never raised it;
+  // bleak/WinRT saw the same). So on a host that won't negotiate MTU, only 20
+  // works; on a host that does, 244 lands on the first try. Keep the optimistic
+  // 244-then-20 reconnect ladder: fast where the host negotiates 247, one
+  // reconnect to the safe 20 where it doesn't. (Diagnostic override:
+  // localStorage.calliopeDfuLadder = "244,128,64,40,24,20".)
+  const ladder = diagLadder ?? [PACKET_PAYLOAD_MAX, PACKET_PAYLOAD_SAFE]; // [244, 20]
 
   let lastErr: unknown;
   let mtuResolved = false;
