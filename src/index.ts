@@ -40,7 +40,7 @@ export type { UsbErrorInfo, UsbErrorInfoKind } from './usb-error-info';
 export type { ConnectionChoice, ConnectionChoiceRequest } from './connection-choice';
 export type { Readable, Writable, Subscriber, Unsubscriber } from './store';
 
-export { calliopeState } from './state';
+export { calliopeState, setBlocksRuntimeVersion } from './state';
 export { calliopeLog, clearCalliopeLog } from './log';
 export { calliopeUsbPlugRequest } from './usb-plug';
 export { calliopeUsbErrorInfo, dismissUsbErrorInfo } from './usb-error-info';
@@ -103,6 +103,7 @@ export {
   clearComms,
   setCommsPaused,
   resetCommsParser,
+  pushProxy,
 } from './comms';
 export type { CommsEntry, CommsDirection, CommsTransport } from './comms';
 export { LogParser } from './log-parser';
