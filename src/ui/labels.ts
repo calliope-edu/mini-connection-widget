@@ -50,6 +50,8 @@ export interface ConnectLabels {
   connectedSince: string;
   program: string;
   programBlocks: string;
+  runtimeVersion: string;
+  outdated: string;
 
   // Native-proxy mode (iOS/Android app hosting the campus). Empty/undefined
   // overrides leave the chip out entirely.
@@ -104,6 +106,8 @@ export const DEFAULT_LABELS: ConnectLabels = {
   connectedSince: 'Verbunden seit',
   program: 'Programm',
   programBlocks: 'Blocks-Runtime',
+  runtimeVersion: 'Blocks-Version',
+  outdated: 'veraltet',
 
   appModeChip: 'über App',
   appModeWaiting: 'über App – warte auf Calliope',

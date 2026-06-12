@@ -164,6 +164,10 @@ patch):
 3. **Upstream PRs** for the generic bits of our patch (configurable name
    prefixes, configurable USB VID/PID filters, opt-in lenient model-number
    parsing).
+4. **Read the on-device data log over BLE** — the MicroBit Utility Service
+   (`e95d0001…`) already exposes the flash log; the widget just needs a client.
+   Protocol + plan written up in
+   [`docs/ble-datalogger-readback.md`](./docs/ble-datalogger-readback.md).
 
 ## License
 

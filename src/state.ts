@@ -101,6 +101,18 @@ export interface CalliopeState {
   programType?: CalliopeProgramType;
 
   /**
+   * Blocks runtime (hex) version the running pxt-blocks firmware reports on
+   * connect (COMMAND 0x0100 byte [3]). Surfaced by the blocks editor iframe and
+   * pushed in via campus (`setBlocksRuntimeVersion`) — the widget's own probe
+   * does not read the COMMAND characteristic. Only meaningful while
+   * `programType === 'blocks'`; `runtimeOutdated` is true when the device hex is
+   * older than the version the editor ships (and the editor shows a re-flash
+   * banner). `undefined` when unknown / no blocks program.
+   */
+  runtimeVersion?: number;
+  runtimeOutdated?: boolean;
+
+  /**
    * The 5-letter Calliope friendly name (e.g. `tipov`), derived from
    * `FICR.DEVICEID[1]` over USB and from the advertised BLE name when it
    * carries the `[xxxxx]` suffix. Stable per device; once captured by
@@ -223,6 +235,19 @@ export const calliopeState: Readable<CalliopeState> = { subscribe: _state.subscr
  */
 export function updateState(fn: (s: CalliopeState) => CalliopeState): void {
   _state.update((s) => recomputeOverall(fn(s)));
+}
+
+/**
+ * Set the Blocks runtime version reported by the editor iframe (relayed by
+ * campus). Pass `version === undefined` to clear (disconnect / non-blocks
+ * program); `outdated` is ignored when clearing.
+ */
+export function setBlocksRuntimeVersion(version: number | undefined, outdated: boolean): void {
+  updateState((s) => ({
+    ...s,
+    runtimeVersion: version,
+    runtimeOutdated: version === undefined ? undefined : outdated,
+  }));
 }
 
 /** One-shot read of the current state. */

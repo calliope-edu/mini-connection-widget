@@ -195,6 +195,14 @@
             <span class="meta-key">{labels.program}</span>
             <span class="meta-val">{labels.programBlocks}</span>
           </div>
+          {#if s.runtimeVersion != null}
+            <div class="meta-row">
+              <span class="meta-key">{labels.runtimeVersion}</span>
+              <span class="meta-val" class:meta-warn={s.runtimeOutdated}>
+                v{s.runtimeVersion}{#if s.runtimeOutdated} · {labels.outdated}{/if}
+              </span>
+            </div>
+          {/if}
         {/if}
         {#if s.status === 'connected' && s.connectedAt}
           <div class="meta-row">
@@ -440,6 +448,7 @@
   .meta-row { display: flex; justify-content: space-between; font-size: 12px; padding: 4px 0; }
   .meta-row.muted { color: #666; margin-top: 6px; }
   .meta-key { color: #666; }
+  .meta-warn { color: #d97706; font-weight: 600; }
 
   .flash-block { margin: 10px 0; }
   .flash-via { font-size: 12px; font-weight: 600; color: #111; margin-bottom: 4px; }

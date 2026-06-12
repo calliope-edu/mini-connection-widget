@@ -17,6 +17,12 @@
  *      count as the active header. e.g. `0.2,22,58`.
  *   3. Key=value row:    tokens of `key=value` or `key:value` separated by
  *      space, comma or semicolon. Each row stands alone (no header).
+ *   4. Single labelled value: one `label:value` or `label=value` pair where the
+ *      label MAY contain spaces and the value is numeric, e.g. `Licht Serial:235`.
+ *      This is exactly what MakeCode's `serial.writeValue(name, n)` and
+ *      `bluetooth.uartWriteValue(name, n)` emit; the space in `name` would
+ *      otherwise defeat shape #3 (which splits on whitespace). The numeric value
+ *      is the guard that keeps this from swallowing prose like `Note: see below`.
  *
  * MicroBitLog format is covered by #1 and #2 — CODAL emits tab-separated
  * rows starting with a header.
@@ -39,6 +45,11 @@ export interface ParsedRow {
   values: (number | string)[];
   /** Active header columns (or synthetic `col1`, `col2`, ... if no header was seen). */
   columns: string[];
+  /** True when the row carries its own column names (key=value / single labelled
+   *  value), as opposed to a CSV row whose columns come from a prior header or
+   *  synthetic positional columns. Consumers can merge these self-describing
+   *  rows into one wide time-series even when different labels interleave. */
+  labelled?: boolean;
 }
 
 export type Parsed = ParsedHeader | ParsedRow;
@@ -91,6 +102,20 @@ function parseKeyValue(line: string): { key: string; value: number | string }[] 
   return pairs.length ? pairs : null;
 }
 
+/** One `label:value` / `label=value` pair where the label may contain spaces
+ *  and the value is strictly numeric. Matches MakeCode's `serial.writeValue` /
+ *  `bluetooth.uartWriteValue` output (`Licht Serial:235`). The numeric RHS keeps
+ *  this from misfiring on prose. Returns the pair or null. */
+const SINGLE_LABELLED = /^\s*([^:=]+?)\s*[:=]\s*(-?\d+(?:\.\d+)?)\s*$/;
+function parseSingleLabelled(line: string): { key: string; value: number } | null {
+  const m = SINGLE_LABELLED.exec(line);
+  if (!m) return null;
+  const key = m[1].trim();
+  if (!key) return null;
+  const value = Number(m[2]);
+  return Number.isFinite(value) ? { key, value } : null;
+}
+
 export class LogParser {
   private columns: string[] | null = null;
   private separator: ParsedSeparator | null = null;
@@ -113,6 +138,20 @@ export class LogParser {
         type: 'row',
         columns: kv.map((p) => p.key),
         values: kv.map((p) => p.value),
+        labelled: true,
+      };
+    }
+
+    // 1b. Single labelled numeric value with a possibly-spaced label, e.g.
+    //     `Licht Serial:235` (MakeCode writeValue / uartWriteValue). Tried only
+    //     after #1 fails, so multi-pair lines like `x=1 y=2` keep their meaning.
+    const single = parseSingleLabelled(line);
+    if (single) {
+      return {
+        type: 'row',
+        columns: [single.key],
+        values: [single.value],
+        labelled: true,
       };
     }
 

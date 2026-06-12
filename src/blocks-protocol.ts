@@ -17,7 +17,7 @@
 import { ConnectionStatus } from '@microbit/microbit-connection';
 import { getUsbConn, registerSerialDataListener } from './usb';
 import { appendLog } from './log';
-import { pushProxy } from './comms';
+import { pushProxy, setBlocksFramingUsbActive } from './comms';
 import {
   BLOCKS_REQ,
   BLOCKS_RES,
@@ -114,10 +114,16 @@ export async function sendBlocksFrameOverUsb(frame: Uint8Array): Promise<void> {
     const data = frame.slice(5, 5 + len);
     const opName = REQ_NAME[type] ?? `op=0x${type.toString(16)}`;
     const chName = channelName(channel);
+    // READs of COMMAND/STATE/MOTION/ANALOG are the editor's poll + handshake —
+    // route them to the Live tab (latest-per-channel) instead of the Stream.
+    const isLive = type === BLOCKS_REQ.READ &&
+      (channel === 0x0100 || channel === 0x0101 || channel === 0x0102 || channel === 0x0120);
     pushProxy({
       direction: 'tx',
       transport: 'usb',
       kind: 'blocks',
+      live: isLive,
+      liveKey: isLive ? chName : undefined,
       text: `${opName} ch=0x${channel.toString(16).padStart(4, '0')} (${chName})${
         data.length > 0 ? ` bytes=${formatBytes(data)}` : ''
       }`,
@@ -135,7 +141,10 @@ export function onBlocksFrameFromUsb(
   cb: (frame: BlocksFrame) => void,
 ): () => void {
   const parser = new BlocksFrameParser();
-  return registerSerialDataListener((ev) => {
+  // Mark USB as carrying the Blocks binary protocol so the raw text tap is
+  // suppressed (see setBlocksFramingUsbActive) while we're decoding frames.
+  setBlocksFramingUsbActive(true);
+  const unsub = registerSerialDataListener((ev) => {
     if (!ev?.data) return;
     const bytes: number[] = new Array(ev.data.length);
     for (let i = 0; i < ev.data.length; i++) bytes[i] = ev.data.charCodeAt(i) & 0xff;
@@ -145,6 +154,10 @@ export function onBlocksFrameFromUsb(
       try { cb(f); } catch (err) { appendLog({ direction: 'info', text: `blocks handler error: ${(err as Error)?.message ?? err}` }); }
     }
   });
+  return () => {
+    setBlocksFramingUsbActive(false);
+    unsub();
+  };
 }
 
 /**
@@ -155,10 +168,16 @@ export function onBlocksFrameFromUsb(
 export function logIncomingFrame(transport: 'usb' | 'ble', frame: BlocksFrame): void {
   const opName = RES_NAME[frame.type] ?? `op=0x${frame.type.toString(16)}`;
   const chName = channelName(frame.channel);
+  // READ results for COMMAND/STATE/MOTION/ANALOG are the poll/handshake
+  // responses (incl. the serial broadcaster's pushes) — route to the Live tab.
+  const isLive = frame.type === BLOCKS_RES.READ &&
+    (frame.channel === 0x0100 || frame.channel === 0x0101 || frame.channel === 0x0102 || frame.channel === 0x0120);
   pushProxy({
     direction: 'rx',
     transport,
     kind: 'blocks',
+    live: isLive,
+    liveKey: isLive ? chName : undefined,
     text: `${opName} ch=0x${frame.channel.toString(16).padStart(4, '0')} (${chName})${
       frame.data.length > 0 ? ` bytes=${formatBytes(frame.data)}` : ''
     }`,

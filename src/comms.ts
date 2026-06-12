@@ -43,6 +43,14 @@ export interface CommsEntry {
   text: string;
   /** Populated when the line was identified as a CSV / key=value row or header. */
   parsed?: Parsed;
+  /** High-frequency "live" polling/handshake traffic (COMMAND/STATE/MOTION/
+   *  ANALOG reads). Kept OUT of the Stream and shown in the dedicated "Live"
+   *  tab — which displays only the latest entry per {@link liveKey} (so the
+   *  Stream timeline holds only meaningful, user-driven events). */
+  live?: boolean;
+  /** Grouping key for the Live tab (the channel name, e.g. 'STATE'). The Live
+   *  tab keeps just the most recent entry per key, updating it in place. */
+  liveKey?: string;
 }
 
 const COMMS_MAX = 1000;
@@ -59,6 +67,20 @@ const parser = new LogParser();
 
 /** Buffer partial RX chunks until we have a newline, then push line-by-line. */
 const rxBuffers: Record<CommsTransport, string> = { usb: '', ble: '' };
+
+/**
+ * Ref-count of active USB Blocks-frame parsers. The Blocks protocol is a binary
+ * frame stream with no newlines, so the line-based raw USB tap ({@link pushRx})
+ * would buffer the frame bytes and dump them as a blob of mojibake. While a
+ * Blocks parser is tapping USB, suppress the raw USB text entries — the decoded
+ * frames are already pushed via {@link pushProxy}. Text-serial programs
+ * (MicroPython / MakeCode) leave this at 0, so their logs show normally.
+ */
+let blocksUsbFramingRefs = 0;
+export function setBlocksFramingUsbActive(active: boolean): void {
+  blocksUsbFramingRefs += active ? 1 : -1;
+  if (blocksUsbFramingRefs < 0) blocksUsbFramingRefs = 0;
+}
 
 function isPaused(): boolean {
   let v = false;
@@ -98,6 +120,8 @@ export function pushProxy(entry: {
   transport: CommsTransport;
   kind: CommsKind;
   text: string;
+  live?: boolean;
+  liveKey?: string;
 }): void {
   if (!entry.text) return;
   pushEntry(entry);
@@ -107,6 +131,9 @@ export function pushProxy(entry: {
  *  independently so the graph sees properly-bounded rows. */
 export function pushRx(transport: CommsTransport, chunk: string): void {
   if (!chunk) return;
+  // While a Blocks binary parser is tapping USB, the raw bytes are frame data,
+  // not text — skip them so the Stream doesn't fill with mojibake blobs.
+  if (transport === 'usb' && blocksUsbFramingRefs > 0) return;
   const combined = rxBuffers[transport] + chunk;
   const parts = combined.split('\n');
   rxBuffers[transport] = parts.pop() ?? '';

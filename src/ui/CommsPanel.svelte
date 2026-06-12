@@ -9,7 +9,6 @@
    * Graph  — numeric columns of detected data rows, sliding-window line
    *          chart drawn on a single 2D canvas (no external chart dep).
    */
-  import { onDestroy } from 'svelte';
   import {
     commsEntries,
     commsPaused,
@@ -18,18 +17,34 @@
     type CommsEntry,
   } from '../comms';
 
-  type Tab = 'stream' | 'rows' | 'graph';
+  type Tab = 'stream' | 'live' | 'rows' | 'graph';
   let tab: Tab = $state('stream');
 
   const entries = $derived($commsEntries);
   const paused = $derived($commsPaused);
 
+  // COMMAND/STATE/MOTION/ANALOG poll + handshake reads are flagged `live` by the
+  // blocks codec. They arrive ~every 50ms and drown out the meaningful
+  // writes/notifications, so they're kept OUT of the Stream and shown in the
+  // dedicated "Live" tab — which holds only the newest entry per channel,
+  // updated in place (not a scrolling log).
+  const liveEntries = $derived(entries.filter((e) => e.live));
+  const streamEntries = $derived(entries.filter((e) => !e.live));
+  const latestLive = $derived.by(() => {
+    const byKey = new Map<string, CommsEntry>();
+    for (const e of entries) {
+      if (e.live && e.liveKey) byKey.set(e.liveKey, e); // last write wins
+    }
+    return Array.from(byKey.values()).sort((a, b) =>
+      (a.liveKey ?? '').localeCompare(b.liveKey ?? ''));
+  });
+
   // ---- Stream view ---------------------------------------------------------
   let streamEl: HTMLDivElement | undefined = $state();
   let autoScroll = $state(true);
   $effect(() => {
-    // Re-run whenever the entries list grows; honor user's pin-to-bottom toggle.
-    entries.length;
+    // Re-run whenever the visible stream grows; honor user's pin-to-bottom toggle.
+    streamEntries.length;
     if (autoScroll && streamEl) {
       streamEl.scrollTop = streamEl.scrollHeight;
     }
@@ -59,20 +74,50 @@
   };
   const tables = $derived.by<TableModel[]>(() => {
     const out: TableModel[] = [];
-    let current: TableModel | null = null;
+    // CSV/synthetic rows whose columns come from a header (or positional shape)
+    // start a fresh table whenever the shape changes — unchanged behaviour.
+    let csv: TableModel | null = null;
+    // Self-describing labelled rows (key=value / single labelled value, e.g.
+    // `Licht Serial:235`) all flow into ONE growing table whose columns are the
+    // union of every label seen. Each row fills only the columns it carries;
+    // missing cells stay empty. This keeps interleaved named series (USB vs BLE,
+    // or several writeValue labels) in a single table that the graph can plot as
+    // separate lines, instead of fragmenting into one-row tables.
+    let labelled: TableModel | null = null;
     for (const e of entries) {
       if (!e.parsed) continue;
       if (e.parsed.type === 'header') {
-        current = { columns: e.parsed.columns, rows: [] };
-        out.push(current);
+        csv = { columns: e.parsed.columns, rows: [] };
+        out.push(csv);
         continue;
       }
-      // type === 'row'
-      if (!current || !sameColumns(current.columns, e.parsed.columns)) {
-        current = { columns: e.parsed.columns, rows: [] };
-        out.push(current);
+      // type === 'row' — bind to a local so narrowing survives the map closure.
+      const row = e.parsed;
+      if (row.labelled) {
+        if (!labelled) {
+          labelled = { columns: [], rows: [] };
+          out.push(labelled);
+        }
+        // Grow the column union; pad existing rows for any newly-seen label so
+        // every row stays aligned to `labelled.columns` (labels only append).
+        for (const col of row.columns) {
+          if (!labelled.columns.includes(col)) {
+            labelled.columns.push(col);
+            for (const r of labelled.rows) r.values.push('');
+          }
+        }
+        const values = labelled.columns.map((col) => {
+          const i = row.columns.indexOf(col);
+          return i >= 0 ? row.values[i] : '';
+        });
+        labelled.rows.push({ time: e.time, values });
+        continue;
       }
-      current.rows.push({ time: e.time, values: e.parsed.values });
+      if (!csv || !sameColumns(csv.columns, row.columns)) {
+        csv = { columns: row.columns, rows: [] };
+        out.push(csv);
+      }
+      csv.rows.push({ time: e.time, values: row.values });
     }
     return out;
   });
@@ -102,18 +147,46 @@
   }
 
   // ---- Graph view ----------------------------------------------------------
+  /**
+   * Time-based, smoothie-style scrolling line chart. The x-axis is wall-clock
+   * time over a sliding window; each detected numeric column becomes its own
+   * series of (time, value) points and is drawn as a continuous line.
+   *
+   * Going per-series-over-time (rather than the old "one table, x = row index")
+   * is what makes interleaved sources work: when `Licht Serial` (USB) and
+   * `Licht BLE` (BLE) alternate, each label is a sparse column in one table —
+   * by-row-index they never had two adjacent points, so no line ever drew.
+   * By time, each series connects its own samples regardless of interleaving.
+   */
   let canvas: HTMLCanvasElement | undefined = $state();
   const PALETTE = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2'];
-  /** Last table is what the graph follows (most recently seen header). */
-  const activeTable = $derived(tables.length > 0 ? tables[tables.length - 1] : null);
-  /** Indices (within activeTable.columns) of columns that have at least one
-   *  numeric value — those are the candidates for plotting. */
-  const numericCols = $derived.by<{ index: number; name: string; color: string }[]>(() => {
+  /** Width of the visible sliding window, in milliseconds. */
+  const WINDOW_MS = 30_000;
+
+  type Series = { name: string; color: string; points: { t: number; v: number }[] };
+  /** Graph follows the table that received the most recent row — i.e. whatever
+   *  is actively streaming — so the live series is always what's shown. */
+  const activeTable = $derived.by<TableModel | null>(() => {
+    let best: TableModel | null = null;
+    let bestT = -Infinity;
+    for (const t of tables) {
+      const last = t.rows[t.rows.length - 1];
+      if (last && last.time >= bestT) { best = t; bestT = last.time; }
+    }
+    return best ?? (tables.length ? tables[tables.length - 1] : null);
+  });
+  /** One series per numeric column of the active table, as (time, value) points. */
+  const series = $derived.by<Series[]>(() => {
     if (!activeTable) return [];
-    const out: { index: number; name: string; color: string }[] = [];
+    const out: Series[] = [];
     for (let i = 0; i < activeTable.columns.length; i++) {
-      if (activeTable.rows.some((r) => typeof r.values[i] === 'number')) {
-        out.push({ index: i, name: activeTable.columns[i], color: PALETTE[out.length % PALETTE.length] });
+      const points: { t: number; v: number }[] = [];
+      for (const r of activeTable.rows) {
+        const v = r.values[i];
+        if (typeof v === 'number' && Number.isFinite(v)) points.push({ t: r.time, v });
+      }
+      if (points.length) {
+        out.push({ name: activeTable.columns[i], color: PALETTE[out.length % PALETTE.length], points });
       }
     }
     return out;
@@ -126,106 +199,140 @@
       hidden = rest as Record<string, true>;
     }
   }
-  $effect(() => {
-    drawGraph();
-  });
-  function drawGraph() {
-    if (!canvas || !activeTable) return;
-    const dpr = window.devicePixelRatio || 1;
-    const w = canvas.clientWidth, h = canvas.clientHeight;
-    canvas.width = Math.max(1, Math.floor(w * dpr));
-    canvas.height = Math.max(1, Math.floor(h * dpr));
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, w, h);
 
-    const PADL = 32, PADR = 8, PADT = 8, PADB = 18;
-    const innerW = Math.max(1, w - PADL - PADR);
-    const innerH = Math.max(1, h - PADT - PADB);
-
-    // Sliding window: last N rows.
-    const N = Math.min(activeTable.rows.length, 200);
-    const start = activeTable.rows.length - N;
-    const rows = activeTable.rows.slice(start);
-    if (rows.length < 2) {
-      // Axis frame + placeholder.
-      ctx.strokeStyle = '#d0d7de';
-      ctx.strokeRect(PADL, PADT, innerW, innerH);
-      ctx.fillStyle = '#6e7781';
-      ctx.font = '12px system-ui, sans-serif';
-      ctx.fillText('Brauche mindestens 2 Datenpunkte …', PADL + 8, PADT + 16);
-      return;
-    }
-
-    // Y range across all visible numeric columns.
-    let yMin = Infinity, yMax = -Infinity;
-    for (const c of numericCols) {
-      if (hidden[c.name]) continue;
-      for (const r of rows) {
-        const v = r.values[c.index];
-        if (typeof v === 'number' && Number.isFinite(v)) {
-          if (v < yMin) yMin = v;
-          if (v > yMax) yMax = v;
-        }
-      }
-    }
-    if (!Number.isFinite(yMin) || !Number.isFinite(yMax)) return;
-    if (yMin === yMax) { yMin -= 1; yMax += 1; }
-    const pad = (yMax - yMin) * 0.08;
-    yMin -= pad; yMax += pad;
-
-    // Axes + grid.
-    ctx.strokeStyle = '#d0d7de';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(PADL, PADT, innerW, innerH);
-    ctx.fillStyle = '#6e7781';
-    ctx.font = '11px system-ui, sans-serif';
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'middle';
-    for (let i = 0; i <= 4; i++) {
-      const yPx = PADT + (innerH * i) / 4;
-      const val = yMax - ((yMax - yMin) * i) / 4;
-      ctx.fillText(fmtAxis(val), PADL - 4, yPx);
-      ctx.strokeStyle = i === 0 || i === 4 ? '#d0d7de' : '#eaeef2';
-      ctx.beginPath();
-      ctx.moveTo(PADL, yPx);
-      ctx.lineTo(PADL + innerW, yPx);
-      ctx.stroke();
-    }
-
-    // Lines.
-    for (const c of numericCols) {
-      if (hidden[c.name]) continue;
-      ctx.strokeStyle = c.color;
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      let pen = false;
-      for (let i = 0; i < rows.length; i++) {
-        const v = rows[i].values[c.index];
-        if (typeof v !== 'number' || !Number.isFinite(v)) { pen = false; continue; }
-        const x = PADL + (innerW * i) / Math.max(1, rows.length - 1);
-        const y = PADT + innerH * (1 - (v - yMin) / (yMax - yMin));
-        if (!pen) { ctx.moveTo(x, y); pen = true; } else { ctx.lineTo(x, y); }
-      }
-      ctx.stroke();
-    }
-  }
   function fmtAxis(v: number): string {
     if (Math.abs(v) >= 1000 || (v !== 0 && Math.abs(v) < 0.01)) return v.toExponential(1);
     return Number(v.toFixed(2)).toString();
   }
 
-  // Redraw on resize too.
-  let ro: ResizeObserver | undefined;
-  $effect(() => {
+  function draw() {
     if (!canvas) return;
-    ro?.disconnect();
-    ro = new ResizeObserver(() => drawGraph());
-    ro.observe(canvas);
-    return () => ro?.disconnect();
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (w < 2 || h < 2) return;
+    // Size the backing store to the (absolutely-positioned) element so layout
+    // can't feed back into size — this is what stopped the panel from growing.
+    const bw = Math.floor(w * dpr), bh = Math.floor(h * dpr);
+    if (canvas.width !== bw) canvas.width = bw;
+    if (canvas.height !== bh) canvas.height = bh;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    const PADL = 38, PADR = 10, PADT = 8, PADB = 16;
+    const innerW = Math.max(1, w - PADL - PADR);
+    const innerH = Math.max(1, h - PADT - PADB);
+
+    const tMax = Date.now();
+    const tMin = tMax - WINDOW_MS;
+    const vis = series.filter((s) => !hidden[s.name]);
+
+    // Y range over visible points still relevant to the window (keep one sample
+    // either side so a line entering/leaving the window scales sensibly).
+    let yMin = Infinity, yMax = -Infinity;
+    for (const s of vis) {
+      for (const p of s.points) {
+        if (p.t < tMin - WINDOW_MS) continue;
+        if (p.v < yMin) yMin = p.v;
+        if (p.v > yMax) yMax = p.v;
+      }
+    }
+
+    // Plot frame.
+    ctx.strokeStyle = '#d0d7de';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(PADL, PADT, innerW, innerH);
+
+    if (!Number.isFinite(yMin) || !Number.isFinite(yMax)) {
+      ctx.fillStyle = '#6e7781';
+      ctx.font = '12px system-ui, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillText('Warte auf Datenpunkte …', PADL + 8, PADT + 18);
+      return;
+    }
+    if (yMin === yMax) { yMin -= 1; yMax += 1; }
+    const pad = (yMax - yMin) * 0.08;
+    yMin -= pad; yMax += pad;
+
+    const xOf = (t: number) => PADL + (innerW * (t - tMin)) / WINDOW_MS;
+    const yOf = (v: number) => PADT + innerH * (1 - (v - yMin) / (yMax - yMin));
+
+    // Horizontal grid + y labels.
+    ctx.fillStyle = '#6e7781';
+    ctx.font = '10px system-ui, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    for (let i = 0; i <= 4; i++) {
+      const yPx = PADT + (innerH * i) / 4;
+      ctx.fillText(fmtAxis(yMax - ((yMax - yMin) * i) / 4), PADL - 4, yPx);
+      if (i > 0 && i < 4) {
+        ctx.strokeStyle = '#eaeef2';
+        ctx.beginPath();
+        ctx.moveTo(PADL, yPx);
+        ctx.lineTo(PADL + innerW, yPx);
+        ctx.stroke();
+      }
+    }
+
+    // Vertical grid every 5 s, scrolling with time.
+    ctx.strokeStyle = '#f0f3f6';
+    const STEP = 5000;
+    for (let t = Math.ceil(tMin / STEP) * STEP; t <= tMax; t += STEP) {
+      const x = xOf(t);
+      ctx.beginPath();
+      ctx.moveTo(x, PADT);
+      ctx.lineTo(x, PADT + innerH);
+      ctx.stroke();
+    }
+    // x-axis hint.
+    ctx.fillStyle = '#8c959f';
+    ctx.font = '10px system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(`−${WINDOW_MS / 1000}s`, PADL + 2, h - 2);
+    ctx.textAlign = 'right';
+    ctx.fillText('jetzt', PADL + innerW, h - 2);
+
+    // Clip to the plot rect so off-window line segments don't spill over axes.
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(PADL, PADT, innerW, innerH);
+    ctx.clip();
+    for (const s of vis) {
+      ctx.strokeStyle = s.color;
+      ctx.fillStyle = s.color;
+      ctx.lineWidth = 1.75;
+      ctx.beginPath();
+      let pen = false;
+      for (const p of s.points) {
+        if (p.t < tMin - WINDOW_MS) continue;
+        const x = xOf(p.t), y = yOf(p.v);
+        if (!pen) { ctx.moveTo(x, y); pen = true; } else { ctx.lineTo(x, y); }
+      }
+      ctx.stroke();
+      // Sample markers — guarantee visibility even for a lone point.
+      for (const p of s.points) {
+        if (p.t < tMin || p.t > tMax) continue;
+        ctx.beginPath();
+        ctx.arc(xOf(p.t), yOf(p.v), 2.2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+
+  // Animate while the Graph tab is open: rAF scrolls the window smoothly and
+  // redraws (also picks up resizes, since it reads clientWidth each frame).
+  // Reads the latest `series`/`hidden` each frame — no per-data-point effect.
+  let raf = 0;
+  $effect(() => {
+    if (tab !== 'graph' || !canvas) return;
+    const loop = () => { draw(); raf = requestAnimationFrame(loop); };
+    raf = requestAnimationFrame(loop);
+    return () => { if (raf) cancelAnimationFrame(raf); raf = 0; };
   });
-  onDestroy(() => ro?.disconnect());
 
   // ---- Top bar -------------------------------------------------------------
   function entryClass(e: CommsEntry): string {
@@ -237,7 +344,7 @@
   <div class="tabs">
     <button class="tab" class:active={tab === 'stream'} onclick={() => (tab = 'stream')}>
       Stream
-      <span class="tab-count">{entries.length}</span>
+      <span class="tab-count">{streamEntries.length}</span>
     </button>
     <button class="tab" class:active={tab === 'rows'} onclick={() => (tab = 'rows')}>
       Zeilen
@@ -245,6 +352,15 @@
     </button>
     <button class="tab" class:active={tab === 'graph'} onclick={() => (tab = 'graph')}>
       Graph
+    </button>
+    <button
+      class="tab live-toggle"
+      class:active={tab === 'live'}
+      title="Live-Sensordaten (COMMAND/STATE/MOTION/ANALOG) — je Typ der neueste Wert"
+      onclick={() => (tab = 'live')}
+    >
+      <span class="live-dot" class:flowing={liveEntries.length > 0}></span>
+      Live <span class="tab-count">{latestLive.length}</span>
     </button>
     <div class="spacer"></div>
     <button class="btn-icon" title={paused ? 'Fortsetzen' : 'Pausieren'} onclick={() => setCommsPaused(!paused)}>
@@ -255,10 +371,14 @@
 
   {#if tab === 'stream'}
     <div class="stream" bind:this={streamEl} onscroll={onStreamScroll}>
-      {#if entries.length === 0}
-        <div class="placeholder">Noch keine Daten gesendet oder empfangen.</div>
+      {#if streamEntries.length === 0}
+        <div class="placeholder">
+          {entries.length > 0 && liveEntries.length > 0
+            ? 'Nur Live-Polling aktiv — relevante Ereignisse (Befehle, Tastendrücke) erscheinen hier.'
+            : 'Noch keine Daten gesendet oder empfangen.'}
+        </div>
       {/if}
-      {#each entries as e (e.id)}
+      {#each streamEntries as e (e.id)}
         <div class={entryClass(e)}>
           <span class="t">{fmtTime(e.time)}</span>
           <span class="dir">{e.direction === 'tx' ? '↑' : '↓'}</span>
@@ -272,10 +392,27 @@
         </div>
       {/each}
     </div>
+  {:else if tab === 'live'}
+    <div class="live-scroll">
+      {#if latestLive.length === 0}
+        <div class="placeholder">
+          Noch keine Live-Daten. Sensor-Polling (STATE/MOTION/ANALOG) und der
+          Handshake (COMMAND) erscheinen hier — je Typ nur der neueste Wert.
+        </div>
+      {/if}
+      {#each latestLive as e (e.liveKey)}
+        <div class="live-row entry-{e.direction}">
+          <span class="live-key">{e.liveKey}</span>
+          <span class="tp">{e.transport.toUpperCase()}</span>
+          <span class="t">{fmtTime(e.time)}</span>
+          <span class="live-text">{e.text}</span>
+        </div>
+      {/each}
+    </div>
   {:else if tab === 'rows'}
     <div class="rows-scroll">
       {#if tables.length === 0}
-        <div class="placeholder">Noch keine Logzeilen erkannt. Sende z. B. <code>print('x,y'); print('1,2')</code> oder nutze <code>log.add(…)</code>.</div>
+        <div class="placeholder">Noch keine Logzeilen erkannt. Sende z. B. <code>serial.writeValue("Licht", x)</code>, <code>print('x,y'); print('1,2')</code> oder nutze <code>datalogger.mirrorToSerial(true)</code>.</div>
       {/if}
       {#each tables as t, ti (ti)}
         <div class="rows-card">
@@ -294,7 +431,13 @@
                 {#each t.rows.slice(-100) as r, ri (ri)}
                   <tr>
                     <td class="c-time">{fmtTime(r.time)}</td>
-                    {#each r.values as v}<td class="c-val" class:num={typeof v === 'number'}>{v}</td>{/each}
+                    {#each r.values as v}
+                      {#if v === '' || v === undefined || v === null}
+                        <td class="c-val c-empty" title="kein Wert">·</td>
+                      {:else}
+                        <td class="c-val" class:num={typeof v === 'number'}>{v}</td>
+                      {/if}
+                    {/each}
                   </tr>
                 {/each}
               </tbody>
@@ -308,18 +451,20 @@
     </div>
   {:else}
     <div class="graph-wrap">
-      {#if !activeTable}
-        <div class="placeholder">Noch keine Daten zum Plotten. Logge Zahlen mit <code>print('x,y'); print('1,2')</code> oder <code>log.add(…)</code>.</div>
+      {#if series.length === 0}
+        <div class="placeholder">Noch keine Daten zum Plotten. Logge Zahlen mit <code>serial.writeValue("Licht", x)</code>, <code>print('x,y'); print('1,2')</code> oder <code>datalogger.mirrorToSerial(true)</code>.</div>
       {:else}
         <div class="legend">
-          {#each numericCols as c}
+          {#each series as c (c.name)}
             <button class="legend-item" class:off={hidden[c.name]} onclick={() => toggleCol(c.name)}>
               <span class="swatch" style="background:{c.color}"></span>
               <span class="name">{c.name}</span>
             </button>
           {/each}
         </div>
-        <canvas bind:this={canvas} class="graph-canvas"></canvas>
+        <div class="graph-plot">
+          <canvas bind:this={canvas} class="graph-canvas"></canvas>
+        </div>
       {/if}
     </div>
   {/if}
@@ -446,6 +591,49 @@
   .kind-blocks { background: #e7e0ff; color: rgb(65, 200, 200); }
   .kind-gatt { background: #d6f1ff; color: #056399; }
 
+  /* "Live" badge: pulsing dot while STATE/MOTION/ANALOG polling flows, with a
+     count. Clicking the badge toggles whether that poll traffic is shown in
+     the Stream (hidden by default). */
+  .live-toggle { display: inline-flex; align-items: center; gap: 5px; }
+  .live-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #9aa3ad;
+    display: inline-block;
+    flex: 0 0 auto;
+  }
+  .live-dot.flowing {
+    background: #22c55e;
+    animation: livePulse 1.1s ease-in-out infinite;
+  }
+  @keyframes livePulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.3; transform: scale(0.72); }
+  }
+
+  /* Live tab: one fixed row per channel, latest value updated in place. */
+  .live-scroll {
+    flex: 1;
+    overflow-y: auto;
+    padding: 6px 4px;
+    font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  .live-row {
+    display: grid;
+    grid-template-columns: 96px 36px 96px 1fr;
+    gap: 6px;
+    align-items: baseline;
+    padding: 2px 4px;
+    border-bottom: 1px solid #eaeef2;
+  }
+  .live-row .live-key { font-weight: 600; color: #6f42c1; }
+  .live-row .t { color: #6e7781; }
+  .live-row .live-text { color: #24292f; word-break: break-all; }
+  .live-row.entry-rx .live-text { color: #1a7f37; }
+
   .rows-scroll {
     flex: 1;
     overflow-y: auto;
@@ -469,15 +657,24 @@
   }
   .rows-card-head .meta { color: #6e7781; font-size: 12px; }
   .rows-table-wrap { overflow-x: auto; }
-  .rows-table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  /* Content-sized columns (not stretched to 100%) so values sit next to their
+     header instead of drifting apart on a wide panel; the wrap scrolls
+     horizontally when there are too many columns for the width. Light vertical
+     rules + nowrap keep it readable when space is tight. */
+  .rows-table { border-collapse: collapse; width: auto; font-size: 12px; }
   .rows-table th, .rows-table td {
     border-bottom: 1px solid #eaeef2;
-    padding: 3px 8px;
+    border-right: 1px solid #f0f3f6;
+    padding: 3px 10px;
     text-align: left;
     vertical-align: top;
+    white-space: nowrap;
   }
+  .rows-table th:last-child, .rows-table td:last-child { border-right: 0; }
   .rows-table th { color: #57606a; font-weight: 600; background: #fafbfc; position: sticky; top: 0; }
+  .rows-table td.c-val { min-width: 52px; }
   .rows-table td.c-val.num { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; text-align: right; }
+  .rows-table td.c-empty { color: #c4cdd5; text-align: center; }
   .rows-table td.c-time, .rows-table th.c-time { color: #6e7781; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; white-space: nowrap; }
   .rows-truncated { padding: 6px 10px; color: #6e7781; font-size: 11px; background: #fafbfc; }
 
@@ -507,10 +704,19 @@
   .legend-item:hover { background: #eaeef2; }
   .legend-item.off { opacity: 0.45; }
   .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
-  .graph-canvas {
-    width: 100%;
+  /* The canvas is absolutely positioned inside a flex-sized box, so reading its
+     size while drawing can never feed back into layout (which previously let the
+     panel grow and scroll). The box owns the size; the canvas just fills it. */
+  .graph-plot {
+    position: relative;
     flex: 1;
     min-height: 200px;
+  }
+  .graph-canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
     display: block;
   }
 </style>
