@@ -180,6 +180,36 @@ const PACKET_PAYLOAD_MAX = PACKET_PAYLOAD_STEPS[0];
 const PRN_INTERVAL = 6;
 
 /**
+ * Per-host cache for the fast-DFU capability. Some hosts (notably Windows PCs
+ * whose Bluetooth adapter/driver won't raise the link Data Length — e.g. the
+ * documented Intel AX200/AX201 DLE bug) cannot deliver a 244-byte ATT write:
+ * it fragments and the link stalls/drops on the first big chunk. We still TRY
+ * 244 optimistically the first time, but once it has dropped the link we cache
+ * that here and start subsequent flashes straight at the safe 20-byte payload —
+ * skipping the ~6-10 s wasted 244 attempt + reconnect on every later flash.
+ * Cleared the instant 244 succeeds (so a host fixed by a driver rollback / a
+ * non-Intel BT dongle auto-recovers), and auto-expires after a week so a
+ * previously-bad host re-probes the fast path.
+ */
+const DFU_244_BAD_KEY = 'calliopeDfu244Unsupported';
+const DFU_244_REPROBE_MS = 7 * 24 * 60 * 60 * 1000;
+
+function dfu244KnownBad(): boolean {
+  try {
+    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(DFU_244_BAD_KEY) : null;
+    if (!raw) return false;
+    const ts = parseInt(raw, 10);
+    return Number.isFinite(ts) && Date.now() - ts < DFU_244_REPROBE_MS;
+  } catch { return false; }
+}
+function dfu244MarkBad(): void {
+  try { localStorage?.setItem(DFU_244_BAD_KEY, String(Date.now())); } catch { /* sandboxed iframe */ }
+}
+function dfu244MarkGood(): void {
+  try { localStorage?.removeItem(DFU_244_BAD_KEY); } catch { /* sandboxed iframe */ }
+}
+
+/**
  * Floor the adaptive step-down won't drop PRN below — at PRN=1 the
  * bootloader acks every single packet, which is the most conservative
  * flow-control possible (and slowest). No point going lower.
@@ -445,7 +475,16 @@ export async function flashOverNordicDfuWeb(opts: FlashOverNordicDfuOptions): Pr
   // 244-then-20 reconnect ladder: fast where the host negotiates 247, one
   // reconnect to the safe 20 where it doesn't. (Diagnostic override:
   // localStorage.calliopeDfuLadder = "244,128,64,40,24,20".)
-  const ladder = diagLadder ?? [PACKET_PAYLOAD_MAX, PACKET_PAYLOAD_SAFE]; // [244, 20]
+  // Cache-aware default ladder: optimistic [244, 20] normally, but if THIS host
+  // has already proven it can't do 244 (cached), skip straight to [20] and save
+  // the ~6-10 s of a doomed 244 attempt + reconnect. (Diagnostic override always
+  // wins.) Cleared automatically when 244 later succeeds; re-probes after a week.
+  const skip244 = !diagLadder && dfu244KnownBad();
+  if (skip244) {
+    trace('this host previously failed 244-byte DFU (cached) — starting at 20-byte writes');
+  }
+  const ladder = diagLadder
+    ?? (skip244 ? [PACKET_PAYLOAD_SAFE] : [PACKET_PAYLOAD_MAX, PACKET_PAYLOAD_SAFE]); // [244, 20]
 
   let lastErr: unknown;
   let mtuResolved = false;
@@ -510,6 +549,10 @@ export async function flashOverNordicDfuWeb(opts: FlashOverNordicDfuOptions): Pr
       );
 
       phase('finalising');
+      // 244 worked on this host — clear any stale "can't do 244" cache so we
+      // keep using the fast path (and a previously-bad host that got fixed,
+      // e.g. via a BT-driver rollback / non-Intel dongle, auto-recovers).
+      if (payload >= PACKET_PAYLOAD_MAX) dfu244MarkGood();
       trace('done — device will reboot into application');
       return;
     } catch (err) {
@@ -525,6 +568,12 @@ export async function flashOverNordicDfuWeb(opts: FlashOverNordicDfuOptions): Pr
         || /GATT (Error Unknown|operation|Server is disconnected)/i.test(msg)
         || /disconnected|connection/i.test(msg);
       if (linkDropped && !isLastStep) {
+        // The fast 244 path just dropped the link on this host — cache that so
+        // future flashes skip straight to 20-byte (no wasted 244 attempt).
+        if (payload >= PACKET_PAYLOAD_MAX) {
+          dfu244MarkBad();
+          trace('caching: this host can\'t do 244-byte DFU — future flashes will start at 20-byte');
+        }
         trace(`DFU attempt at payload=${payload} failed (${msg}) — reconnecting to retry smaller`);
         continue;
       }
