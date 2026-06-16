@@ -2,8 +2,15 @@
   import { calliopeBleOfflineInfo, dismissBleOfflineInfo } from '../ble-offline-info';
   import { calliopeState } from '../state';
   import { connectCalliope, disconnectAndForget } from '../connect';
+  import { isNativeMode } from '../native-bridge';
 
   const visible = $derived($calliopeBleOfflineInfo);
+
+  // In native (iOS/Android bridge) mode the host owns the radio: it auto-
+  // reconnects and flashes once the mini is back in Bluetooth mode, and the
+  // USB / "retry BLE" web actions don't map to anything there. So the modal is
+  // purely an A+B+Reset instruction — hide the web-only steps and buttons.
+  const native = isNativeMode();
 
   // "Connection attempt failed" is CoreBluetooth error 6 (CBErrorConnectionFailed),
   // which fires on macOS when the OS has a stale bond for the device. Guide macOS
@@ -62,7 +69,7 @@
       <h2 id="ble-offline-title">Bluetooth ist auf deinem Calliope gerade aus</h2>
       <p class="lead">
         Wahrscheinlich läuft ein Programm ohne Bluetooth.
-        {isMac ? 'Drei mögliche Ursachen:' : 'Zwei Wege zurück:'}
+        {native ? 'So geht es weiter:' : isMac ? 'Drei mögliche Ursachen:' : 'Zwei Wege zurück:'}
       </p>
 
       <ol class="steps">
@@ -71,13 +78,19 @@
           <div class="step-body">
             <div class="step-title">A + B halten und Reset drücken</div>
             <div class="step-hint">
-              Der Calliope startet in den DFU-Modus
-              (Display zeigt z.&nbsp;B. ein Plus „+"). Dann unten auf
-              <em>„Erneut verbinden"</em> klicken — wir spielen ein
-              BLE-fähiges Programm auf.
+              {#if native}
+                Der Calliope startet in den Bluetooth-Modus. Wir verbinden uns
+                dann automatisch neu und spielen dein Programm auf.
+              {:else}
+                Der Calliope startet in den DFU-Modus
+                (Display zeigt z.&nbsp;B. ein Plus „+"). Dann unten auf
+                <em>„Erneut verbinden"</em> klicken — wir spielen ein
+                BLE-fähiges Programm auf.
+              {/if}
             </div>
           </div>
         </li>
+        {#if !native}
         <li>
           <span class="num">2</span>
           <div class="step-body">
@@ -88,7 +101,8 @@
             </div>
           </div>
         </li>
-        {#if isMac}
+        {/if}
+        {#if isMac && !native}
         <li>
           <span class="num">3</span>
           <div class="step-body">
@@ -105,6 +119,7 @@
         {/if}
       </ol>
 
+      {#if !native}
       <div class="actions">
         <button type="button" class="btn secondary" onclick={useUsbInstead}>
           USB nehmen
@@ -113,10 +128,13 @@
           {retrying ? 'Verbinde…' : 'Erneut verbinden'}
         </button>
       </div>
+      {/if}
       <div class="dismiss-row">
+        {#if !native}
         <button type="button" class="link-btn" onclick={cancelConnection}>
           Verbindung abbrechen
         </button>
+        {/if}
         <button type="button" class="link-btn" onclick={() => dismissBleOfflineInfo()}>
           Schließen
         </button>

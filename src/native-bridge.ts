@@ -31,6 +31,7 @@
 
 import { updateState, NATIVE_MODE, type CalliopeState, type CalliopeFlashPhase, type CalliopeTransport } from './state';
 import { appendLog } from './log';
+import { showBleOfflineInfo } from './ble-offline-info';
 
 // ---- Detection -------------------------------------------------------------
 
@@ -318,6 +319,15 @@ function dispatchEvent(kind: string, data: unknown): void {
     case 'error': {
       const d = data as ErrorEventData;
       if (d?.message) appendLog({ direction: 'error', text: `[native] ${d.message}` });
+      return;
+    }
+    case 'bleModeRequest': {
+      // The native host (iOS/Android) couldn't reopen a stale BLE link before a
+      // flash — typically the previous program turned BLE off (MicroPython, or
+      // MakeCode with the radio extension). Surface the existing "put your mini
+      // in Bluetooth mode (A+B+Reset)" modal; it auto-dismisses once a reconnect
+      // produces a `connected` state event.
+      showBleOfflineInfo();
       return;
     }
     default:
