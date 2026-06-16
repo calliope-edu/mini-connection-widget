@@ -12,17 +12,19 @@
         Der Calliope ist gerade nicht verbunden. Wähle, wie das Programm aufs Gerät kommen soll.
       </p>
       <div class="choices">
-        <button type="button" class="choice" onclick={() => req.choose('ble')}>
-          <span class="choice-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M6.5 6.5 17.5 17.5 12 22V2l5.5 4.5L6.5 17.5" />
-            </svg>
-          </span>
-          <span class="choice-body">
-            <span class="choice-title">Per Bluetooth</span>
-            <span class="choice-detail">Drahtlos — Calliope muss eingeschaltet und in Reichweite sein.</span>
-          </span>
-        </button>
+        {#if req.bleEnabled}
+          <button type="button" class="choice" onclick={() => req.choose('ble')}>
+            <span class="choice-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M6.5 6.5 17.5 17.5 12 22V2l5.5 4.5L6.5 17.5" />
+              </svg>
+            </span>
+            <span class="choice-body">
+              <span class="choice-title">Per Bluetooth</span>
+              <span class="choice-detail">Drahtlos — Calliope muss eingeschaltet und in Reichweite sein.</span>
+            </span>
+          </button>
+        {/if}
         <button type="button" class="choice" onclick={() => req.choose('usb')}>
           <span class="choice-icon" aria-hidden="true">
             <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">

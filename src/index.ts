@@ -49,6 +49,9 @@ export { calliopeConnectionChoiceRequest } from './connection-choice';
 
 export { connectCalliope, disconnectAndForget } from './connect';
 export { flashCalliope } from './flash';
+// BLE-as-flash-transport policy. BLE *comms* is always available; this only
+// gates the flash path + the connection-choice modal's Bluetooth option.
+export { setBleFlashEnabled, isBleFlashEnabled } from './ble-flash-policy';
 export {
   sendSerialLine,
   onSerialLine,

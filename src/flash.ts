@@ -3,6 +3,7 @@ import { calliopeState, getState, updateState, SUPPORT, type CalliopeTransport }
 import { appendLog } from './log';
 import { awaitUsbPlugConfirm } from './usb-plug';
 import { awaitConnectionChoice } from './connection-choice';
+import { isBleFlashEnabled } from './ble-flash-policy';
 import { connectCalliope } from './connect';
 import {
   flashCalliopeViaBle,
@@ -44,7 +45,12 @@ const PENDING_FLASH_TTL_MS = 60_000;
  * Top-level flash dispatcher. USB-first routing by default — USB is faster
  * (~5-10 s vs ~115 s for BLE-DFU) and more reliable on Web Bluetooth.
  *
- * Order:
+ * When BLE flashing is disabled (see `ble-flash-policy.ts` — the default for
+ * normal users; campus enables it only in dev mode) every BLE branch below is
+ * skipped: a BLE-only connection is flashed over USB instead, and the
+ * connection-choice modal drops the Bluetooth option. BLE comms is untouched.
+ *
+ * Order (BLE steps gated on `bleFlashAllowed`):
  *  1. **`preferredTransport === 'ble'`** — user explicitly picked BLE at
  *     the connection-choice modal. Honor it: try BLE partial → BLE-DFU,
  *     no automatic USB fallback (the user already saw the USB option and
@@ -62,6 +68,14 @@ export interface FlashOptions {
    * partial flash would corrupt it. Honored on both the web and native paths.
    */
   forceFullDfu?: boolean;
+  /**
+   * Whether the program being flashed will leave BLE running. `false` for
+   * programs known to turn BLE off (MicroPython, or MakeCode with the radio
+   * extension); omit when unknown. Only forwarded to the native host, which
+   * uses it to prompt for A+B+Reset sooner during reconnect-before-flash — it
+   * never gates the flash itself.
+   */
+  programHasBle?: boolean;
 }
 
 export async function flashCalliope(
@@ -72,9 +86,10 @@ export async function flashCalliope(
 ): Promise<void> {
   if (isNativeMode()) {
     // Native host owns transport choice and reconnect, but we still tell it
-    // when to force full DFU. `preferredTransport` is ignored — there's only
-    // one path on mobile (BLE open-mode).
-    return nativeFlash(hex, name, opts.forceFullDfu ?? false);
+    // when to force full DFU and whether the program keeps BLE on (so it can
+    // prompt for A+B+Reset sooner). `preferredTransport` is ignored — there's
+    // only one path on mobile (BLE open-mode).
+    return nativeFlash(hex, name, opts.forceFullDfu ?? false, opts.programHasBle);
   }
   let s = getState();
   if (s.status === 'flashing' || s.flashInProgress) {
@@ -106,6 +121,12 @@ async function flashDispatch(
 ): Promise<void> {
   let s = getState();
 
+  // Whether BLE may be used as a flash transport this run. When off (the
+  // default for normal users — campus only enables it in dev mode) every BLE
+  // flash branch below is skipped: a BLE-only connection routes to USB instead,
+  // and the connection-choice modal hides Bluetooth. BLE *comms* is untouched.
+  const bleFlashAllowed = isBleFlashEnabled();
+
   // Classify the hex up front. Used by flashOverBle for diagnostics only;
   // partial flash now supports BOTH MakeCode hexes (MAGIC_MARKER) AND
   // MicroPython hexes (addlayouttable.py layout-table magic) — see
@@ -119,6 +140,7 @@ async function flashDispatch(
   // when USB isn't already a better option — USB-first means we never
   // wake BLE just to flash if a USB cable is plugged in.
   if (
+    bleFlashAllowed &&
     SUPPORT.ble &&
     s.bleHasPermission &&
     !s.userDisconnectedBle &&
@@ -158,7 +180,7 @@ async function flashDispatch(
   // up. The fallback chain stays BLE-partial → BLE-DFU. If both fail we
   // surface an error rather than silently switching transports — the user
   // would expect a different UI prompt if we wanted to switch.
-  if (preferredTransport === 'ble' && s.bleStatus === 'connected') {
+  if (bleFlashAllowed && preferredTransport === 'ble' && s.bleStatus === 'connected') {
     try {
       return await flashOverBle(hex, name, flavor, s.bleSessionKind, opts.forceFullDfu);
     } finally {
@@ -182,8 +204,28 @@ async function flashDispatch(
     return;
   }
 
-  // No USB. Try BLE.
-  if (s.bleStatus === 'connected') {
+  // No USB connected.
+
+  // BLE flashing disabled (the default for normal users): never flash over BLE.
+  // If BLE is the only transport up, route straight to the USB hybrid path
+  // (prompt for a cable, flash over USB), then re-establish BLE for comms. This
+  // is the "a download goes directly to USB" behavior — BLE stays comms-only.
+  if (!bleFlashAllowed && s.bleStatus === 'connected') {
+    if (SUPPORT.usb) {
+      appendLog({
+        direction: 'info',
+        text: 'BLE flashing disabled — routing flash to USB (BLE stays available for comms).',
+      });
+      await flashCalliopeHybrid(hex, name);
+      if (wasBleConnected) await scheduleBleReconnect();
+      return;
+    }
+    // No WebUSB at all — fall through to the connection-choice modal, which
+    // (with Bluetooth hidden) leaves hex-download as the only transfer option.
+  }
+
+  // BLE connected and BLE flashing allowed (dev mode). Try BLE.
+  if (bleFlashAllowed && s.bleStatus === 'connected') {
     try {
       await flashOverBle(hex, name, flavor, s.bleSessionKind, opts.forceFullDfu);
       if (wasBleConnected) await scheduleBleReconnect();
@@ -211,7 +253,7 @@ async function flashDispatch(
   // saving the hex to disk.
   let choice: 'ble' | 'usb' | 'download';
   try {
-    choice = await awaitConnectionChoice(name);
+    choice = await awaitConnectionChoice(name, bleFlashAllowed);
   } catch {
     appendLog({ direction: 'info', text: `Flash cancelled at connection-choice modal (${name})` });
     return;
