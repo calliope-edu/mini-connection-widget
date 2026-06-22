@@ -89,3 +89,28 @@ export function friendlyNameToPattern(name: string | undefined): boolean[][] | n
   }
   return grid;
 }
+
+/**
+ * Inverse of {@link friendlyNameToPattern}: recover the 5-letter friendly name
+ * from a 5×5 grid drawn in the pairing UI. Each column must be a bottom-
+ * anchored bar of 1..5 lit pixels (the histogram the firmware shows); the bar
+ * height selects the letter from the CVCVC codebook. Returns `null` if any
+ * column is empty or its lit pixels aren't contiguous from the bottom — i.e.
+ * the grid isn't a complete, valid name histogram (so callers can gate
+ * "Verbinden" until a real name has been entered).
+ */
+export function patternToFriendlyName(grid: boolean[][] | null | undefined): string | null {
+  if (!grid || grid.length !== 5) return null;
+  let name = '';
+  for (let col = 0; col < 5; col++) {
+    let count = 0;
+    for (let row = 0; row < 5; row++) if (grid[row]?.[col]) count++;
+    if (count < 1 || count > 5) return null;
+    // Bottom-anchored & contiguous: exactly rows (5-count)..4 lit, rest off.
+    for (let row = 0; row < 5; row++) {
+      if (Boolean(grid[row]?.[col]) !== row >= 5 - count) return null;
+    }
+    name += CODEBOOK[col][count - 1];
+  }
+  return name;
+}

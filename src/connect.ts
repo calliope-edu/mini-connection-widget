@@ -24,10 +24,18 @@ import { nativeConnect, nativeDisconnectAndForget } from './native-mode';
  * previously-permitted device. If a chooser would be needed, we wipe all
  * per-transport device info first so the popover doesn't lie about a stale
  * "connected" state while the picker is open.
+ *
+ * `nameFilter` (BLE only) narrows the device chooser to a single Calliope by
+ * its 5-letter friendly name — the widget UI derives it from the pairing
+ * pattern the user draws, so only the matching `Calliope mini [name]` shows
+ * up. Pass `undefined` (the default) to list every Calliope/micro:bit, which
+ * is what dev mode does. Re-set on every call so a stale filter from a prior
+ * connect never lingers.
  */
 export async function connectCalliope(
   transport: CalliopeTransport = 'usb',
   forceChooser = false,
+  nameFilter?: string,
 ): Promise<void> {
   if (isNativeMode()) {
     return nativeConnect(transport);
@@ -46,6 +54,12 @@ export async function connectCalliope(
       }));
 
       const c = await getBleConnection();
+      // Aim the chooser at one device by friendly name (from the drawn
+      // pattern), or clear any prior filter when none was supplied — the
+      // silent-reconnect daemon calls `c.connect()` directly and must not
+      // inherit a stale filter. `setNameFilter` only affects the chooser:
+      // a still-permitted device that matches is reused without a prompt.
+      c.setNameFilter(nameFilter ?? '');
       if (forceChooser) {
         await c.clearDevice();
         updateState((s) => ({

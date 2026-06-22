@@ -1,16 +1,27 @@
 <script lang="ts">
   /**
-   * Rich connection panel — used as the dropdown contents inside
-   * `<ConnectButton>`, and also stand-alone in places that already have
-   * their own surface (e.g. a side panel). Shared canonical content
-   * lives here; the trigger pill lives in `ConnectButton.svelte`.
+   * Rich connection panel — the dropdown contents inside `<ConnectButton>`,
+   * also usable stand-alone.
+   *
+   * Regular users get a minimal dark panel: the »Calliope mini Verbindung«
+   * headline, a USB badge, and a Bluetooth badge whose "Verbinden" button is
+   * gated behind drawing the device's 5×5 name pattern. The drawn pattern
+   * also filters the BLE chooser to that one `Calliope mini [name]`. When USB
+   * is connected the pad is pre-filled with the connected device's pattern,
+   * so a follow-up BLE connect is already aimed at the same Calliope.
+   *
+   * `advanced` (dev mode) reveals the device-info block + comms log and drops
+   * the pattern filter, so any Calliope can be picked and BLE connects without
+   * needing a pattern.
    */
+  import { untrack } from 'svelte';
   import { calliopeState } from '../state';
   import { connectCalliope, disconnectAndForget } from '../connect';
   import type { CalliopeStatus } from '../state';
   import { mergeLabels, type ConnectLabels } from './labels';
-  import { extractFriendlyName } from '../friendly-name';
+  import { extractFriendlyName, friendlyNameToPattern, patternToFriendlyName } from '../friendly-name';
   import MiniNamePattern from './MiniNamePattern.svelte';
+  import PatternPad from './PatternPad.svelte';
   import CommsPanel from './CommsPanel.svelte';
 
   type Props = {
@@ -22,6 +33,10 @@
      *  layouts); the panel just reflects the current value via the icon. */
     pinned?: boolean;
     onTogglePin?: () => void;
+    /** Dev / power-user mode. Shows the device-info block + comms log, and
+     *  drops the BLE name-pattern filter (any Calliope may be picked, and
+     *  "Verbinden" no longer waits for a pattern). Off for regular users. */
+    advanced?: boolean;
     /** When provided, the panel header becomes the drag handle for the
      *  floating-window layout. Buttons inside the header (pin toggle) keep
      *  receiving their own clicks because the handler early-returns on
@@ -35,6 +50,7 @@
     onaction,
     pinned = false,
     onTogglePin,
+    advanced = false,
     onHeaderPointerDown,
     onHeaderPointerMove,
     onHeaderPointerUp,
@@ -49,9 +65,6 @@
   );
 
   function statusLabel(status: CalliopeStatus): string {
-    // In native-proxy mode, frame every state as "über App" — the radio
-    // is being driven by the host app, so the standard "Nicht verbunden"
-    // text is misleading even before the BLE session is up.
     if (s.nativeMode) {
       switch (status) {
         case 'connected': return labels.appModeConnected;
@@ -81,16 +94,12 @@
         if (phase === 'finalising') return labels.phaseFinalising;
         return `${labels.flashing} ${s.flashProgress ?? 0}%`;
       }
-      case 'connecting':
-        return labels.connecting;
-      case 'error':
-        return labels.error;
-      case 'unsupported':
-        return labels.unsupported;
+      case 'connecting': return labels.connecting;
+      case 'error': return labels.error;
+      case 'unsupported': return labels.unsupported;
       case 'disconnected':
       case 'unknown':
-      default:
-        return labels.notConnected;
+      default: return labels.notConnected;
     }
   }
 
@@ -111,9 +120,56 @@
   }
   const sinceLabel = $derived(formatSince(s.connectedAt, nowTick));
 
+  // ---- BLE name pattern --------------------------------------------------
+  //
+  // The pad encodes a 5-letter friendly name as bottom-anchored column bars,
+  // exactly like the histogram the Calliope shows in pairing mode. Drawing it
+  // both names the device for the chooser filter and gates "Verbinden".
+
+  function emptyPattern(): boolean[][] {
+    return Array.from({ length: 5 }, () => Array<boolean>(5).fill(false));
+  }
+  let pattern = $state<boolean[][]>(emptyPattern());
+  const patternName = $derived(patternToFriendlyName(pattern));
+  const patternComplete = $derived(patternName !== null);
+
+  // Pre-fill the pad from the connected device's friendly name (captured over
+  // USB) so a follow-up BLE connect is pre-aimed at the same Calliope. Only
+  // re-fires when the name itself changes, so manual edits aren't clobbered.
+  let lastPrefill: string | undefined = undefined;
+  $effect(() => {
+    // Track only the connection signals; the prefill bookkeeping (reading the
+    // last-applied name + writing the pad) is done untracked so it can't loop
+    // and stays out of the reactive graph — manual pad edits aren't undone.
+    const fn = s.friendlyName;
+    const usbConnected = s.usbStatus === 'connected';
+    untrack(() => {
+      if (usbConnected && fn && fn !== lastPrefill) {
+        const g = friendlyNameToPattern(fn);
+        if (g) {
+          pattern = g;
+          lastPrefill = fn;
+        }
+      }
+    });
+  });
+
+  // The pad only makes sense in web mode: in native mode the host app owns
+  // scanning, so a `requestDevice` name filter does nothing.
+  const showPattern = $derived(!s.nativeMode);
+  // Verbinden is allowed once we have a name to filter by — or always in dev /
+  // native mode, where no pattern filter is applied.
+  const bleConnectEnabled = $derived(advanced || s.nativeMode || patternComplete);
+
   function fire() { onaction?.(); }
   function doConnectUsb() { fire(); void connectCalliope('usb'); }
-  function doConnectBle() { fire(); void connectCalliope('ble'); }
+  function doConnectBle() {
+    fire();
+    // Dev mode and native mode connect unfiltered; otherwise the drawn
+    // pattern names the single device to surface in the BLE chooser.
+    const nameFilter = advanced || s.nativeMode ? undefined : (patternName ?? undefined);
+    void connectCalliope('ble', false, nameFilter);
+  }
   function doForgetUsb() { fire(); void disconnectAndForget('usb'); }
   function doForgetBle() { fire(); void disconnectAndForget('ble'); }
   // Give up on an in-flight / retrying BLE attempt: disconnectAndForget sets
@@ -121,6 +177,8 @@
   // device, so the next "Verbinden" opens a fresh picker — no page reload.
   function doCancelBle() { fire(); void disconnectAndForget('ble'); }
   function doCancelUsb() { fire(); void disconnectAndForget('usb'); }
+
+  const PATTERN_HINT = 'Zeichne das Muster, das dein Calliope mini anzeigt.';
 </script>
 
 <div class="panel">
@@ -136,7 +194,9 @@
     <span class="dot-lg status-{s.status}"></span>
     <div class="panel-header-text">
       <div class="title">{labels.panelTitle}</div>
-      <div class="subtitle">{statusLabel(s.status)}</div>
+      {#if advanced}
+        <div class="subtitle">{statusLabel(s.status)}</div>
+      {/if}
     </div>
     {#if onTogglePin}
       <button
@@ -147,7 +207,6 @@
         aria-label={pinned ? 'Wieder anhängen' : 'Als Fenster anheften'}
         onclick={onTogglePin}
       >
-        <!-- Pin icon: filled when pinned, outline when not. -->
         {#if pinned}
           <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true">
             <path d="M14 4l6 6-4 1-1 4-3-3-5 5-1-1 5-5-3-3 4-1z"/>
@@ -161,7 +220,8 @@
     {/if}
   </div>
 
-  {#if s.calliopeVersion || s.boardVersion || s.usbDeviceName || s.bleDeviceName}
+  <!-- Connection info (device card) — dev mode only. -->
+  {#if advanced && (s.calliopeVersion || s.boardVersion || s.usbDeviceName || s.bleDeviceName)}
     {@const friendly = s.friendlyName ?? extractFriendlyName(s.bleDeviceName ?? s.usbDeviceName)}
     <div class="device-card">
       <div class="device-card-head">
@@ -218,8 +278,8 @@
     {#if s.usbSupported}
       {@const usbBusy = s.usbStatus === 'connecting' || s.flashTransport === 'usb'}
       {@const usbConnected = s.usbStatus === 'connected'}
-      <div class="transport-row" class:connected={usbConnected} class:err={s.usbStatus === 'error'}>
-        <div class="transport-row-head">
+      <div class="badge" class:connected={usbConnected} class:err={s.usbStatus === 'error'}>
+        <div class="badge-head">
           <span class="transport-name">{labels.usb}</span>
           {#if usbConnected}
             <button type="button" class="row-btn ghost" onclick={doForgetUsb} disabled={usbBusy}>
@@ -246,8 +306,8 @@
     {#if s.bleSupported}
       {@const bleBusy = s.bleStatus === 'connecting' || s.flashTransport === 'ble'}
       {@const bleConnected = s.bleStatus === 'connected'}
-      <div class="transport-row" class:connected={bleConnected} class:err={s.bleStatus === 'error'}>
-        <div class="transport-row-head">
+      <div class="badge" class:connected={bleConnected} class:err={s.bleStatus === 'error'}>
+        <div class="badge-head">
           <span class="transport-name">
             {labels.ble}
             {#if bleConnected && s.bleSessionKind === 'dfu-bootloader'}
@@ -260,24 +320,51 @@
             <button type="button" class="row-btn ghost" onclick={doForgetBle} disabled={bleBusy}>
               {labels.forget}
             </button>
-          {:else if s.bleStatus === 'connecting' || s.bleStatus === 'error'}
-            <!-- Connecting / retrying / error: always give the user an out.
-                 Abbrechen stops the reconnect daemon + frees the picker (no
-                 page reload needed); on error we also offer a direct retry. -->
-            <button type="button" class="row-btn ghost" onclick={doCancelBle}>
-              {labels.cancel}
-            </button>
-            {#if s.bleStatus === 'error'}
-              <button type="button" class="row-btn primary" onclick={doConnectBle}>
+          {/if}
+        </div>
+
+        {#if showPattern}
+          {#if bleConnected}
+            <!-- Connected: show the device's own pattern, read-only. -->
+            {@const connectedName = s.friendlyName ?? extractFriendlyName(s.bleDeviceName)}
+            {#if connectedName}
+              <div class="pattern-wrap">
+                <PatternPad value={friendlyNameToPattern(connectedName) ?? emptyPattern()} size={132} disabled />
+              </div>
+            {/if}
+          {:else}
+            <div class="pattern-wrap">
+              <PatternPad value={pattern} onchange={(g) => (pattern = g)} size={132} disabled={bleBusy} />
+              {#if !advanced}
+                <p class="pattern-hint">{PATTERN_HINT}</p>
+              {/if}
+            </div>
+          {/if}
+        {/if}
+
+        {#if !bleConnected}
+          <div class="badge-foot">
+            {#if s.bleStatus === 'connecting' || s.bleStatus === 'error'}
+              <button type="button" class="row-btn ghost" onclick={doCancelBle}>
+                {labels.cancel}
+              </button>
+              {#if s.bleStatus === 'error'}
+                <button type="button" class="row-btn primary" onclick={doConnectBle} disabled={!bleConnectEnabled}>
+                  {labels.connect}
+                </button>
+              {/if}
+            {:else}
+              <button
+                type="button"
+                class="row-btn primary"
+                onclick={doConnectBle}
+                disabled={bleBusy || !bleConnectEnabled}
+              >
                 {labels.connect}
               </button>
             {/if}
-          {:else}
-            <button type="button" class="row-btn primary" onclick={doConnectBle} disabled={bleBusy}>
-              {labels.connect}
-            </button>
-          {/if}
-        </div>
+          </div>
+        {/if}
       </div>
     {/if}
   </div>
@@ -317,7 +404,7 @@
     <div class="hint">{labels.unsupportedHint}</div>
   {/if}
 
-  {#if s.lastFlashAt}
+  {#if advanced && s.lastFlashAt}
     <div class="meta-row muted">
       <span class="meta-key">{labels.lastFlash}</span>
       <span class="meta-val">
@@ -327,7 +414,7 @@
     </div>
   {/if}
 
-  {#if s.status === 'connected' || s.status === 'flashing'}
+  {#if advanced && (s.status === 'connected' || s.status === 'flashing')}
     <div class="comms-embed">
       <CommsPanel />
     </div>
@@ -336,8 +423,10 @@
 
 <style lang="scss">
   .panel {
-    padding: 14px;
-    color: #1b1c1d;
+    padding: 16px;
+    background: #1f2023;
+    color: #f3f4f6;
+    border-radius: 12px;
   }
   .comms-embed {
     margin-top: 14px;
@@ -351,7 +440,7 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    margin-bottom: 12px;
+    margin-bottom: 14px;
     &.draggable {
       cursor: move;
       touch-action: none;
@@ -359,101 +448,114 @@
     }
   }
   .dot-lg {
-    width: 12px; height: 12px; border-radius: 50%; background: #9ca3af; flex-shrink: 0;
+    width: 12px; height: 12px; border-radius: 50%; background: #6b7280; flex-shrink: 0;
     &.status-connected { background: #22c55e; }
     &.status-flashing { background: #00b8cc; }
     &.status-connecting { background: #facc15; }
     &.status-error { background: #ef4444; }
   }
   .panel-header-text { flex: 1; min-width: 0; }
-  .panel-header-text .title { font-weight: 600; font-size: 14px; }
-  .panel-header-text .subtitle { font-size: 12px; color: #666; }
+  .panel-header-text .title { font-weight: 700; font-size: 15px; color: #fff; }
+  .panel-header-text .subtitle { font-size: 12px; color: #9ca3af; }
   .header-btn {
     border: 0;
     background: transparent;
-    color: #6b7280;
+    color: #9ca3af;
     padding: 4px 6px;
     border-radius: 4px;
     cursor: pointer;
     line-height: 0;
     flex-shrink: 0;
-    &:hover { background: #f3f4f6; color: #1b1c1d; }
-    &.active { color: #0ea5b7; }
+    &:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
+    &.active { color: #38bdf8; }
   }
 
+  /* ---- dev-only device card --------------------------------------------- */
   .device-card {
-    background: #f8fafc;
-    border: 1px solid #e5e7eb;
+    background: #2a2b2e;
     border-radius: 8px;
     padding: 8px 10px;
-    margin-bottom: 10px;
+    margin-bottom: 12px;
   }
   .device-card-head {
     display: flex; align-items: center; gap: 10px;
-    color: #111; font-weight: 600; font-size: 13px; margin-bottom: 4px;
-    svg { color: #6b7280; flex-shrink: 0; }
+    color: #fff; font-weight: 600; font-size: 13px; margin-bottom: 4px;
+    svg { color: #9ca3af; flex-shrink: 0; }
   }
-  .device-card-name-stack {
-    display: flex; flex-direction: column; min-width: 0;
-  }
+  .device-card-name-stack { display: flex; flex-direction: column; min-width: 0; }
   .device-card-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .device-card-friendly {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-weight: 500;
-    font-size: 11px;
-    color: #6b7280;
-    letter-spacing: 0.05em;
-    text-transform: lowercase;
+    font-weight: 500; font-size: 11px; color: #9ca3af;
+    letter-spacing: 0.05em; text-transform: lowercase;
   }
 
-  .transports { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 4px; }
-  .transport-row {
-    border: 1px solid #e5e7eb;
-    border-radius: 8px;
-    padding: 8px 10px;
-    background: #fff;
-    transition: border-color 0.15s, background 0.15s;
-    &.connected { border-color: #bbf7d0; background: #f0fdf4; }
-    &.err { border-color: #fecaca; background: #fef2f2; }
-  }
-  .transport-row-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-  .transport-name { font-size: 13px; font-weight: 600; color: #111; display: inline-flex; align-items: center; gap: 6px; }
-  .session-chip {
-    font-size: 10px;
-    font-weight: 600;
-    text-transform: none;
-    padding: 1px 6px;
+  /* ---- transport badges ------------------------------------------------- */
+  .transports { display: flex; flex-direction: column; gap: 10px; }
+  .badge {
     border-radius: 10px;
-    background: #ddf4ff;
-    color: #0969da;
-    letter-spacing: 0.01em;
-    vertical-align: 1px;
+    padding: 12px;
+    background: #2a2b2e;
+    transition: background 0.15s;
+    &.connected { background: #1d3326; }
+    &.err { background: #3a2526; }
   }
+  .badge-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .transport-name {
+    font-size: 14px; font-weight: 600; color: #fff;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .session-chip {
+    font-size: 10px; font-weight: 600; text-transform: none;
+    padding: 1px 6px; border-radius: 10px;
+    background: #0b3a52; color: #7dd3fc;
+    letter-spacing: 0.01em; vertical-align: 1px;
+  }
+
+  .pattern-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    margin: 12px 0 4px;
+  }
+  .pattern-hint {
+    margin: 0;
+    font-size: 11.5px;
+    color: #9ca3af;
+    text-align: center;
+    line-height: 1.4;
+  }
+
+  .badge-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+
   .row-btn {
-    padding: 5px 12px; border-radius: 6px; border: 1px solid transparent;
-    font-size: 12px; font-weight: 600; cursor: pointer;
+    padding: 7px 16px; border-radius: 8px; border: 1px solid transparent;
+    font-size: 13px; font-weight: 600; cursor: pointer;
     flex-shrink: 0;
-    transition: background 0.15s, color 0.15s;
+    transition: background 0.15s, color 0.15s, opacity 0.15s;
     &.primary {
-      background: #1b1c1d; color: #fff;
-      &:hover:not(:disabled) { background: #333; }
-      &:disabled { opacity: 0.5; cursor: default; }
+      background: #2f80ed; color: #fff;
+      &:hover:not(:disabled) { background: #2670d8; }
+      &:disabled { opacity: 0.4; cursor: default; }
     }
     &.ghost {
-      background: transparent; border-color: #d1d5db; color: #1b1c1d;
-      &:hover:not(:disabled) { background: #f3f4f6; }
-      &:disabled { opacity: 0.5; cursor: default; }
+      background: transparent; border-color: rgba(255, 255, 255, 0.22); color: #e5e7eb;
+      &:hover:not(:disabled) { background: rgba(255, 255, 255, 0.08); }
+      &:disabled { opacity: 0.4; cursor: default; }
     }
   }
-  .meta-row { display: flex; justify-content: space-between; font-size: 12px; padding: 4px 0; }
-  .meta-row.muted { color: #666; margin-top: 6px; }
-  .meta-key { color: #666; }
-  .meta-warn { color: #d97706; font-weight: 600; }
 
-  .flash-block { margin: 10px 0; }
-  .flash-via { font-size: 12px; font-weight: 600; color: #111; margin-bottom: 4px; }
+  .meta-row { display: flex; justify-content: space-between; font-size: 12px; padding: 4px 0; }
+  .meta-row.muted { color: #9ca3af; margin-top: 6px; }
+  .meta-key { color: #9ca3af; }
+  .meta-val { color: #e5e7eb; }
+  .meta-warn { color: #fbbf24; font-weight: 600; }
+
+  .flash-block { margin: 14px 0 4px; }
+  .flash-via { font-size: 12px; font-weight: 600; color: #fff; margin-bottom: 4px; }
   .flash-line {
-    font-size: 12px; color: #555; margin-bottom: 6px;
+    font-size: 12px; color: #cbd5e1; margin-bottom: 6px;
     &.indeterminate { display: flex; align-items: center; gap: 6px; }
   }
   .spinner-inline {
@@ -467,7 +569,7 @@
     60% { left: 100%; width: 40%; }
     100% { left: 100%; width: 40%; }
   }
-  .flash-bar { height: 6px; background: #e5e7eb; border-radius: 3px; overflow: hidden; position: relative; }
+  .flash-bar { height: 6px; background: rgba(255, 255, 255, 0.12); border-radius: 3px; overflow: hidden; position: relative; }
   .flash-bar-fill { height: 100%; background: #00b8cc; transition: width 0.15s; }
   .flash-bar-indeterminate {
     position: absolute; height: 100%; background: #00b8cc; border-radius: 3px;
@@ -475,9 +577,9 @@
   }
 
   .error {
-    margin-top: 8px; padding: 8px 10px;
-    background: #fee2e2; color: #991b1b; border-radius: 6px;
+    margin-top: 10px; padding: 8px 10px;
+    background: #3a2526; color: #fca5a5; border-radius: 6px;
     font-size: 12px; word-break: break-word;
   }
-  .hint { font-size: 12px; color: #666; line-height: 1.4; }
+  .hint { font-size: 12px; color: #9ca3af; line-height: 1.4; }
 </style>

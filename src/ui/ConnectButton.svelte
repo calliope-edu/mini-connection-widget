@@ -15,6 +15,11 @@
    * between the two layouts without losing scroll / comms-log state, since
    * we render the same `<ConnectionPanel>` instance under either layout
    * wrapper.
+   *
+   * `advanced` gates the still-rough power-user affordances — the pin /
+   * drag floating window and the embedded comms log. With it off (the
+   * default) the panel is a plain dropdown popover, which is what regular
+   * users see; hosts opt in (e.g. from a dev-mode flag) to expose them.
    */
   import { calliopeState } from '../state';
   import type { CalliopeStatus } from '../state';
@@ -27,9 +32,11 @@
     appearance?: 'dark' | 'light';
     /** Translation overrides; defaults are German. */
     labels?: Partial<ConnectLabels>;
+    /** Expose the pin / drag floating window + comms log (off by default). */
+    advanced?: boolean;
   };
 
-  let { appearance = 'dark', labels: labelsProp }: Props = $props();
+  let { appearance = 'dark', labels: labelsProp, advanced = false }: Props = $props();
   const labels = $derived(mergeLabels(labelsProp));
 
   const s = $derived($calliopeState);
@@ -42,6 +49,10 @@
 
   let open = $state(false);
   let pinned = $state(false);
+  // The floating window only exists in advanced mode — when `advanced` is
+  // off we always fall back to the dropdown, regardless of the persisted
+  // `pinned` preference (so toggling dev mode off live collapses it).
+  const effectivePinned = $derived(advanced && pinned);
   // Default position: top-right with some inset. Replaced from localStorage on mount.
   let pos = $state({ x: -1, y: 80 });
   let size = $state({ w: 360, h: 540 });
@@ -72,8 +83,9 @@
     if (pos.x < 0) {
       pos = { x: Math.max(16, window.innerWidth - size.w - 16), y: pos.y };
     }
-    // Auto-open the floating window if the user previously pinned it.
-    if (pinned) open = true;
+    // Auto-open the floating window if the user previously pinned it — but
+    // only when advanced affordances are on, otherwise the pref is dormant.
+    if (pinned && advanced) open = true;
   });
 
   function togglePin(): void {
@@ -204,11 +216,11 @@
   <button
     type="button"
     class="conn-pill status-{s.status} appearance-{appearance}"
-    class:pinned-indicator={pinned}
+    class:pinned-indicator={effectivePinned}
     onclick={() => (open = !open)}
     aria-haspopup="true"
     aria-expanded={open}
-    title={pinned ? labels.triggerTitle + ' (Fenster offen)' : labels.triggerTitle}
+    title={effectivePinned ? labels.triggerTitle + ' (Fenster offen)' : labels.triggerTitle}
   >
     {#if isIndeterminate}
       <span class="spinner" aria-hidden="true"></span>
@@ -221,20 +233,21 @@
     {/if}
   </button>
 
-  {#if open && !pinned}
+  {#if open && !effectivePinned}
     <div class="popover" role="dialog" aria-label={labels.panelTitle}>
       <ConnectionPanel
         labels={labelsProp}
         onaction={() => (open = false)}
-        {pinned}
-        onTogglePin={togglePin}
+        pinned={effectivePinned}
+        onTogglePin={advanced ? togglePin : undefined}
+        {advanced}
       />
     </div>
     <button class="popover-scrim" type="button" aria-label="close" onclick={() => (open = false)}></button>
   {/if}
 </div>
 
-{#if open && pinned}
+{#if open && effectivePinned}
   <div
     class="floating"
     role="dialog"
@@ -244,8 +257,9 @@
     <div class="floating-body">
       <ConnectionPanel
         labels={labelsProp}
-        {pinned}
+        pinned={effectivePinned}
         onTogglePin={togglePin}
+        {advanced}
         onHeaderPointerDown={onDragPointerDown}
         onHeaderPointerMove={onDragPointerMove}
         onHeaderPointerUp={onDragPointerUp}
@@ -324,11 +338,11 @@
     right: 0;
     z-index: 1100;
     width: 340px;
-    background: #fff;
-    color: #1b1c1d;
-    border: 1px solid #e5e7eb;
+    background: #1f2023;
+    color: #f3f4f6;
+    border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 12px;
-    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.18);
+    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
   }
   .popover-scrim {
     position: fixed;
@@ -346,11 +360,11 @@
     z-index: 1200;
     min-width: 300px;
     min-height: 320px;
-    background: #fff;
-    color: #1b1c1d;
-    border: 1px solid #d1d5db;
+    background: #1f2023;
+    color: #f3f4f6;
+    border: 1px solid rgba(255, 255, 255, 0.14);
     border-radius: 12px;
-    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.22);
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.4);
     display: flex;
     flex-direction: column;
     overflow: hidden;

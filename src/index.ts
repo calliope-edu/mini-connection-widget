@@ -99,6 +99,7 @@ export { default as UsbErrorModal } from './ui/UsbErrorModal.svelte';
 export { default as ConnectionChoiceModal } from './ui/ConnectionChoiceModal.svelte';
 export { default as BleOfflineModal } from './ui/BleOfflineModal.svelte';
 export { default as MiniNamePattern } from './ui/MiniNamePattern.svelte';
+export { default as PatternPad } from './ui/PatternPad.svelte';
 
 export {
   commsEntries,
@@ -111,7 +112,7 @@ export {
 export type { CommsEntry, CommsDirection, CommsTransport } from './comms';
 export { LogParser } from './log-parser';
 export type { Parsed, ParsedHeader, ParsedRow, ParsedSeparator } from './log-parser';
-export { extractFriendlyName, friendlyNameToPattern, friendlyNameFromDeviceId } from './friendly-name';
+export { extractFriendlyName, friendlyNameToPattern, patternToFriendlyName, friendlyNameFromDeviceId } from './friendly-name';
 // Mini 2 (J-Link) USB guidance primitives — hosts that learn a connected
 // device's USB vendor id can swap a confusing CMSIS-DAP failure for the
 // download+drag hint. Full WebUSB J-Link routing stays in segger-jlink.ts.
