@@ -191,7 +191,6 @@
     onpointerup={onHeaderPointerUp}
     onpointercancel={onHeaderPointerUp}
   >
-    <span class="dot-lg status-{s.status}"></span>
     <div class="panel-header-text">
       <div class="title">{labels.panelTitle}</div>
       {#if advanced}
@@ -446,13 +445,6 @@
       touch-action: none;
       user-select: none;
     }
-  }
-  .dot-lg {
-    width: 12px; height: 12px; border-radius: 50%; background: #6b7280; flex-shrink: 0;
-    &.status-connected { background: #22c55e; }
-    &.status-flashing { background: #00b8cc; }
-    &.status-connecting { background: #facc15; }
-    &.status-error { background: #ef4444; }
   }
   .panel-header-text { flex: 1; min-width: 0; }
   .panel-header-text .title { font-weight: 700; font-size: 15px; color: #fff; }
