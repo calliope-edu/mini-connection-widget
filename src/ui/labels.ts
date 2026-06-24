@@ -90,7 +90,7 @@ export const DEFAULT_LABELS: ConnectLabels = {
   notSupportedBle: 'Web Bluetooth nicht verfuegbar',
   unsupportedHint:
     'In diesem Browser ist weder WebUSB noch Web Bluetooth verfuegbar. ' +
-    'Bitte Chrome, Edge oder Opera benutzen.',
+    'Bitte einen Chromium basierten Browser wie Chrome, Edge, Opera, Vivaldi oder Brave benutzen.',
 
   connect: 'Verbinden',
   disconnect: 'Trennen',
