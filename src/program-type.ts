@@ -45,6 +45,12 @@ const BLOCKS_BLE_SERVICE_UUID = '0b50f3e4-607f-4151-9091-7d008d6ffc5c';
 const BLOCKS_BLE_STATE_CHAR_UUID = '0b500101-607f-4151-9091-7d008d6ffc5c';
 const BLOCKS_BLE_COMMAND_CHAR_UUID = '0b500100-607f-4151-9091-7d008d6ffc5c';
 
+// COMMAND byte[1] = blocks protocol version. The real runtime stamps this on
+// connect (updateVersionData); the CODAL stub that registers the service for
+// partial-flash hash alignment leaves it 0. So a single COMMAND read identifies
+// the runtime instantly — no waiting for the STATE broadcaster to fill.
+const EXPECTED_BLOCKS_PROTOCOL = 2;
+
 /** Interval between STATE samples while waiting for the broadcaster to fill it. */
 const BLE_STATE_POLL_MS = 200;
 
@@ -117,28 +123,28 @@ async function probeBle(timeoutMs: number): Promise<CalliopeProgramInfo | null> 
   let ch: BluetoothRemoteGATTCharacteristic;
   try {
     service = await server.getPrimaryService(BLOCKS_BLE_SERVICE_UUID);
-    ch = await service.getCharacteristic(BLOCKS_BLE_STATE_CHAR_UUID);
+    ch = await service.getCharacteristic(BLOCKS_BLE_COMMAND_CHAR_UUID);
   } catch {
     // Service / characteristic not present → not the Blocks runtime.
     return null;
   }
-  // Service presence is no longer enough — the CODAL stub registers it
-  // unconditionally so partial-flash DAL hashes line up. Discriminate by
-  // reading STATE: real runtime continuously fills it with sensor data
-  // (byte 5 = temperature + 128, byte 4 = light level, …); the stub's
-  // buffer stays all-zero. Any non-zero byte → real runtime.
-  //
-  // A single quiescent read is an unstable false-negative: the broadcaster
-  // hasn't necessarily filled STATE yet at the instant we probe. Kick it
-  // (start notifications, which the runtime treats as the read/notify
-  // request that starts its STATE fiber) and sample across the window. A
-  // read error is retryable within the window, not an immediate null.
-  try { await ch.startNotifications(); } catch { /* wake is best-effort */ }
+  // Read COMMAND and check the protocol byte — instant, no waiting for the STATE
+  // broadcaster to fill (that polling loop is what made detection slow). The
+  // real runtime stamps byte[1] = EXPECTED_BLOCKS_PROTOCOL on connect
+  // (updateVersionData); the CODAL stub (registers the service for partial-flash
+  // hash alignment) leaves it 0. A read error / not-yet-stamped value is retried
+  // within the window rather than treated as an immediate "not blocks".
   do {
     try {
       const v = await ch.readValue();
-      if (hasNonZero(new Uint8Array(v.buffer, v.byteOffset, v.byteLength))) {
-        return { type: 'blocks', via: 'ble' };
+      const b = new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+      if (b.byteLength >= 2 && b[1] === EXPECTED_BLOCKS_PROTOCOL) {
+        return {
+          type: 'blocks',
+          via: 'ble',
+          hardwareVersion: b[0],
+          protocolVersion: b[1]
+        };
       }
     } catch { /* retryable within the window */ }
     if (Date.now() + BLE_STATE_POLL_MS >= deadline) break;
