@@ -1,30 +1,40 @@
 <script lang="ts">
-  import { calliopeUsbErrorInfo, dismissUsbErrorInfo, type UsbErrorInfo } from '../usb-error-info';
-  import { connectCalliope, disconnectAndForget } from '../connect';
+  import {
+    calliopeUsbErrorInfo,
+    dismissUsbErrorInfo,
+    reloadForUsbReconnect,
+  } from '../usb-error-info';
+  import { connectCalliope } from '../connect';
+  import { getState } from '../state';
 
   const info = $derived($calliopeUsbErrorInfo);
+
+  // Two-stage card. First time an error surfaces (`occurrence === 1`) we offer
+  // a quick in-page retry. If that retry fails and the same error comes back
+  // (`occurrence >= 2`), we switch to the reliable physical recovery: replug
+  // the cable, then reload. `'retry'` vs `'reload'` drives copy + buttons.
+  const stage = $derived(info && info.occurrence >= 2 ? 'reload' : 'retry');
 
   let retrying = $state(false);
 
   /**
-   * "Erneut verbinden" path:
-   *  - in-use: just re-open the picker. If the other tab released the
-   *    DAPLink in the meantime, claim succeeds and we're done.
-   *  - disconnected: first wipe our cached USBDevice + WebUSB permission
-   *    via disconnectAndForget. This forces the next connect() through
-   *    the picker, which returns a freshly-enumerated USBDevice that
-   *    Windows actually has released. Without this we'd keep retrying
-   *    against the same stale handle.
+   * Quick in-page retry. Deliberately NON-destructive: a plain
+   * `connectCalliope('usb')` reuses the still-permitted device and lets
+   * `connectWithRetry` wait out the Windows kernel-release race. We do NOT
+   * forget the device (the old behaviour) — forgetting revokes the WebUSB
+   * permission, which is exactly what the reload-recovery path needs to keep
+   * so the daemon can re-open the device silently after a reload.
+   *
+   * The card stays up during the attempt (spinner on the button). On success
+   * we dismiss; on a repeat failure `connectCalliope` re-fires
+   * `showUsbErrorInfo`, which bumps `occurrence` and flips us to stage 2.
    */
-  async function retry(kind: UsbErrorInfo['kind']): Promise<void> {
+  async function retry(): Promise<void> {
     if (retrying) return;
     retrying = true;
     try {
-      if (kind === 'disconnected') {
-        await disconnectAndForget('usb');
-      }
-      dismissUsbErrorInfo();
       await connectCalliope('usb');
+      if (getState().usbStatus === 'connected') dismissUsbErrorInfo();
     } finally {
       retrying = false;
     }
@@ -55,42 +65,55 @@
       </div>
 
       {#if info.kind === 'in-use'}
-        <h2 id="usb-err-title">Calliope ist gerade belegt</h2>
+        {#if stage === 'retry'}
+          <h2 id="usb-err-title">Calliope ist gerade belegt</h2>
+          <p>
+            Ein anderer Browser-Tab oder ein Programm hält den Calliope
+            aktuell fest. Solange das so ist, kann dieses Fenster die
+            USB-Verbindung nicht übernehmen.
+          </p>
+          <ol class="steps">
+            <li>
+              Andere offene Calliope-Tabs schließen
+              (z.&nbsp;B. MakeCode-Editor, Mini-Editor, alte Calliope-Seiten)
+              oder das Programm beenden, das den Calliope benutzt.
+            </li>
+            <li>
+              Dann unten auf <em>"Erneut verbinden"</em> tippen.
+            </li>
+          </ol>
+        {:else}
+          <h2 id="usb-err-title">Calliope ist immer noch belegt</h2>
+          <p>
+            Der Calliope wird weiterhin festgehalten. Am zuverlässigsten
+            hilft jetzt: einmal sauber neu einstecken und neu laden.
+          </p>
+          <ol class="steps">
+            <li>Alle anderen Calliope-Tabs und Programme schließen.</li>
+            <li>USB-Kabel kurz abziehen und wieder einstecken.</li>
+            <li>
+              Dann unten auf <em>"Neu laden"</em> tippen — die Seite startet
+              neu und verbindet sich von selbst.
+            </li>
+          </ol>
+        {/if}
+      {:else if stage === 'retry'}
+        <h2 id="usb-err-title">USB-Verbindung kurz unterbrochen</h2>
         <p>
-          Ein anderer Browser-Tab oder ein Programm hält den Calliope
-          aktuell fest. Solange das so ist, kann dieses Fenster die
-          USB-Verbindung nicht übernehmen.
+          Das passiert beim Übertragen manchmal. Meistens reicht ein
+          erneuter Versuch — wir starten die Verbindung sauber neu.
         </p>
-        <ol class="steps">
-          <li>
-            Andere offene Calliope-Tabs schließen
-            (z.&nbsp;B. MakeCode-Editor, Mini-Editor, alte Calliope-Seiten)
-            oder das Programm beenden, das den Calliope benutzt.
-          </li>
-          <li>
-            Dann <em>"Erneut verbinden"</em> klicken.
-          </li>
-          <li>
-            Wenn das nicht hilft: USB-Kabel kurz abziehen und wieder
-            einstecken — danach erneut verbinden.
-          </li>
-        </ol>
       {:else}
-        <h2 id="usb-err-title">USB-Verbindung war unterbrochen</h2>
+        <h2 id="usb-err-title">USB-Kabel neu einstecken</h2>
         <p>
-          Die letzte USB-Sitzung ist noch nicht ganz freigegeben.
-          Wir starten die Verbindung sauber neu — meistens klappt es
-          dann sofort.
+          Der erneute Versuch hat noch nicht geklappt. Das hier hilft
+          fast immer:
         </p>
         <ol class="steps">
+          <li>USB-Kabel kurz abziehen und wieder einstecken.</li>
           <li>
-            <em>"Erneut verbinden"</em> klicken — beim Browser-Dialog
-            den Calliope auswählen.
-          </li>
-          <li>
-            Wenn der Dialog leer bleibt oder der Fehler erneut auftritt:
-            USB-Kabel kurz abziehen und wieder einstecken, dann erneut
-            verbinden.
+            Dann unten auf <em>"Neu laden"</em> tippen — die Seite startet
+            neu und verbindet sich von selbst mit dem Calliope.
           </li>
         </ol>
       {/if}
@@ -104,9 +127,15 @@
         <button type="button" class="btn ghost" onclick={dismissUsbErrorInfo} disabled={retrying}>
           Schließen
         </button>
-        <button type="button" class="btn primary" onclick={() => retry(info.kind)} disabled={retrying}>
-          {retrying ? 'Verbinde…' : 'Erneut verbinden'}
-        </button>
+        {#if stage === 'retry'}
+          <button type="button" class="btn primary" onclick={retry} disabled={retrying}>
+            {retrying ? 'Verbinde…' : 'Erneut verbinden'}
+          </button>
+        {:else}
+          <button type="button" class="btn primary" onclick={reloadForUsbReconnect} disabled={retrying}>
+            Kabel eingesteckt – neu laden
+          </button>
+        {/if}
       </div>
     </div>
   </div>

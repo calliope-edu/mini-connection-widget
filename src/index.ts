@@ -43,7 +43,13 @@ export type { Readable, Writable, Subscriber, Unsubscriber } from './store';
 export { calliopeState, setBlocksRuntimeVersion } from './state';
 export { calliopeLog, clearCalliopeLog } from './log';
 export { calliopeUsbPlugRequest } from './usb-plug';
-export { calliopeUsbErrorInfo, dismissUsbErrorInfo } from './usb-error-info';
+export {
+  calliopeUsbErrorInfo,
+  dismissUsbErrorInfo,
+  reloadForUsbReconnect,
+  consumeUsbReconnectAfterReload,
+  USB_RECONNECT_AFTER_RELOAD_KEY,
+} from './usb-error-info';
 export { calliopeBleOfflineInfo, dismissBleOfflineInfo, showBleOfflineInfo } from './ble-offline-info';
 export { calliopeConnectionChoiceRequest } from './connection-choice';
 
@@ -96,6 +102,7 @@ export { default as ConnectionPanel } from './ui/ConnectionPanel.svelte';
 export { default as CommsPanel } from './ui/CommsPanel.svelte';
 export { default as UsbPlugRequestModal } from './ui/UsbPlugRequestModal.svelte';
 export { default as UsbErrorModal } from './ui/UsbErrorModal.svelte';
+export { default as UsbReconnectBanner } from './ui/UsbReconnectBanner.svelte';
 export { default as ConnectionChoiceModal } from './ui/ConnectionChoiceModal.svelte';
 export { default as BleOfflineModal } from './ui/BleOfflineModal.svelte';
 export { default as MiniNamePattern } from './ui/MiniNamePattern.svelte';
