@@ -27,6 +27,7 @@ import { calliopeState, getState, updateState, SUPPORT } from './state';
 import { appendLog } from './log';
 import { reconnectBleIfPermitted } from './ble';
 import { getUsbConnection } from './usb';
+import { withChooserBlocked } from './chooser-gate';
 
 const BACKOFF_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000, 30_000];
 const STEADY_DELAY_MS = 30_000;
@@ -110,7 +111,11 @@ async function tryReconnectUsb(): Promise<boolean> {
   );
   if (!authorized) return false;
   const c = await getUsbConnection();
-  await c.connect();
+  // Block the chooser for this silent reconnect. The USB connect normally
+  // reuses the retained usbDevice (no chooser), but if it ever fell through to
+  // chooseDevice()→navigator.usb.requestDevice, a background timer must not pop
+  // the OS picker; the guard throws instead (see chooser-gate.ts).
+  await withChooserBlocked(() => c.connect());
   return true;
 }
 

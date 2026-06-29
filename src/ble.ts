@@ -38,6 +38,7 @@ import {
 } from './connection-errors';
 import { classifyBleSessionFromDevice, boardVersionFromServices } from './ble-state';
 import type { CalliopeVersion } from './helpers';
+import { isChooserBlocked, chooserBlockedError, withChooserBlocked } from './chooser-gate';
 
 // Standard Bluetooth SIG Device Information Service — every micro:bit /
 // Calliope firmware exposes it. The Serial Number string characteristic
@@ -187,6 +188,11 @@ function installRequestDeviceIntercept(): void {
   };
   const orig = bt.requestDevice.bind(navigator.bluetooth);
   bt.requestDevice = async (opts: unknown) => {
+    // Refuse to open the native chooser during a silent/background reconnect
+    // (see chooser-gate.ts). Without this, a daemon backoff tick that lands
+    // inside a recent click's transient-activation window pops the OS pairing
+    // dialog on an unrelated page (observed on /create after leaving a room).
+    if (isChooserBlocked()) throw chooserBlockedError();
     const augmented = augmentRequestDeviceOptions(opts);
     const d = await orig(augmented);
     if (d && d.id) trackedDevices.set(d.id, d);
@@ -981,7 +987,11 @@ export async function reconnectBleIfPermitted(): Promise<QuietReconnectResult> {
   if (!permitted) return 'no-device';
   try {
     const c = await getBleConnection();
-    await c.connect();
+    // Block the chooser for the duration of this silent reconnect: if the lib
+    // has no retained device it falls back to requestDevice(), which must NOT
+    // open a pairing dialog from a background timer (see chooser-gate.ts). The
+    // intercept then throws a "user gesture" error, caught below as no-device.
+    await withChooserBlocked(() => c.connect());
     updateState((s) => ({ ...s, bleHasPermission: true }));
     return 'connected';
   } catch (err) {
