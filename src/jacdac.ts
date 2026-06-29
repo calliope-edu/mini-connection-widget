@@ -208,6 +208,12 @@ async function runLoop(): Promise<void> {
     }
   } catch (err) {
     appendLog({ direction: 'error', text: `Jacdac exchange loop error: ${(err as Error)?.message ?? err}` });
+    // A transfer error mid-loop is almost always a device reboot (e.g. just
+    // after a flash) tearing down SWD. Back off before allowing a restart so
+    // we don't tight-loop adi.connect() against a rebooting device while the
+    // widget's own USB reconnect runs; the next sendJacdacFrame after the
+    // cooldown re-connects SWD and re-scans cleanly.
+    scanCooldownUntil = Date.now() + 1500;
   } finally {
     mailbox?.reset();
     available = false;
