@@ -30,6 +30,12 @@ import { JacdacMailbox, type JacdacMemIO } from './jacdac-mailbox';
 /** The slice of @microbit/microbit-connection's ArmDebug we use. */
 interface ArmDebugLike {
   readonly isOpen: boolean;
+  /**
+   * Bring up the SWD debug port (JTAG→SWD switch, read ID, power up the debug
+   * + system domains). Idempotent — no-op when already connected — and does
+   * NOT halt or reset the core, so the running program is undisturbed.
+   */
+  connect(maxRetries?: number): Promise<void>;
   readBlock(address: number, count: number): Promise<Uint32Array>;
   writeBlock(address: number, values: Uint32Array): Promise<void>;
 }
@@ -63,7 +69,7 @@ const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 // bus or starve serial. Tunable — confirm on hardware (Layer-2 design §6).
 const POLL_IDLE_MS = 4;
 /** Bounded outbound FIFO; drop-oldest past this so a stuck device can't leak. */
-const MAX_OUTBOUND = 64;
+const MAX_OUTBOUND = 256;
 /** Min gap between RAM scans after a "not found", so repeated sends from a
  *  non-Jacdac session don't trigger a scan storm. */
 const SCAN_COOLDOWN_MS = 2000;
@@ -75,6 +81,7 @@ let stopRequested = false;
 let paused = false;
 let available = false;
 let scanCooldownUntil = 0;
+let droppedFrames = 0;
 
 /** True once the exchange mailbox has been located on the connected device. */
 export function isJacdacAvailable(): boolean {
@@ -92,7 +99,12 @@ export async function sendJacdacFrame(frame: Uint8Array): Promise<void> {
   outbound.push(frame);
   if (outbound.length > MAX_OUTBOUND) {
     outbound.shift();
-    appendLog({ direction: 'info', text: 'Jacdac: outbound queue full — dropped oldest frame' });
+    droppedFrames++;
+    // Throttle: a flood here just means the loop isn't draining yet (scan
+    // failing, or device not connected). One line per 100 drops is enough.
+    if (droppedFrames % 100 === 1) {
+      appendLog({ direction: 'info', text: `Jacdac: outbound queue full — dropped ${droppedFrames} frame(s) so far (loop not draining)` });
+    }
   }
   if (!loopActive && Date.now() >= scanCooldownUntil) void runLoop();
 }
@@ -151,6 +163,14 @@ async function runLoop(): Promise<void> {
     mailbox = new JacdacMailbox(memIO(adi));
     let found = false;
     try {
+      // Bring up the SWD debug port before any memory access. The widget keeps
+      // the USB transport open but leaves SWD disconnected in serial-only
+      // steady state, so readBlock would fault — the device returns a sticky
+      // error and even the abort-clear fails ("Bad status for 8" = the
+      // DAP_WRITE_ABORT command). connect() is idempotent and does not
+      // halt/reset the core, so the running Jacdac program keeps going (we
+      // deliberately skip jacdac-ts's extra core reset).
+      await adi.connect();
       found = await mailbox.scan();
     } catch (err) {
       appendLog({ direction: 'error', text: `Jacdac scan failed: ${(err as Error)?.message ?? err}` });
