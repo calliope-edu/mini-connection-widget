@@ -590,6 +590,7 @@
   }
   .kind-blocks { background: #e7e0ff; color: rgb(65, 200, 200); }
   .kind-gatt { background: #d6f1ff; color: #056399; }
+  .kind-jacdac { background: #ffe9d6; color: #9a4a00; }
 
   /* "Live" badge: pulsing dot while STATE/MOTION/ANALOG polling flows, with a
      count. Clicking the badge toggles whether that poll traffic is shown in

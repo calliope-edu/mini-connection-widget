@@ -28,8 +28,10 @@ export type CommsTransport = 'usb' | 'ble';
  *              widget acts as a proxy for the blocks editor iframe.
  * - `gatt`   — a direct BLE GATT operation performed by the widget that
  *              isn't carried over UART (writeValue / readValue / notify).
+ * - `jacdac` — a raw Jacdac frame moved over the CMSIS-DAP RAM-exchange
+ *              (MakeCode pxt-jacdac bridge). RX = device→host, TX = host→device.
  */
-export type CommsKind = 'serial' | 'blocks' | 'gatt';
+export type CommsKind = 'serial' | 'blocks' | 'gatt' | 'jacdac';
 
 export interface CommsEntry {
   id: number;

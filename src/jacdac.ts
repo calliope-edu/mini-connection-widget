@@ -25,6 +25,7 @@
 import { ConnectionStatus } from '@microbit/microbit-connection';
 import { getUsbConn } from './usb';
 import { appendLog } from './log';
+import { pushProxy } from './comms';
 import { JacdacMailbox, JacdacInvalidMemoryError, type JacdacMemIO } from './jacdac-mailbox';
 
 /** The slice of @microbit/microbit-connection's ArmDebug we use. */
@@ -63,6 +64,27 @@ function memIO(adi: ArmDebugLike): JacdacMemIO {
 }
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+function hexBytes(data: Uint8Array, max = 16): string {
+  let s = '';
+  for (let i = 0; i < Math.min(data.length, max); i++) s += (i ? ' ' : '') + data[i].toString(16).padStart(2, '0').toUpperCase();
+  if (data.length > max) s += ` …(+${data.length - max})`;
+  return s;
+}
+
+/**
+ * Compact one-line label for a Jacdac frame, for the comms panel. JD frame
+ * layout: [0-1]=frame CRC, [2]=size, [3]=flags, [4-11]=sender device id,
+ * [12+]=packets. We surface the size, the sender device id (so distinct
+ * modules are visible), and the head bytes.
+ */
+function formatJacdacFrame(frame: Uint8Array): string {
+  let dev = '';
+  if (frame.length >= 12) {
+    for (let i = 11; i >= 4; i--) dev += frame[i].toString(16).padStart(2, '0');
+  }
+  return `JD ${frame.length}B${dev ? ` dev=${dev}` : ''} [${hexBytes(frame)}]`;
+}
 
 // Poll cadence: 0ms while frames are flowing (browser throttles a busy loop),
 // a small idle gap otherwise so an idle Jacdac session doesn't saturate the DAP
@@ -215,12 +237,15 @@ async function runLoop(): Promise<void> {
       let didWork = false;
       const inbound = await mailbox.readInbound();
       if (inbound) {
+        pushProxy({ direction: 'rx', transport: 'usb', kind: 'jacdac', text: formatJacdacFrame(inbound) });
         emit(inbound);
         didWork = true;
       }
       if (outbound.length) {
-        const sent = await mailbox.trySendOutbound(outbound[0]);
+        const out = outbound[0];
+        const sent = await mailbox.trySendOutbound(out);
         if (sent) {
+          pushProxy({ direction: 'tx', transport: 'usb', kind: 'jacdac', text: formatJacdacFrame(out) });
           outbound.shift();
           didWork = true;
         }
