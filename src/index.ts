@@ -92,6 +92,23 @@ export type {
   EnsureBlocksRuntimeOptions,
   EnsureBlocksRuntimeResult,
 } from './blocks-runtime';
+// Jacdac frame transport (MakeCode pxt-jacdac bridge, Layer 2): moves raw
+// Jacdac frames to/from the device over the held DAPLink CMSIS-DAP session.
+// The campus MakeCode host relays these between the editor's Jacdac sim and
+// the device. sendJacdacFrame/onJacdacFrame are what calliope-campus's
+// jacdacTransport feature-detects.
+export {
+  sendJacdacFrame,
+  onJacdacFrame,
+  isJacdacAvailable,
+  stopJacdacExchange,
+} from './jacdac';
+export {
+  JacdacMailbox,
+  findExchange,
+  JacdacInvalidMemoryError,
+} from './jacdac-mailbox';
+export type { JacdacMemIO } from './jacdac-mailbox';
 
 // ---- UI (Svelte 5) --------------------------------------------------------
 // Components are framework-coupled; consumers need Svelte 5. Apps that don't
