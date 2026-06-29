@@ -155,6 +155,14 @@ test('trySendOutbound writes head+body into the free slot and pends the IRQ', as
   assert.equal(ram.irqWrites.length, 1);
 });
 
+test('resetTarget writes DEMCR=0 then AIRCR=SYSRESETREQ', async () => {
+  const ram = new FakeRam();
+  const mb = new JacdacMailbox(ram);
+  await mb.resetTarget();
+  assert.equal(ram.word(0xe000edfc), 0, 'DEMCR cleared');
+  assert.equal(ram.word(0xe000ed0c) >>> 0, (0x05fa0000 | (1 << 2)) >>> 0, 'AIRCR VECTKEY|SYSRESETREQ');
+});
+
 test('trySendOutbound is a no-op while the slot is still occupied', async () => {
   const ram = new FakeRam();
   seedExchange(ram, 5);

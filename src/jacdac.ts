@@ -25,7 +25,7 @@
 import { ConnectionStatus } from '@microbit/microbit-connection';
 import { getUsbConn } from './usb';
 import { appendLog } from './log';
-import { JacdacMailbox, type JacdacMemIO } from './jacdac-mailbox';
+import { JacdacMailbox, JacdacInvalidMemoryError, type JacdacMemIO } from './jacdac-mailbox';
 
 /** The slice of @microbit/microbit-connection's ArmDebug we use. */
 interface ArmDebugLike {
@@ -162,23 +162,44 @@ async function runLoop(): Promise<void> {
     }
     mailbox = new JacdacMailbox(memIO(adi));
     let found = false;
+    let failCooldown = SCAN_COOLDOWN_MS;
     try {
       // Bring up the SWD debug port before any memory access. The widget keeps
       // the USB transport open but leaves SWD disconnected in serial-only
       // steady state, so readBlock would fault — the device returns a sticky
       // error and even the abort-clear fails ("Bad status for 8" = the
       // DAP_WRITE_ABORT command). connect() is idempotent and does not
-      // halt/reset the core, so the running Jacdac program keeps going (we
-      // deliberately skip jacdac-ts's extra core reset).
+      // halt/reset the core.
       await adi.connect();
-      found = await mailbox.scan();
+      try {
+        found = await mailbox.scan();
+      } catch (err) {
+        if (err instanceof JacdacInvalidMemoryError) {
+          // The mailbox magic is present but the exchange buffer isn't in its
+          // clean post-boot state — we attached to a long-running program. Like
+          // jacdac-ts (and MakeCode's own Jacdac connect), soft-reset the core
+          // so the firmware re-initialises the exchange, wait for it to come
+          // back, then re-scan. Done only when needed (not when the buffer is
+          // already clean, e.g. right after a flash), so we avoid an extra
+          // reboot in the common case.
+          appendLog({ direction: 'info', text: 'Jacdac: re-initialising exchange (soft-resetting the mini)…' });
+          await mailbox.resetTarget();
+          await delay(1200); // firmware re-init: jacdac-ts notes ~700ms min
+          found = await mailbox.scan();
+        } else {
+          throw err;
+        }
+      }
     } catch (err) {
       appendLog({ direction: 'error', text: `Jacdac scan failed: ${(err as Error)?.message ?? err}` });
+      // We may have just rebooted the device — back off longer so a persistent
+      // failure doesn't reboot-storm the mini every couple of seconds.
+      failCooldown = 5000;
     }
     if (!found) {
       available = false;
-      scanCooldownUntil = Date.now() + SCAN_COOLDOWN_MS;
-      appendLog({ direction: 'info', text: 'Jacdac: exchange buffer not found (no Jacdac program running?)' });
+      scanCooldownUntil = Date.now() + failCooldown;
+      appendLog({ direction: 'info', text: 'Jacdac: exchange not ready (no Jacdac program, or still re-initialising)' });
       return;
     }
     available = true;

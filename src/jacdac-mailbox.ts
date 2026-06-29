@@ -35,6 +35,12 @@ const SCAN_ANCHOR = 0x20006000;
 /** NVIC ISPR base — writing here pends the runtime's Jacdac IRQ (microbit.ts:484). */
 const NVIC_ISPR_BASE = 0xe000e200;
 
+/** Core soft-reset registers (microbit.ts:493-496). DEMCR cleared, then AIRCR
+ *  written with VECTKEY | SYSRESETREQ to reset the core. */
+const SCB_DEMCR = 0xe000edfc;
+const SCB_AIRCR = 0xe000ed0c;
+const AIRCR_SYSRESETREQ = 0x05fa0000 | (1 << 2);
+
 /** Jacdac frame header length in bytes (microbit.ts:201, slice(0, inp[2]+12)). */
 const JD_FRAME_HEADER = 12;
 /** Byte offset of the frame `_size` field within a frame (microbit.ts:198 inp[2]). */
@@ -151,6 +157,20 @@ export class JacdacMailbox {
   reset(): void {
     this.xchgAddr = null;
     this.irqn = 0;
+  }
+
+  /**
+   * Soft-reset the target core (DEMCR clear + AIRCR SYSRESETREQ), matching
+   * jacdac-ts CMSISProto.reset() (microbit.ts:493-496). The firmware then
+   * re-initialises the exchange struct to its clean post-boot state (the
+   * info[14]==0xff "waiting for host" sentinel). The debug power domain stays
+   * up across a SYSRESETREQ (CDBGPWRUPREQ is held), so the SWD connection
+   * survives and memory access works once the firmware is back (~700ms+).
+   * Caller must wait before re-scanning.
+   */
+  async resetTarget(): Promise<void> {
+    await writeWord(this.io, SCB_DEMCR, 0);
+    await writeWord(this.io, SCB_AIRCR, AIRCR_SYSRESETREQ);
   }
 
   /**
