@@ -23,6 +23,7 @@ import { startHeartbeat, stopHeartbeat } from './serial';
 import { classifyUsbError, isExpectedRebootWindow, SEGGER_JLINK_VENDOR_ID } from './connection-errors';
 import { showUsbErrorInfo } from './usb-error-info';
 import { pauseJacdacExchange, resumeJacdacExchange, stopJacdacExchange } from './jacdac';
+import { pauseBlocksDapExchange, resumeBlocksDapExchange, stopBlocksDapExchange } from './blocks-dap';
 
 let usbConn: MicrobitUSBConnection | null = null;
 let usbInitPromise: Promise<MicrobitUSBConnection> | null = null;
@@ -40,9 +41,11 @@ export function clearUsbConn(): void {
   // registerSerialDataListener() on the new instance.
   serialListeners.clear();
   serialPaused = false;
-  // The Jacdac exchange loop was bound to that connection's ArmDebug — stop it
-  // so a fresh connection re-scans rather than poking a stale handle.
+  // The Jacdac + Blocks-DAP exchange loops were bound to that connection's
+  // ArmDebug — stop them so a fresh connection re-scans rather than poking a
+  // stale handle.
   stopJacdacExchange();
+  stopBlocksDapExchange();
 }
 
 // ---------------------------------------------------------------------------
@@ -117,6 +120,7 @@ export async function pauseSerialDataPolling(settleMs = 150): Promise<void> {
   // quiet bus. The loop parks at the top of its next iteration; the settle
   // sleep below covers its (at most one) in-flight op draining.
   pauseJacdacExchange();
+  pauseBlocksDapExchange();
   await new Promise((r) => setTimeout(r, settleMs));
 }
 
@@ -129,6 +133,7 @@ export function resumeSerialDataPolling(): void {
   if (!serialPaused) return;
   serialPaused = false;
   resumeJacdacExchange();
+  resumeBlocksDapExchange();
   if (!usbConn) return;
   for (const h of serialListeners) {
     try { usbConn.addEventListener('serialdata', h); } catch { /* ignore */ }

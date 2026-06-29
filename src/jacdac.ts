@@ -27,6 +27,7 @@ import { getUsbConn } from './usb';
 import { appendLog } from './log';
 import { pushProxy } from './comms';
 import { JacdacMailbox, JacdacInvalidMemoryError, type JacdacMemIO } from './jacdac-mailbox';
+import { getDapOwner, onDapOwnerChange } from './dap-arbiter';
 
 /** The slice of @microbit/microbit-connection's ArmDebug we use. */
 interface ArmDebugLike {
@@ -118,6 +119,9 @@ export function isJacdacAvailable(): boolean {
  */
 export async function sendJacdacFrame(frame: Uint8Array): Promise<void> {
   if (!frame || frame.length === 0) return;
+  // The Blocks editor owns the shared DAP bus — stay inert so two exchange loops
+  // never run at once (concurrent ArmDebug reads cross + corrupt, see dap-arbiter).
+  if (getDapOwner() === 'blocks') return;
   outbound.push(frame);
   if (outbound.length > MAX_OUTBOUND) {
     outbound.shift();
@@ -160,6 +164,12 @@ export function pauseJacdacExchange(): void {
 export function resumeJacdacExchange(): void {
   paused = false;
 }
+
+// Lose the bus → tear down immediately. The Blocks editor (or "no editor")
+// taking ownership must stop this loop before its reads can collide with ours.
+onDapOwnerChange((o) => {
+  if (o !== 'jacdac') stopJacdacExchange();
+});
 
 function emit(frame: Uint8Array): void {
   for (const cb of subscribers) {

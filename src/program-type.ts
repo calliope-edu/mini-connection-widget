@@ -24,6 +24,7 @@ import { getConnectedBleDevice } from './ble';
 import { getUsbConn, registerSerialDataListener } from './usb';
 import { calliopeState, updateState, getState } from './state';
 import { buildBlocksFrame, BLOCKS_REQ, BlocksUsbProbe } from './blocks-frame';
+import { detectBlocksDap } from './blocks-dap';
 import { isNativeMode } from './native-bridge';
 import { nativeGattRead, nativeGattWrite } from './native-mode';
 
@@ -197,6 +198,15 @@ function probeUsb(timeoutMs: number): Promise<CalliopeProgramInfo | null> {
         // would UTF-8-encode into multi-byte sequences and silently
         // corrupt the SFD/header.
         await conn.serialWrite(buildBlocksFrame(BLOCKS_REQ.READ, 0x0100));
+      } catch { /* ignore */ }
+    })();
+    // The codal/mini-3 runtime speaks the CMSIS-DAP RAM mailbox, not the UART —
+    // so the serial probe above sees nothing. Scan RAM for the mailbox in
+    // parallel; finding it confirms a Blocks runtime over USB. Whichever probe
+    // (serial frames or DAP scan) confirms first wins.
+    void (async () => {
+      try {
+        if (await detectBlocksDap()) finish({ type: 'blocks', via: 'usb' });
       } catch { /* ignore */ }
     })();
     const timer = setTimeout(() => finish(null), timeoutMs);

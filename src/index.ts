@@ -110,6 +110,30 @@ export {
 } from './jacdac-mailbox';
 export type { JacdacMemIO } from './jacdac-mailbox';
 
+// Blocks-over-CMSIS-DAP transport (codal/mini-3): the fast, reliable USB path
+// for the Blocks runtime, replacing the legacy UART serial transport. Same RAM-
+// mailbox mechanics as Jacdac, distinct magic, Blocks framing. calliope-campus's
+// calliopeRemoteHost uses send/onBlocksDapFrame as the USB transport on mini 3.
+export {
+  sendBlocksDapFrame,
+  onBlocksDapFrame,
+  isBlocksDapAvailable,
+  stopBlocksDapExchange,
+  pauseBlocksDapExchange,
+  resumeBlocksDapExchange,
+} from './blocks-dap';
+export {
+  BlocksMailbox,
+  findBlocksExchange,
+} from './blocks-mailbox';
+export type { BlocksMemIO } from './blocks-mailbox';
+
+// Single-owner arbiter for the shared CMSIS-DAP bus. The host sets the owner to
+// the active editor so the Jacdac (MakeCode) and Blocks-DAP exchange loops never
+// run concurrently — concurrent ArmDebug block reads cross + corrupt each other.
+export { setDapOwner, getDapOwner, onDapOwnerChange } from './dap-arbiter';
+export type { DapOwner } from './dap-arbiter';
+
 // ---- UI (Svelte 5) --------------------------------------------------------
 // Components are framework-coupled; consumers need Svelte 5. Apps that don't
 // use Svelte just don't import from `./ui` and stay vanilla-only.
