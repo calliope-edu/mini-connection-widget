@@ -18,7 +18,7 @@
   import { calliopeState } from '../state';
   import { connectCalliope, disconnectAndForget } from '../connect';
   import { statusLabel } from '../connection-view';
-  import { connectionTransferProgram } from '../connection-banner-extra';
+  import { connectionTransferProgram, connectionRearmInputs } from '../connection-banner-extra';
   import { mergeLabels, type ConnectLabels } from './labels';
   import { extractFriendlyName, friendlyNameToPattern, patternToFriendlyName } from '../friendly-name';
   import MiniNamePattern from './MiniNamePattern.svelte';
@@ -84,6 +84,22 @@
       await transfer.run();
     } finally {
       transferring = false;
+    }
+  }
+
+  // "Re-arm inputs" — a DEV-ONLY safety net (gated on `advanced` below). The
+  // active editor (Blocks) registers it; it re-arms the running program's touch
+  // pads / pin events without a full reconnect, for the rare case an input gets
+  // stuck unarmed. Hidden for regular users.
+  const rearm = $derived($connectionRearmInputs);
+  let rearming = $state(false);
+  async function runRearm(): Promise<void> {
+    if (!rearm || rearming) return;
+    rearming = true;
+    try {
+      await rearm.run();
+    } finally {
+      rearming = false;
     }
   }
 
@@ -358,6 +374,13 @@
     </button>
   {/if}
 
+  <!-- Dev-only "Re-arm inputs" escape hatch — not shown for regular users. -->
+  {#if advanced && anyConnected && rearm && s.status !== 'flashing'}
+    <button type="button" class="rearm-btn" onclick={runRearm} disabled={rearming}>
+      {rearming ? 'Verbinde Eingänge neu…' : (rearm.label ?? 'Eingänge neu verbinden')}
+    </button>
+  {/if}
+
   {#if s.status === 'flashing'}
     {@const via = s.flashTransport ?? 'usb'}
     <div class="flash-block">
@@ -551,6 +574,24 @@
     cursor: pointer;
     transition: background 0.15s, opacity 0.15s;
     &:hover:not(:disabled) { background: #00a3b5; }
+    &:disabled { opacity: 0.5; cursor: default; }
+  }
+
+  // Dev-only "Re-arm inputs" — secondary ghost button so it reads as a tool,
+  // not a primary action.
+  .rearm-btn {
+    width: 100%;
+    margin-top: 8px;
+    padding: 8px 16px;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    border-radius: 8px;
+    background: transparent;
+    color: #e5e7eb;
+    font-size: 12.5px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, opacity 0.15s;
+    &:hover:not(:disabled) { background: rgba(255, 255, 255, 0.08); }
     &:disabled { opacity: 0.5; cursor: default; }
   }
 

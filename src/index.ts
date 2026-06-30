@@ -64,8 +64,10 @@ export {
   setBannerContainer,
   connectionTransferProgram,
   setTransferProgram,
+  connectionRearmInputs,
+  setRearmInputs,
 } from './connection-banner-extra';
-export type { TransferProgram } from './connection-banner-extra';
+export type { TransferProgram, RearmInputs } from './connection-banner-extra';
 export { calliopeBleOfflineInfo, dismissBleOfflineInfo, showBleOfflineInfo } from './ble-offline-info';
 export { calliopeConnectionChoiceRequest } from './connection-choice';
 

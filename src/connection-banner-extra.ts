@@ -126,3 +126,37 @@ export function setTransferProgram(owner: string, t: TransferProgram | null): vo
     _transfer.set(null);
   }
 }
+
+// ---- "Re-arm inputs" action (dev-only) ------------------------------------
+//
+// A safety-net action for the Blocks editor: re-arm the running program's touch
+// pads / pin events without a full reconnect. It exists because arming can
+// occasionally fail to complete in the editor's VM (a pad armed on-device but
+// not recorded), leaving an input that never fires. The real fix lives in the
+// VM (the arming reconcile); this button is the manual escape hatch, so the
+// panel only shows it in dev mode (`advanced`). The active editor registers how
+// to run it (Blocks posts a re-arm message to its iframe); the panel renders the
+// button. Owner-gated exactly like setTransferProgram.
+
+export interface RearmInputs {
+  /** Re-arm the active editor's program inputs on the connected Calliope. */
+  run: () => void | Promise<void>;
+  /** Optional button label; defaults to "Eingänge neu verbinden". */
+  label?: string;
+}
+
+const _rearm = writable<RearmInputs | null>(null);
+/** The active editor's "re-arm inputs" action, or `null`. */
+export const connectionRearmInputs: Readable<RearmInputs | null> = { subscribe: _rearm.subscribe };
+
+let rearmOwner: string | null = null;
+/** Editors register (`r`) or clear (`null`) how to re-arm their program inputs. */
+export function setRearmInputs(owner: string, r: RearmInputs | null): void {
+  if (r) {
+    rearmOwner = owner;
+    _rearm.set(r);
+  } else if (rearmOwner === owner) {
+    rearmOwner = null;
+    _rearm.set(null);
+  }
+}
