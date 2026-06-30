@@ -12,7 +12,7 @@ import {
   forgetAllUsbDevices,
   getUsbConnection,
 } from './usb';
-import { showUsbErrorInfo } from './usb-error-info';
+import { escalateUsbRecovery } from './usb-recovery';
 import { showBleOfflineInfo } from './ble-offline-info';
 import { classifyBleError, classifyUsbError } from './connection-errors';
 import { isNativeMode } from './native-bridge';
@@ -160,13 +160,11 @@ export async function connectCalliope(
       return;
     }
     updateState((s) => ({ ...s, usbStatus: 'error', usbErrorMessage: classified.userMessage }));
-    // Raw Chromium messages like "Unable to claim interface" / "The device
-    // was disconnected" mean nothing to a kid. Pop the recovery modal so
-    // they get numbered steps + a one-click retry instead.
-    if (classified.kind === 'device-in-use') {
-      showUsbErrorInfo('in-use', (err as Error)?.message ?? String(err ?? ''));
-    } else if (classified.kind === 'device-disconnected') {
-      showUsbErrorInfo('disconnected', (err as Error)?.message ?? String(err ?? ''));
+    // Raw Chromium messages like "Unable to claim interface" / "The device was
+    // disconnected" mean nothing to a kid. Drive the light banner's recovery
+    // ladder (Verbinden → USB neu einstecken → Seite neu laden) instead.
+    if (classified.kind === 'device-in-use' || classified.kind === 'device-disconnected') {
+      escalateUsbRecovery(classified.kind);
     }
   }
 }

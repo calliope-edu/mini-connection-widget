@@ -26,13 +26,18 @@ import { getUsbConn } from './usb';
 import { appendLog } from './log';
 import { BlocksMailbox, findBlocksExchange, type BlocksMemIO } from './blocks-mailbox';
 import { BlocksFrameParser, type BlocksFrame } from './blocks-frame';
-import { getDapOwner, onDapOwnerChange } from './dap-arbiter';
+import { logIncomingFrame, logOutgoingFrame } from './blocks-protocol';
+import { getDapOwner, setDapOwner, onDapOwnerChange, withDapBus } from './dap-arbiter';
 
 /** The slice of @microbit/microbit-connection's ArmDebug we use (same as jacdac.ts). */
 interface ArmDebugLike {
   readonly isOpen: boolean;
   /** Bring up the SWD debug port. Idempotent; does NOT halt or reset the core. */
   connect(maxRetries?: number): Promise<void>;
+  /** Reset cached DP/AP state and reconnect (no re-enumeration). The lib's remedy
+   *  after a DAPLink flash resets the target and leaves the protocol cache stale.
+   *  Optional so older lib builds without it fall back to `connect()`. */
+  reinit?(): Promise<void>;
   readBlock(address: number, count: number): Promise<Uint32Array>;
   writeBlock(address: number, values: Uint32Array): Promise<void>;
 }
@@ -47,8 +52,8 @@ function getArmDebug(): ArmDebugLike | null {
 
 function memIO(adi: ArmDebugLike): BlocksMemIO {
   return {
-    readWords: (addr, count) => adi.readBlock(addr, count),
-    writeWords: (addr, words) => adi.writeBlock(addr, words),
+    readWords: (addr, count) => withDapBus(() => adi.readBlock(addr, count)),
+    writeWords: (addr, words) => withDapBus(() => adi.writeBlock(addr, words)),
   };
 }
 
@@ -70,6 +75,38 @@ let paused = false;
 let available = false;
 let scanCooldownUntil = 0;
 let droppedFrames = 0;
+// Set after a flash: the next scan must REINIT the SWD session, not reuse the
+// idempotent connect. A DAPLink flash resets the target, so ArmDebug's cached
+// DP_SELECT/AP_CSW go stale; subsequent RAM reads fault and the mailbox scan
+// finds nothing ("exchange buffer not found") until a full reconnect. reinit()
+// clears the cache + re-powers the debug domain — the lib's fix for exactly this.
+let needsReinit = false;
+
+/**
+ * After a USB flash, force the next Blocks-DAP scan to rebuild the SWD session.
+ * Also drops the running loop (it was only paused across the flash, so it would
+ * otherwise resume on the pre-flash mailbox address + stale cache) so the next
+ * send/probe does a clean re-scan.
+ */
+export function reinitBlocksDapAfterFlash(): void {
+  needsReinit = true;
+  stopRequested = true;
+  available = false;
+  outbound = [];
+  scanCooldownUntil = 0;
+}
+
+/** Bring up SWD for a scan: a full `reinit()` once after a flash (the cache is
+ *  stale), otherwise the cheap idempotent `connect()`. Clears the flag only on a
+ *  successful bring-up so a still-rebooting device retries reinit next scan. */
+async function ensureSwd(adi: ArmDebugLike): Promise<void> {
+  if (needsReinit && typeof adi.reinit === 'function') {
+    await adi.reinit();
+  } else {
+    await adi.connect();
+  }
+  needsReinit = false;
+}
 
 /** True once the exchange mailbox has been located on the connected device. */
 export function isBlocksDapAvailable(): boolean {
@@ -94,7 +131,7 @@ export async function detectBlocksDap(): Promise<boolean> {
   const adi = getArmDebug();
   if (!adi) return false;
   try {
-    await adi.connect();
+    await ensureSwd(adi);
     const xchg = await findBlocksExchange(memIO(adi));
     return xchg !== null;
   } catch {
@@ -183,8 +220,9 @@ async function runLoop(): Promise<void> {
     mailbox = new BlocksMailbox(memIO(adi));
     let found = false;
     try {
-      // Bring up SWD before any memory access (idempotent, no halt/reset).
-      await adi.connect();
+      // Bring up SWD before any memory access — a full reinit once after a flash
+      // (stale cache), else the idempotent connect.
+      await ensureSwd(adi);
       found = await mailbox.scan();
     } catch (err) {
       appendLog({ direction: 'error', text: `Blocks-DAP scan failed: ${(err as Error)?.message ?? err}` });
@@ -196,6 +234,10 @@ async function runLoop(): Promise<void> {
       return;
     }
     available = true;
+    // We found the Blocks mailbox → this device runs the Blocks runtime, so
+    // claim the bus. Stops any Jacdac loop for real (device-truth, regardless of
+    // whether the editor set the owner).
+    setDapOwner('blocks');
     appendLog({ direction: 'info', text: 'Blocks-DAP: exchange ready' });
 
     // Spike diagnostic counters (remove once the transport is proven).
@@ -213,13 +255,18 @@ async function runLoop(): Promise<void> {
       const inbound = await mailbox.readInbound();
       if (inbound) {
         dbgRecvs++;
-        for (const f of parser.push(inbound)) emit(f);
+        for (const f of parser.push(inbound)) {
+          logIncomingFrame('usb', f); // surface device→host frames in the comms panel
+          emit(f);
+        }
         didWork = true;
       }
       if (outbound.length) {
-        const sent = await mailbox.trySendOutbound(outbound[0]);
+        const out = outbound[0];
+        const sent = await mailbox.trySendOutbound(out);
         if (sent) {
           outbound.shift();
+          logOutgoingFrame('usb', out); // surface host→device frames in the comms panel
           dbgSends++;
           didWork = true;
         }

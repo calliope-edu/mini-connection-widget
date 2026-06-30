@@ -27,7 +27,7 @@ import { getUsbConn } from './usb';
 import { appendLog } from './log';
 import { pushProxy } from './comms';
 import { JacdacMailbox, JacdacInvalidMemoryError, type JacdacMemIO } from './jacdac-mailbox';
-import { getDapOwner, onDapOwnerChange } from './dap-arbiter';
+import { getDapOwner, setDapOwner, onDapOwnerChange, withDapBus } from './dap-arbiter';
 
 /** The slice of @microbit/microbit-connection's ArmDebug we use. */
 interface ArmDebugLike {
@@ -59,8 +59,8 @@ function getArmDebug(): ArmDebugLike | null {
 
 function memIO(adi: ArmDebugLike): JacdacMemIO {
   return {
-    readWords: (addr, count) => adi.readBlock(addr, count),
-    writeWords: (addr, words) => adi.writeBlock(addr, words),
+    readWords: (addr, count) => withDapBus(() => adi.readBlock(addr, count)),
+    writeWords: (addr, words) => withDapBus(() => adi.writeBlock(addr, words)),
   };
 }
 
@@ -235,6 +235,9 @@ async function runLoop(): Promise<void> {
       return;
     }
     available = true;
+    // We found the Jacdac mailbox → this device runs a Jacdac program, so claim
+    // the bus. Stops any Blocks-DAP loop (device-truth, not editor-guess).
+    setDapOwner('jacdac');
     appendLog({ direction: 'info', text: 'Jacdac: exchange ready' });
 
     while (!stopRequested) {

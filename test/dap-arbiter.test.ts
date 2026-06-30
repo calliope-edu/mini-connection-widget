@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { getDapOwner, setDapOwner, onDapOwnerChange } from '../src/dap-arbiter.ts';
+import { getDapOwner, setDapOwner, onDapOwnerChange, withDapBus } from '../src/dap-arbiter.ts';
 
 // The arbiter is a module singleton; reset to null at the start of each test so
 // ordering can't leak state between them.
@@ -62,6 +62,31 @@ test('a throwing listener does not block the others', () => {
   off1();
   off2();
   assert.equal(reached, true);
+});
+
+test('withDapBus serializes overlapping operations (no interleave)', async () => {
+  const order: string[] = [];
+  const op = (id: string, ms: number) => () =>
+    new Promise<void>((resolve) => {
+      order.push(`start-${id}`);
+      setTimeout(() => {
+        order.push(`end-${id}`);
+        resolve();
+      }, ms);
+    });
+  // B is launched immediately after A but with a shorter delay — without
+  // serialization it would finish first and interleave. The bus must run them
+  // strictly in order: A fully completes before B starts.
+  const a = withDapBus(op('A', 25));
+  const b = withDapBus(op('B', 1));
+  await Promise.all([a, b]);
+  assert.deepEqual(order, ['start-A', 'end-A', 'start-B', 'end-B']);
+});
+
+test('withDapBus: a rejecting op does not wedge the chain', async () => {
+  await assert.rejects(withDapBus(() => Promise.reject(new Error('boom'))));
+  const ran = await withDapBus(() => Promise.resolve('ok'));
+  assert.equal(ran, 'ok');
 });
 
 test('exclusion intent: only the owning side is permitted at a time', () => {

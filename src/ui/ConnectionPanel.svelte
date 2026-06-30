@@ -17,7 +17,8 @@
   import { untrack } from 'svelte';
   import { calliopeState } from '../state';
   import { connectCalliope, disconnectAndForget } from '../connect';
-  import type { CalliopeStatus } from '../state';
+  import { statusLabel } from '../connection-view';
+  import { connectionTransferProgram } from '../connection-banner-extra';
   import { mergeLabels, type ConnectLabels } from './labels';
   import { extractFriendlyName, friendlyNameToPattern, patternToFriendlyName } from '../friendly-name';
   import MiniNamePattern from './MiniNamePattern.svelte';
@@ -64,42 +65,25 @@
       (s.flashPhase === 'check' || s.flashPhase === 'reboot' || s.flashPhase === 'prepare')
   );
 
-  function statusLabel(status: CalliopeStatus): string {
-    if (s.nativeMode) {
-      switch (status) {
-        case 'connected': return labels.appModeConnected;
-        case 'connecting': return labels.appModeConnecting;
-        case 'flashing': {
-          const phase = s.flashPhase;
-          if (phase === 'check') return labels.phaseCheck;
-          if (phase === 'reboot') return labels.phaseReboot;
-          if (phase === 'prepare') return labels.phasePrepare;
-          if (phase === 'finalising') return labels.phaseFinalising;
-          return `${labels.flashing} ${s.flashProgress ?? 0}%`;
-        }
-        case 'error': return labels.error;
-        default: return labels.appModeWaiting;
-      }
-    }
-    switch (status) {
-      case 'connected':
-        if (s.usbStatus === 'connected' && s.bleStatus === 'connected') return 'USB + BLE';
-        if (s.usbStatus === 'connected') return labels.usb;
-        return labels.ble;
-      case 'flashing': {
-        const phase = s.flashPhase;
-        if (phase === 'check') return labels.phaseCheck;
-        if (phase === 'reboot') return labels.phaseReboot;
-        if (phase === 'prepare') return labels.phasePrepare;
-        if (phase === 'finalising') return labels.phaseFinalising;
-        return `${labels.flashing} ${s.flashProgress ?? 0}%`;
-      }
-      case 'connecting': return labels.connecting;
-      case 'error': return labels.error;
-      case 'unsupported': return labels.unsupported;
-      case 'disconnected':
-      case 'unknown':
-      default: return labels.notConnected;
+  // Both transports' cards are always shown (each with its own connect / cancel /
+  // disconnect / retry buttons), so the user always sees the full state of both
+  // — we don't collapse or nudge.
+  const usbConnected = $derived(s.usbStatus === 'connected');
+  const bleConnected = $derived(s.bleStatus === 'connected');
+  const anyConnected = $derived(usbConnected || bleConnected);
+
+  // "Programm übertragen" — the active editor registers how to flash its current
+  // program; the button shows whenever a transport is connected (and not already
+  // flashing).
+  const transfer = $derived($connectionTransferProgram);
+  let transferring = $state(false);
+  async function runTransfer(): Promise<void> {
+    if (!transfer || transferring) return;
+    transferring = true;
+    try {
+      await transfer.run();
+    } finally {
+      transferring = false;
     }
   }
 
@@ -194,7 +178,7 @@
     <div class="panel-header-text">
       <div class="title">{labels.panelTitle}</div>
       {#if advanced}
-        <div class="subtitle">{statusLabel(s.status)}</div>
+        <div class="subtitle">{statusLabel(s, labels)}</div>
       {/if}
     </div>
     {#if onTogglePin}
@@ -276,25 +260,27 @@
   <div class="transports">
     {#if s.usbSupported}
       {@const usbBusy = s.usbStatus === 'connecting' || s.flashTransport === 'usb'}
-      {@const usbConnected = s.usbStatus === 'connected'}
-      <div class="badge" class:connected={usbConnected} class:err={s.usbStatus === 'error'}>
+      <div class="badge">
         <div class="badge-head">
           <span class="transport-name">{labels.usb}</span>
           {#if usbConnected}
             <button type="button" class="row-btn ghost" onclick={doForgetUsb} disabled={usbBusy}>
               {labels.disconnect}
             </button>
-          {:else if s.usbStatus === 'connecting' || s.usbStatus === 'error'}
+          {:else if s.usbStatus === 'connecting'}
+            <!-- While trying to connect, the only action is cancel (cancel, then
+                 Verbinden re-appears, to retry manually). -->
             <button type="button" class="row-btn ghost" onclick={doCancelUsb}>
               {labels.cancel}
             </button>
-            {#if s.usbStatus === 'error'}
-              <button type="button" class="row-btn primary" onclick={doConnectUsb}>
-                {labels.connect}
-              </button>
-            {/if}
+          {:else if s.usbStatus === 'error'}
+            <!-- Failed: red cancel only (no retry button). Cancelling frees the
+                 picker and brings back the green Verbinden. -->
+            <button type="button" class="row-btn danger" onclick={doCancelUsb}>
+              {labels.cancel}
+            </button>
           {:else}
-            <button type="button" class="row-btn primary" onclick={doConnectUsb} disabled={usbBusy}>
+            <button type="button" class="row-btn connect" onclick={doConnectUsb} disabled={usbBusy}>
               {labels.connect}
             </button>
           {/if}
@@ -304,8 +290,7 @@
 
     {#if s.bleSupported}
       {@const bleBusy = s.bleStatus === 'connecting' || s.flashTransport === 'ble'}
-      {@const bleConnected = s.bleStatus === 'connected'}
-      <div class="badge" class:connected={bleConnected} class:err={s.bleStatus === 'error'}>
+      <div class="badge">
         <div class="badge-head">
           <span class="transport-name">
             {labels.ble}
@@ -343,19 +328,18 @@
 
         {#if !bleConnected}
           <div class="badge-foot">
-            {#if s.bleStatus === 'connecting' || s.bleStatus === 'error'}
+            {#if s.bleStatus === 'connecting'}
               <button type="button" class="row-btn ghost" onclick={doCancelBle}>
                 {labels.cancel}
               </button>
-              {#if s.bleStatus === 'error'}
-                <button type="button" class="row-btn primary" onclick={doConnectBle} disabled={!bleConnectEnabled}>
-                  {labels.connect}
-                </button>
-              {/if}
+            {:else if s.bleStatus === 'error'}
+              <button type="button" class="row-btn danger" onclick={doCancelBle}>
+                {labels.cancel}
+              </button>
             {:else}
               <button
                 type="button"
-                class="row-btn primary"
+                class="row-btn connect"
                 onclick={doConnectBle}
                 disabled={bleBusy || !bleConnectEnabled}
               >
@@ -368,6 +352,12 @@
     {/if}
   </div>
 
+  {#if anyConnected && transfer && s.status !== 'flashing'}
+    <button type="button" class="transfer-btn" onclick={runTransfer} disabled={transferring}>
+      {transferring ? 'Übertrage…' : (transfer.label ?? 'Programm übertragen')}
+    </button>
+  {/if}
+
   {#if s.status === 'flashing'}
     {@const via = s.flashTransport ?? 'usb'}
     <div class="flash-block">
@@ -375,7 +365,7 @@
       {#if isIndeterminate}
         <div class="flash-line indeterminate">
           <span class="spinner-inline"></span>
-          {statusLabel(s.status)}
+          {statusLabel(s, labels)}
         </div>
         <div class="flash-bar">
           <div class="flash-bar-indeterminate"></div>
@@ -484,13 +474,12 @@
 
   /* ---- transport badges ------------------------------------------------- */
   .transports { display: flex; flex-direction: column; gap: 10px; }
+  // Neutral grey for every card — the state lives in the button, not the
+  // background tint (no green/blue/red card highlight).
   .badge {
     border-radius: 10px;
     padding: 12px;
     background: #2a2b2e;
-    transition: background 0.15s;
-    &.connected { background: #1d3326; }
-    &.err { background: #3a2526; }
   }
   .badge-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .transport-name {
@@ -521,14 +510,23 @@
 
   .badge-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
 
+  // "Verbinden" / "Erneut verbinden" are always green; cancel / disconnect are a
+  // decent (ghost) outline. State is conveyed by which buttons show + the error
+  // text, not by tinting the button red.
   .row-btn {
     padding: 7px 16px; border-radius: 8px; border: 1px solid transparent;
     font-size: 13px; font-weight: 600; cursor: pointer;
     flex-shrink: 0;
     transition: background 0.15s, color 0.15s, opacity 0.15s;
-    &.primary {
-      background: #2f80ed; color: #fff;
-      &:hover:not(:disabled) { background: #2670d8; }
+    &.connect {
+      background: #98f600; color: #1b1c1d;
+      &:hover:not(:disabled) { background: #aaff1f; }
+      &:disabled { opacity: 0.4; cursor: default; }
+    }
+    // Cancel in the error state — red, to signal something went wrong.
+    &.danger {
+      background: #e53f4b; color: #fff;
+      &:hover:not(:disabled) { background: #cf3742; }
       &:disabled { opacity: 0.4; cursor: default; }
     }
     &.ghost {
@@ -536,6 +534,24 @@
       &:hover:not(:disabled) { background: rgba(255, 255, 255, 0.08); }
       &:disabled { opacity: 0.4; cursor: default; }
     }
+  }
+
+  // "Programm übertragen" — full-width, in the flash/transfer accent (cyan),
+  // matching the flash progress shown while it runs.
+  .transfer-btn {
+    width: 100%;
+    margin-top: 12px;
+    padding: 10px 16px;
+    border: 0;
+    border-radius: 8px;
+    background: #00b8cc;
+    color: #fff;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, opacity 0.15s;
+    &:hover:not(:disabled) { background: #00a3b5; }
+    &:disabled { opacity: 0.5; cursor: default; }
   }
 
   .meta-row { display: flex; justify-content: space-between; font-size: 12px; padding: 4px 0; }

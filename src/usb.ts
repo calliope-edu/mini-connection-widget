@@ -21,9 +21,9 @@ import { detectCalliopeVersion, stripMakeCodeMetadata } from './helpers';
 import { friendlyNameFromDeviceId } from './friendly-name';
 import { startHeartbeat, stopHeartbeat } from './serial';
 import { classifyUsbError, isExpectedRebootWindow, SEGGER_JLINK_VENDOR_ID } from './connection-errors';
-import { showUsbErrorInfo } from './usb-error-info';
+import { escalateUsbRecovery } from './usb-recovery';
 import { pauseJacdacExchange, resumeJacdacExchange, stopJacdacExchange } from './jacdac';
-import { pauseBlocksDapExchange, resumeBlocksDapExchange, stopBlocksDapExchange } from './blocks-dap';
+import { pauseBlocksDapExchange, resumeBlocksDapExchange, stopBlocksDapExchange, reinitBlocksDapAfterFlash } from './blocks-dap';
 
 let usbConn: MicrobitUSBConnection | null = null;
 let usbInitPromise: Promise<MicrobitUSBConnection> | null = null;
@@ -360,10 +360,8 @@ export async function flashCalliopeViaUsb(hex: string, name: string): Promise<vo
         return;
       }
       updateState((s) => ({ ...s, usbStatus: 'error', usbErrorMessage: classified.userMessage }));
-      if (classified.kind === 'device-in-use') {
-        showUsbErrorInfo('in-use', (err as Error)?.message ?? String(err ?? ''));
-      } else if (classified.kind === 'device-disconnected') {
-        showUsbErrorInfo('disconnected', (err as Error)?.message ?? String(err ?? ''));
+      if (classified.kind === 'device-in-use' || classified.kind === 'device-disconnected') {
+        escalateUsbRecovery(classified.kind);
       }
       return;
     }
@@ -427,13 +425,11 @@ export async function flashCalliopeViaUsb(hex: string, name: string): Promise<vo
       flashPhase: undefined,
     }));
     appendLog({ direction: 'error', text: `Flash failed: ${(err as Error).message}` });
-    // Mirror the connect-path routing: the modal's Retry button is a
-    // real user gesture, so it can run `requestDevice` if the session
-    // was wiped.
-    if (classified.kind === 'device-in-use') {
-      showUsbErrorInfo('in-use', (err as Error)?.message ?? String(err ?? ''));
-    } else if (classified.kind === 'device-disconnected') {
-      showUsbErrorInfo('disconnected', (err as Error)?.message ?? String(err ?? ''));
+    // Mirror the connect-path routing: drive the banner's recovery ladder. The
+    // "Verbinden" rung is a real user gesture, so it can run `requestDevice` if
+    // the session was wiped.
+    if (classified.kind === 'device-in-use' || classified.kind === 'device-disconnected') {
+      escalateUsbRecovery(classified.kind);
     }
   } finally {
     // Re-attach every subscriber. Upstream's eventActivated fires on the
@@ -442,6 +438,11 @@ export async function flashCalliopeViaUsb(hex: string, name: string): Promise<vo
     // becomes a no-op; the next getUsbConnection() will replay the
     // subscriptions via registerSerialDataListener.
     resumeSerialDataPolling();
+    // The flash reset the target, so ArmDebug's cached SWD state is stale: force
+    // the next Blocks-DAP scan to reinit the debug session rather than resume on
+    // the pre-flash mailbox / stale cache (else "exchange buffer not found" until
+    // a full reconnect).
+    reinitBlocksDapAfterFlash();
     appendLog({ direction: 'info', text: 'Serial polling resumed' });
   }
 }

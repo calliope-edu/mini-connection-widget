@@ -10,9 +10,10 @@
  *
  * USB errors stay structured because they drive concrete recovery actions:
  *  - `device-in-use` (another tab holding the DAPLink) needs the user to
- *    close the other tab — `UsbErrorModal` walks them through it.
+ *    close the other tab / replug — the banner's recovery ladder (`usb-recovery`)
+ *    starts at the `replug` rung for it.
  *  - `device-disconnected` (USBDevice handle stale) needs a fresh
- *    `requestDevice()` from a user gesture — same modal, different copy.
+ *    `requestDevice()` from a user gesture — the ladder's `click` rung.
  *  - `transfer-transient` is recoverable by bouncing the connection and is
  *    handled by `usb.ts#runFlashWithTransferRetry` before bubbling up here.
  */

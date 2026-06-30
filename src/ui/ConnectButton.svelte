@@ -22,7 +22,8 @@
    * users see; hosts opt in (e.g. from a dev-mode flag) to expose them.
    */
   import { calliopeState } from '../state';
-  import type { CalliopeStatus } from '../state';
+  import { calliopeUsbRecovery } from '../usb-recovery';
+  import { deriveConnectionView, statusLabel } from '../connection-view';
   import ConnectionPanel from './ConnectionPanel.svelte';
   import { mergeLabels, type ConnectLabels } from './labels';
   import { onMount } from 'svelte';
@@ -49,6 +50,21 @@
   const labels = $derived(mergeLabels(labelsProp));
 
   const s = $derived($calliopeState);
+  const recovery = $derived($calliopeUsbRecovery);
+  const view = $derived(deriveConnectionView(s, recovery));
+  // Fold the USB recovery ladder into the pill so the badge matches the global
+  // connection banner: a dropped / not-yet-found USB reads as connecting
+  // (reconnecting) or error, not a neutral "disconnected" grey.
+  const displayStatus = $derived(
+    view.recovering && !view.anyConnected
+      ? (recovery === 'reconnecting' ? 'connecting' : 'error')
+      : s.status,
+  );
+  const badgeLabel = $derived(
+    view.recovering && !view.anyConnected
+      ? (recovery === 'reconnecting' ? labels.connecting : labels.error)
+      : statusLabel(s, labels),
+  );
 
   // ---- Layout state (persisted) ------------------------------------------
   //
@@ -180,62 +196,20 @@
 
   const isIcon = $derived(appearance === 'icon');
   const isFlashing = $derived(s.status === 'flashing');
-
-  function statusLabel(status: CalliopeStatus): string {
-    // In native-proxy mode (hosted in iOS/Android app), surface the
-    // app-mode framing in every state — "Nicht verbunden" misleads when
-    // the radio is being managed by the host app, not by the browser.
-    if (s.nativeMode) {
-      switch (status) {
-        case 'connected': return labels.appModeConnected;
-        case 'connecting': return labels.appModeConnecting;
-        case 'flashing': {
-          const phase = s.flashPhase;
-          if (phase === 'check') return labels.phaseCheck;
-          if (phase === 'reboot') return labels.phaseReboot;
-          if (phase === 'prepare') return labels.phasePrepare;
-          if (phase === 'finalising') return labels.phaseFinalising;
-          return `${labels.flashing} ${s.flashProgress ?? 0}%`;
-        }
-        case 'error': return labels.error;
-        default: return labels.appModeWaiting;
-      }
-    }
-    switch (status) {
-      case 'connected':
-        if (s.usbStatus === 'connected' && s.bleStatus === 'connected') return 'USB + BLE';
-        if (s.usbStatus === 'connected') return labels.usb;
-        return labels.ble;
-      case 'flashing': {
-        const phase = s.flashPhase;
-        if (phase === 'check') return labels.phaseCheck;
-        if (phase === 'reboot') return labels.phaseReboot;
-        if (phase === 'prepare') return labels.phasePrepare;
-        if (phase === 'finalising') return labels.phaseFinalising;
-        return `${labels.flashing} ${s.flashProgress ?? 0}%`;
-      }
-      case 'connecting': return labels.connecting;
-      case 'error': return labels.error;
-      case 'unsupported': return labels.unsupported;
-      case 'disconnected':
-      case 'unknown':
-      default: return labels.notConnected;
-    }
-  }
 </script>
 
 <div class="connect-wrap">
   {#if isIcon}
     <button
       type="button"
-      class="conn-icon status-{s.status}"
+      class="conn-icon status-{displayStatus}"
       class:flashing={isFlashing}
       class:pinned-indicator={effectivePinned}
       onclick={() => (open = !open)}
       aria-haspopup="true"
       aria-expanded={open}
-      title={statusLabel(s.status)}
-      aria-label={statusLabel(s.status)}
+      title={badgeLabel}
+      aria-label={badgeLabel}
     >
       {#if isFlashing}
         {#if isIndeterminate}
@@ -244,7 +218,7 @@
           <span class="pct">{s.flashProgress ?? 0}%</span>
           <span class="progress" style="width: {s.flashProgress ?? 0}%"></span>
         {/if}
-      {:else if s.status === 'connecting'}
+      {:else if displayStatus === 'connecting'}
         <span class="spinner" aria-hidden="true"></span>
       {:else}
         <span class="calliope-icon" aria-hidden="true">
@@ -267,7 +241,7 @@
   {:else}
     <button
       type="button"
-      class="conn-pill status-{s.status} appearance-{appearance}"
+      class="conn-pill status-{displayStatus} appearance-{appearance}"
       class:pinned-indicator={effectivePinned}
       onclick={() => (open = !open)}
       aria-haspopup="true"
@@ -279,7 +253,7 @@
       {:else}
         <span class="dot" aria-hidden="true"></span>
       {/if}
-      <span class="label">{statusLabel(s.status)}</span>
+      <span class="label">{badgeLabel}</span>
       {#if s.status === 'flashing' && s.flashProgress != null && !isIndeterminate}
         <span class="progress" style="width: {s.flashProgress}%"></span>
       {/if}

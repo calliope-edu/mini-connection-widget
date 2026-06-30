@@ -107,29 +107,37 @@ export async function sendBlocksFrameOverUsb(frame: Uint8Array): Promise<void> {
   // entries arrive in time order; raw `tx 0xFF 0x10 ...` bytes from the
   // existing USB tap appear right after this one, so the user can correlate
   // the decoded request with the byte stream.
-  if (frame.length >= 6) {
-    const type = frame[1];
-    const channel = (frame[2] << 8) | frame[3];
-    const len = frame[4];
-    const data = frame.slice(5, 5 + len);
-    const opName = REQ_NAME[type] ?? `op=0x${type.toString(16)}`;
-    const chName = channelName(channel);
-    // READs of COMMAND/STATE/MOTION/ANALOG are the editor's poll + handshake —
-    // route them to the Live tab (latest-per-channel) instead of the Stream.
-    const isLive = type === BLOCKS_REQ.READ &&
-      (channel === 0x0100 || channel === 0x0101 || channel === 0x0102 || channel === 0x0120);
-    pushProxy({
-      direction: 'tx',
-      transport: 'usb',
-      kind: 'blocks',
-      live: isLive,
-      liveKey: isLive ? chName : undefined,
-      text: `${opName} ch=0x${channel.toString(16).padStart(4, '0')} (${chName})${
-        data.length > 0 ? ` bytes=${formatBytes(data)}` : ''
-      }`,
-    });
-  }
+  logOutgoingFrame('usb', frame);
   await usb.serialWrite(frame);
+}
+
+/**
+ * Push a decoded outbound (host→device) Blocks frame into the comms timeline.
+ * Shared by the UART-serial path and the CMSIS-DAP transport so both show the
+ * same decoded WRITE/READ lines (READ polls route to the Live tab).
+ */
+export function logOutgoingFrame(transport: 'usb' | 'ble', frame: Uint8Array): void {
+  if (frame.length < 6) return;
+  const type = frame[1];
+  const channel = (frame[2] << 8) | frame[3];
+  const len = frame[4];
+  const data = frame.slice(5, 5 + len);
+  const opName = REQ_NAME[type] ?? `op=0x${type.toString(16)}`;
+  const chName = channelName(channel);
+  // READs of COMMAND/STATE/MOTION/ANALOG are the editor's poll + handshake —
+  // route them to the Live tab (latest-per-channel) instead of the Stream.
+  const isLive = type === BLOCKS_REQ.READ &&
+    (channel === 0x0100 || channel === 0x0101 || channel === 0x0102 || channel === 0x0120);
+  pushProxy({
+    direction: 'tx',
+    transport,
+    kind: 'blocks',
+    live: isLive,
+    liveKey: isLive ? chName : undefined,
+    text: `${opName} ch=0x${channel.toString(16).padStart(4, '0')} (${chName})${
+      data.length > 0 ? ` bytes=${formatBytes(data)}` : ''
+    }`,
+  });
 }
 
 /**

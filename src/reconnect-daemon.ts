@@ -28,6 +28,7 @@ import { appendLog } from './log';
 import { reconnectBleIfPermitted } from './ble';
 import { getUsbConnection } from './usb';
 import { withChooserBlocked } from './chooser-gate';
+import { armUsbRecovery } from './usb-recovery';
 
 const BACKOFF_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000, 30_000];
 const STEADY_DELAY_MS = 30_000;
@@ -150,9 +151,11 @@ function scheduleNext(
         stopDaemon(d, 'connected', transport);
         return;
       }
-      // No authorized device right now (e.g. user revoked permission via
-      // browser UI). Don't keep spinning — stop and wait for a fresh
-      // user-initiated connect to start things up again.
+      // No authorized device right now (permission gone — only a user-gesture
+      // requestDevice can recover). Stop the silent loop. If we were mid-recovery
+      // from a drop, the ladder is already on its way to the "re-plug + Erneut
+      // verbinden" rung (whose button runs that gesture connect); a fresh page
+      // load with no device stays silent (the no-connection choice handles it).
       stopDaemon(d, 'no authorized device', transport);
       return;
     } catch (err) {
@@ -238,6 +241,13 @@ export function installReconnectDaemon(): void {
       startBleIfNeeded();
     }
     if (prevUsb === 'connected' && s.usbStatus !== 'connected' && s.usbStatus !== 'connecting') {
+      // Unexpected USB drop (not a user "Trennen") → arm the light banner's
+      // recovery ladder so the Verbinden→replug→reload steps surface fast while
+      // the daemon retries silently in the background. A user-initiated
+      // disconnect sets userDisconnectedUsb (cleared by usb-recovery's watcher),
+      // and we stay quiet when BLE is still connected — it's fine to have just
+      // one transport, so a background USB drop shouldn't nag (goal 4).
+      if (!s.userDisconnectedUsb && s.bleStatus !== 'connected') armUsbRecovery('reconnecting');
       startUsbIfNeeded();
     }
     // If userDisconnectedX was just set, halt the corresponding daemon.

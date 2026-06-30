@@ -31,7 +31,7 @@
 
         <div class="choices">
           {#if req.bleEnabled}
-            <button type="button" class="choice" onclick={() => req.choose('ble')}>
+            <button type="button" class="choice choice-ble" onclick={() => req.choose('ble')}>
               <span class="choice-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M6.5 6.5 17.5 17.5 12 22V2l5.5 4.5L6.5 17.5" />
@@ -43,7 +43,7 @@
               </span>
             </button>
           {/if}
-          <button type="button" class="choice" onclick={() => req.choose('usb')}>
+          <button type="button" class="choice choice-usb" onclick={() => req.choose('usb')}>
             <span class="choice-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M9 7V4h6v3" />
@@ -56,7 +56,7 @@
               <span class="choice-detail">Zuverlässig, funktioniert immer. Kabel an Calliope und Rechner anschließen.</span>
             </span>
           </button>
-          <button type="button" class="choice" onclick={() => req.choose('download')}>
+          <button type="button" class="choice choice-dl" onclick={() => req.choose('download')}>
             <span class="choice-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M12 3v12" />
@@ -163,13 +163,17 @@
     text-align: left;
     cursor: pointer;
     transition: background 0.15s, border-color 0.15s;
-    &:hover {
-      background: #f9fafb;
-      border-color: #00b8cc;
-    }
+    &:hover { background: #f9fafb; }
   }
+  // Transport palette (kept in sync with ConnectionBanner + ConnectionPanel):
+  // USB = green, BLE = blue, download = neutral.
+  .choice-usb:hover { border-color: #4a9e00; }
+  .choice-ble:hover { border-color: #2f80ed; }
+  .choice-dl:hover { border-color: #9ca3af; }
+  .choice-usb .choice-icon { color: #4a9e00; }
+  .choice-ble .choice-icon { color: #2f80ed; }
+  .choice-dl .choice-icon { color: #6b7280; }
   .choice-icon {
-    color: #00b8cc;
     flex-shrink: 0;
     display: flex;
     align-items: center;

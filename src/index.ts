@@ -36,7 +36,9 @@ export type {
 export type { CalliopeVersion } from './helpers';
 export type { CalliopeLogEntry } from './log';
 export type { UsbPlugRequest } from './usb-plug';
-export type { UsbErrorInfo, UsbErrorInfoKind } from './usb-error-info';
+export type { UsbRecoveryRung } from './usb-recovery';
+export type { ConnectionView, TransportView } from './connection-view';
+export type { BannerExtra, BannerExtraAction } from './connection-banner-extra';
 export type { ConnectionChoice, ConnectionChoiceRequest } from './connection-choice';
 export type { Readable, Writable, Subscriber, Unsubscriber } from './store';
 
@@ -44,12 +46,26 @@ export { calliopeState, setBlocksRuntimeVersion } from './state';
 export { calliopeLog, clearCalliopeLog } from './log';
 export { calliopeUsbPlugRequest } from './usb-plug';
 export {
-  calliopeUsbErrorInfo,
-  dismissUsbErrorInfo,
+  calliopeUsbRecovery,
+  armUsbRecovery,
+  confirmReplug,
+  clearUsbRecovery,
   reloadForUsbReconnect,
   consumeUsbReconnectAfterReload,
   USB_RECONNECT_AFTER_RELOAD_KEY,
-} from './usb-error-info';
+} from './usb-recovery';
+export { deriveConnectionView, statusLabel, isIndeterminateFlash } from './connection-view';
+export {
+  connectionBannerExtra,
+  setBannerExtra,
+  connectionUiActive,
+  setConnectionUiActive,
+  connectionBannerContainer,
+  setBannerContainer,
+  connectionTransferProgram,
+  setTransferProgram,
+} from './connection-banner-extra';
+export type { TransferProgram } from './connection-banner-extra';
 export { calliopeBleOfflineInfo, dismissBleOfflineInfo, showBleOfflineInfo } from './ble-offline-info';
 export { calliopeConnectionChoiceRequest } from './connection-choice';
 
@@ -142,8 +158,7 @@ export { default as ConnectButton } from './ui/ConnectButton.svelte';
 export { default as ConnectionPanel } from './ui/ConnectionPanel.svelte';
 export { default as CommsPanel } from './ui/CommsPanel.svelte';
 export { default as UsbPlugRequestModal } from './ui/UsbPlugRequestModal.svelte';
-export { default as UsbErrorModal } from './ui/UsbErrorModal.svelte';
-export { default as UsbReconnectBanner } from './ui/UsbReconnectBanner.svelte';
+export { default as ConnectionBanner } from './ui/ConnectionBanner.svelte';
 export { default as ConnectionChoiceModal } from './ui/ConnectionChoiceModal.svelte';
 export { default as BleOfflineModal } from './ui/BleOfflineModal.svelte';
 export { default as MiniNamePattern } from './ui/MiniNamePattern.svelte';

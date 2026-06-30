@@ -51,3 +51,25 @@ export function onDapOwnerChange(cb: (o: DapOwner) => void): () => void {
   listeners.add(cb);
   return () => listeners.delete(cb);
 }
+
+// --- Bus serialization --------------------------------------------------------
+// ArmDebug.readBlock/writeBlock are NOT atomic across concurrent callers: each
+// transfers chunk-by-chunk, resetting the AP transfer-address register (TAR) per
+// chunk. Two operations interleaving clobber each other's TAR mid-flight and read
+// arbitrary memory (garbage). The arbiter stops the *other* transport's loop, but
+// brief overlaps still happen at handover and during detection scans — so route
+// EVERY readBlock/writeBlock through this single promise chain to make whole
+// operations atomic. This is the correctness floor; the owner is the optimization.
+let busChain: Promise<unknown> = Promise.resolve();
+
+/** Run one ArmDebug operation with exclusive access to the shared DAP bus. */
+export function withDapBus<T>(op: () => Promise<T>): Promise<T> {
+  const run = busChain.then(op, op);
+  // Keep the chain alive regardless of this op's outcome (a rejection must not
+  // wedge every future operation).
+  busChain = run.then(
+    () => {},
+    () => {},
+  );
+  return run;
+}
