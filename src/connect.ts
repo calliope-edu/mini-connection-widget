@@ -12,7 +12,7 @@ import {
   forgetAllUsbDevices,
   getUsbConnection,
 } from './usb';
-import { escalateUsbRecovery } from './usb-recovery';
+import { armUsbRecovery, escalateUsbRecovery } from './usb-recovery';
 import { showBleOfflineInfo } from './ble-offline-info';
 import { classifyBleError, classifyUsbError } from './connection-errors';
 import { isNativeMode } from './native-bridge';
@@ -124,12 +124,20 @@ export async function connectCalliope(
         usbErrorMessage: undefined,
         userDisconnectedUsb: false,
       }));
+      // Arm the recovery ladder up front so its "please re-plug the mini" step
+      // appears within a few seconds if the connect is slow — rather than the
+      // banner sitting on "Verbinde…" for the lib's full ~10s/attempt timeout.
+      // No-op if a connection is already fine / the ladder is already running.
+      armUsbRecovery();
       const c = await getUsbConnection();
       if (forceChooser) {
         await c.clearDevice();
         updateState((s) => ({ ...s, usbDeviceName: undefined }));
       }
-      await connectWithRetry(c);
+      // A single attempt: the recovery ladder ("Erneut verbinden") and the
+      // background daemon ARE the retry mechanism, so we don't grind through
+      // three ~10s timeouts before involving the user.
+      await connectWithRetry(c, 1);
     }
   } catch (err) {
     if (transport === 'ble') {

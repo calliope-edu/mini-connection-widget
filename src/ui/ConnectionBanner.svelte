@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import type { CalliopeTransport } from '../state';
   import { calliopeState, getState } from '../state';
   import {
@@ -53,6 +53,24 @@
 
   let connecting = $state(false);
   let extraBusy = $state(false);
+  // Brief green "Verbunden ✓" the moment a transport connects (so a successful
+  // connect doesn't just silently vanish). Skipped when a follow-up step is
+  // shown instead (e.g. the Blocks "wird überprüft…" / flash prompt).
+  let successActive = $state(false);
+  let prevAnyConnected = false;
+  let successTimer: ReturnType<typeof setTimeout> | null = null;
+  $effect(() => {
+    const nowConnected = view.anyConnected;
+    if (nowConnected && !prevAnyConnected) {
+      successActive = true;
+      if (successTimer) clearTimeout(successTimer);
+      successTimer = setTimeout(() => { successActive = false; }, 1600);
+    } else if (!nowConnected) {
+      successActive = false;
+    }
+    prevAnyConnected = nowConnected;
+  });
+  onDestroy(() => { if (successTimer) clearTimeout(successTimer); });
   // The exact banner content the user dismissed (a content signature — see
   // `bannerKey`). Cleared whenever the banner would otherwise be hidden, so a
   // genuinely new situation always re-shows.
@@ -67,7 +85,7 @@
     }
   });
 
-  type BannerKind = 'hidden' | 'flashing' | 'recovery' | 'connecting' | 'no-connection' | 'unsupported' | 'extra';
+  type BannerKind = 'hidden' | 'flashing' | 'recovery' | 'connecting' | 'no-connection' | 'unsupported' | 'extra' | 'success';
 
   // Flash phase → German label / progress.
   const flashIndeterminate = $derived(isIndeterminateFlash(s));
@@ -99,7 +117,11 @@
       }
       return 'hidden';
     }
-    if (view.anyConnected && extra) return 'extra';
+    // Connected. A follow-up step (e.g. Blocks detect / flash prompt) takes
+    // priority; otherwise flash a brief success so the connect doesn't just
+    // vanish.
+    if (extra) return 'extra';
+    if (successActive) return 'success';
     return 'hidden';
   });
 
@@ -111,6 +133,7 @@
   const bannerKey = $derived.by<string>(() => {
     switch (kind) {
       case 'flashing': return 'flashing';
+      case 'success': return 'success';
       case 'recovery': return `recovery:${recovery}`;
       case 'connecting': return 'connecting';
       case 'no-connection': return 'no-connection';
@@ -198,8 +221,14 @@
 </script>
 
 {#if visible}
-  <div class="banner" class:neutral class:portaled={!!container} use:portal={container} role="status" aria-live="polite">
-    {#if neutral}
+  <div class="banner" class:neutral class:success={kind === 'success'} class:portaled={!!container} use:portal={container} role="status" aria-live="polite">
+    {#if kind === 'success'}
+      <span class="icon check" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M20 6 9 17l-5-5" />
+        </svg>
+      </span>
+    {:else if neutral}
       <span class="spinner" aria-hidden="true"></span>
     {:else}
       <span class="icon" aria-hidden="true">
@@ -212,12 +241,14 @@
     {/if}
 
     <div class="text">
-      {#if kind === 'flashing'}
+      {#if kind === 'success'}
+        <strong>Calliope mini verbunden</strong>
+      {:else if kind === 'flashing'}
         <strong>Programm wird übertragen…</strong>
         <span>{flashPhaseLabel}</span>
       {:else if kind === 'recovery'}
         {#if recovery === 'reconnecting'}
-          <strong>Verbinde wieder mit dem Calliope mini…</strong>
+          <strong>Verbinde mit dem Calliope mini…</strong>
         {:else if recovery === 'replug'}
           <strong>Calliope mini neu verbinden.</strong>
           <span>Zieh den Calliope mini einmal vom USB-Kabel ab und steck ihn wieder ein — schließe ggf. andere Tabs, die ihn nutzen. Klicke dann auf „Erneut verbinden“.</span>
@@ -307,6 +338,13 @@
     box-shadow: 0 12px 34px rgba(0, 0, 0, 0.18);
     font-size: 13px;
     line-height: 1.35;
+    // Success — a brief, fully-green confirmation that we connected.
+    &.success {
+      background: #2fb344;
+      color: #fff;
+      .text strong { color: #fff; }
+      .icon.check { color: #fff; }
+    }
   }
   .text {
     display: flex;
