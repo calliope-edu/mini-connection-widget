@@ -24,14 +24,26 @@
  */
 
 import { calliopeState, getState, updateState, SUPPORT } from './state';
+import { get } from './store';
 import { appendLog } from './log';
 import { reconnectBleIfPermitted } from './ble';
 import { getUsbConnection } from './usb';
 import { withChooserBlocked } from './chooser-gate';
-import { armUsbRecovery } from './usb-recovery';
+import { armUsbRecovery, calliopeUsbRecovery } from './usb-recovery';
 
 const BACKOFF_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000, 30_000];
 const STEADY_DELAY_MS = 30_000;
+// While the USB recovery banner is up (we've asked the user to re-plug), poll
+// fast and NEVER give up — so a re-plug reconnects on its own, even before the
+// user clicks "Erneut verbinden". An unplugged device drops out of getDevices()
+// (so the normal loop would stop "no authorized device"); we keep polling until
+// it re-enumerates.
+const RECOVERY_POLL_MS = 1_500;
+
+/** True while the USB recovery flow is active (banner asking to re-plug etc.). */
+function usbRecoveryActive(): boolean {
+  return get(calliopeUsbRecovery) !== 'none';
+}
 
 interface DaemonState {
   /** True while the daemon is in its retry loop. */
@@ -132,7 +144,9 @@ function scheduleNext(
     return;
   }
   const myGen = d.generation;
-  const delay = delayFor(d.attempt);
+  // While USB recovery is showing, poll fast so a re-plug is caught quickly.
+  const recovering = transport === 'USB' && usbRecoveryActive();
+  const delay = recovering ? RECOVERY_POLL_MS : delayFor(d.attempt);
   clearTimer(d);
   d.timer = setTimeout(async () => {
     if (d.generation !== myGen) return;
@@ -151,11 +165,17 @@ function scheduleNext(
         stopDaemon(d, 'connected', transport);
         return;
       }
-      // No authorized device right now (permission gone — only a user-gesture
-      // requestDevice can recover). Stop the silent loop. If we were mid-recovery
-      // from a drop, the ladder is already on its way to the "re-plug + Erneut
-      // verbinden" rung (whose button runs that gesture connect); a fresh page
-      // load with no device stays silent (the no-connection choice handles it).
+      // No authorized device right now. While the USB recovery banner is up
+      // (asking the user to re-plug), DON'T stop — keep polling so the device
+      // reconnects automatically the moment it re-enumerates, even before the
+      // user clicks "Erneut verbinden". Otherwise stop (permission gone — only a
+      // user-gesture requestDevice recovers; a fresh page load with no device
+      // stays silent and the no-connection choice handles it).
+      if (transport === 'USB' && usbRecoveryActive()) {
+        d.attempt = 0; // keep the fast poll cadence
+        scheduleNext(d, transport, shouldRun, attempt);
+        return;
+      }
       stopDaemon(d, 'no authorized device', transport);
       return;
     } catch (err) {
@@ -259,6 +279,16 @@ export function installReconnectDaemon(): void {
     }
     prevBle = s.bleStatus;
     prevUsb = s.usbStatus;
+  });
+
+  // When USB recovery arms (e.g. a failed user-initiated connect that didn't go
+  // through a connected→dropped edge), make sure the daemon is polling — so the
+  // device reconnects on its own while the "re-plug" banner is up, before the
+  // user clicks "Erneut verbinden".
+  let prevRecovery = 'none';
+  calliopeUsbRecovery.subscribe((r) => {
+    if (r !== 'none' && prevRecovery === 'none') startUsbIfNeeded();
+    prevRecovery = r;
   });
 }
 
