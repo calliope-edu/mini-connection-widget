@@ -83,18 +83,21 @@
   });
 
   const kind = $derived.by<BannerKind>(() => {
-    // Show transfer progress while a hex is flashing.
+    // These follow a real event — flash in progress, a lost/failed session, or a
+    // connect in flight — so they show in ANY editor (and on any page), never
+    // silently swallowed.
     if (view.flashing) return 'flashing';
-    // Recovery follows a real event (a drop / failed attempt), so it shows
-    // anywhere — a lost session is never silently swallowed.
     if (view.recovering) return 'recovery';
-    // The proactive "connect a device" choice (and the in-flight spinner) only
-    // makes sense where a device is relevant — an editor flips on uiActive.
-    // Otherwise the banner would sit on the dashboard / room list too.
-    if (uiActive && !view.anyConnected) {
+    if (!view.anyConnected) {
       if (view.nativeMode || view.usb.connecting || view.ble.connecting) return 'connecting';
-      if (!view.usb.supported && !view.ble.supported) return 'unsupported';
-      return 'no-connection';
+      // The PROACTIVE "choose a connection" prompt only makes sense where a
+      // device is the point — an editor flips on uiActive (Blocks). Elsewhere we
+      // stay quiet until something actually happens (the cases above).
+      if (uiActive) {
+        if (!view.usb.supported && !view.ble.supported) return 'unsupported';
+        return 'no-connection';
+      }
+      return 'hidden';
     }
     if (view.anyConnected && extra) return 'extra';
     return 'hidden';

@@ -240,10 +240,6 @@ async function runLoop(): Promise<void> {
     setDapOwner('blocks');
     appendLog({ direction: 'info', text: 'Blocks-DAP: exchange ready' });
 
-    // Spike diagnostic counters (remove once the transport is proven).
-    let dbgCyc = 0;
-    let dbgSends = 0;
-    let dbgRecvs = 0;
     while (!stopRequested) {
       const adiNow = getArmDebug();
       if (!adiNow || !adiNow.isOpen) break;
@@ -254,7 +250,6 @@ async function runLoop(): Promise<void> {
       let didWork = false;
       const inbound = await mailbox.readInbound();
       if (inbound) {
-        dbgRecvs++;
         for (const f of parser.push(inbound)) {
           logIncomingFrame('usb', f); // surface device→host frames in the comms panel
           emit(f);
@@ -267,22 +262,7 @@ async function runLoop(): Promise<void> {
         if (sent) {
           outbound.shift();
           logOutgoingFrame('usb', out); // surface host→device frames in the comms panel
-          dbgSends++;
           didWork = true;
-        }
-      }
-      // Every ~100 cycles, surface the raw slot heads so we can see whether the
-      // device is consuming sends (send → 0) and producing inbound (inbound ≠ 0).
-      if (++dbgCyc % 100 === 0) {
-        try {
-          const h = await mailbox.debugHeads();
-          if (h)
-            appendLog({
-              direction: 'info',
-              text: `Blocks-DAP dbg: inbound=0x${h.inbound.toString(16)} send=0x${h.send.toString(16)} outQ=${outbound.length} sends=${dbgSends} recvs=${dbgRecvs}`,
-            });
-        } catch {
-          /* ignore */
         }
       }
       await delay(didWork ? 0 : POLL_IDLE_MS);

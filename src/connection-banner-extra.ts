@@ -110,7 +110,19 @@ const _transfer = writable<TransferProgram | null>(null);
 /** The active editor's "transfer current program" action, or `null`. */
 export const connectionTransferProgram: Readable<TransferProgram | null> = { subscribe: _transfer.subscribe };
 
-/** Editors register (or clear, with `null`) how to flash their current program. */
-export function setTransferProgram(t: TransferProgram | null): void {
-  _transfer.set(t);
+// Owner-gated: the active editor registers `(its-id, action)`; on deactivate /
+// unmount it clears with its id, which is a no-op if another editor has since
+// taken over. This keeps an editor switch race-free (the two editors' effects
+// fire in arbitrary order) and stops a stale registration leaking into an editor
+// that has no transfer action of its own.
+let transferOwner: string | null = null;
+/** Editors register (`t`) or clear (`null`) how to flash their current program. */
+export function setTransferProgram(owner: string, t: TransferProgram | null): void {
+  if (t) {
+    transferOwner = owner;
+    _transfer.set(t);
+  } else if (transferOwner === owner) {
+    transferOwner = null;
+    _transfer.set(null);
+  }
 }

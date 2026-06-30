@@ -155,16 +155,6 @@ export class BlocksMailbox {
     return true;
   }
 
-  /** Diagnostic (spike-only): read the raw head words. `inbound` ≠ 0 ⇒ the device
-   *  is producing frames; `send` ≠ 0 ⇒ a host frame is still unconsumed (the
-   *  device poll fiber isn't reading the slot). */
-  async debugHeads(): Promise<{ addr: number; inbound: number; send: number } | null> {
-    if (this.xchgAddr === null) return null;
-    const inb = await this.io.readWords(this.xchgAddr + OFF_INBOUND, 1);
-    const snd = await this.io.readWords(this.xchgAddr + OFF_SEND, 1);
-    return { addr: this.xchgAddr, inbound: inb[0] >>> 0, send: snd[0] >>> 0 };
-  }
-
   reset(): void {
     this.xchgAddr = null;
     this.irqn = 0;
