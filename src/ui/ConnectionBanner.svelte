@@ -53,24 +53,39 @@
 
   let connecting = $state(false);
   let extraBusy = $state(false);
-  // Brief green "Verbunden ✓" the moment a transport connects (so a successful
-  // connect doesn't just silently vanish). Skipped when a follow-up step is
-  // shown instead (e.g. the Blocks "wird überprüft…" / flash prompt).
+  // Brief green "verbunden ✓" the moment EITHER transport connects — so adding a
+  // second transport (e.g. Bluetooth while USB is already up) gives explicit
+  // feedback even though the badge was already green. Tracked per-transport so a
+  // newly-added transport flashes success, not just the first connection.
   let successActive = $state(false);
-  let prevAnyConnected = false;
+  let prevUsbConnected = false;
+  let prevBleConnected = false;
   let successTimer: ReturnType<typeof setTimeout> | null = null;
   $effect(() => {
-    const nowConnected = view.anyConnected;
-    if (nowConnected && !prevAnyConnected) {
+    const usbC = view.usb.connected;
+    const bleC = view.ble.connected;
+    if ((usbC && !prevUsbConnected) || (bleC && !prevBleConnected)) {
       successActive = true;
       if (successTimer) clearTimeout(successTimer);
       successTimer = setTimeout(() => { successActive = false; }, 1600);
-    } else if (!nowConnected) {
+    } else if (!usbC && !bleC) {
       successActive = false;
     }
-    prevAnyConnected = nowConnected;
+    prevUsbConnected = usbC;
+    prevBleConnected = bleC;
   });
   onDestroy(() => { if (successTimer) clearTimeout(successTimer); });
+
+  // Transport-aware copy for the connecting + success states. (The `connecting`
+  // kind only fires for BLE or native — USB connects show via the recovery
+  // ladder — so this is Bluetooth/native.)
+  const connectingLabel = $derived(view.nativeMode ? 'Verbinde über App…' : 'Verbinde per Bluetooth…');
+  const successLabel = $derived(
+    view.usb.connected && view.ble.connected ? 'USB + Bluetooth verbunden'
+    : view.usb.connected ? 'USB verbunden'
+    : view.ble.connected ? 'Bluetooth verbunden'
+    : 'Calliope mini verbunden',
+  );
   // The exact banner content the user dismissed (a content signature — see
   // `bannerKey`). Cleared whenever the banner would otherwise be hidden, so a
   // genuinely new situation always re-shows.
@@ -106,8 +121,15 @@
     // silently swallowed.
     if (view.flashing) return 'flashing';
     if (view.recovering) return 'recovery';
+    // A BLE connect in flight — show progress even if USB is already connected
+    // (e.g. adding Bluetooth while USB is up). USB connects show progress via the
+    // recovery ladder instead (connectCalliope('usb') arms it), so we DON'T key
+    // on usb.connecting here — that would surface the daemon's silent USB retry
+    // grind as a flickering "Verbinde…" on every page.
+    if (view.ble.connecting || (view.nativeMode && !view.anyConnected)) {
+      return 'connecting';
+    }
     if (!view.anyConnected) {
-      if (view.nativeMode || view.usb.connecting || view.ble.connecting) return 'connecting';
       // The PROACTIVE "choose a connection" prompt only makes sense where a
       // device is the point — an editor flips on uiActive (Blocks). Elsewhere we
       // stay quiet until something actually happens (the cases above).
@@ -117,9 +139,10 @@
       }
       return 'hidden';
     }
-    // Connected. A follow-up step (e.g. Blocks detect / flash prompt) takes
-    // priority; otherwise flash a brief success so the connect doesn't just
-    // vanish.
+    // Connected. A follow-up step (Blocks detect / flash prompt) is itself the
+    // feedback, so it wins; otherwise flash a brief success so a connect — incl.
+    // adding a 2nd transport when the other was already up — is acknowledged
+    // instead of the banner just staying hidden.
     if (extra) return 'extra';
     if (successActive) return 'success';
     return 'hidden';
@@ -242,7 +265,7 @@
 
     <div class="text">
       {#if kind === 'success'}
-        <strong>Calliope mini verbunden</strong>
+        <strong>{successLabel}</strong>
       {:else if kind === 'flashing'}
         <strong>Programm wird übertragen…</strong>
         <span>{flashPhaseLabel}</span>
@@ -257,7 +280,7 @@
           <span>Lade die Seite neu, um die USB-Verbindung zurückzusetzen. Dein Calliope mini bleibt verbunden.</span>
         {/if}
       {:else if kind === 'connecting'}
-        <strong>{view.nativeMode ? 'Verbinde über App…' : 'Verbinde mit dem Calliope mini…'}</strong>
+        <strong>{connectingLabel}</strong>
       {:else if kind === 'no-connection'}
         <strong>Kein Calliope mini verbunden.</strong>
         <span>Verbinde deinen Calliope mini per USB-Kabel oder Bluetooth, um zu starten.</span>
