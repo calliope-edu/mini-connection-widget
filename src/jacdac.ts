@@ -81,15 +81,73 @@ function jacdacDeviceId(frame: Uint8Array): string {
   return dev;
 }
 
+// Jacdac command encoding (jacdac-ts src/jdom/constants.ts).
+const JD_CMD_GET_REG = 0x1000;
+const JD_CMD_SET_REG = 0x2000;
+const JD_CMD_TOP_MASK = 0xf000;
+const JD_CMD_REG_MASK = 0x0fff;
+const JD_CMD_EVENT_MASK = 0x8000;
+const JD_SERVICE_INDEX_MASK = 0x3f;
+
+function u32le(b: Uint8Array, o: number): number {
+  return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0;
+}
+
+/** Human label for a service_command: register get/set, event, or raw command. */
+function describeJacdacCommand(cmd: number): string {
+  if (cmd & JD_CMD_EVENT_MASK) return `evt 0x${(cmd & 0xff).toString(16)}`;
+  const top = cmd & JD_CMD_TOP_MASK;
+  if (top === JD_CMD_GET_REG) return `get reg 0x${(cmd & JD_CMD_REG_MASK).toString(16)}`;
+  if (top === JD_CMD_SET_REG) return `set reg 0x${(cmd & JD_CMD_REG_MASK).toString(16)}`;
+  if (cmd === 0) return 'announce';
+  return `cmd 0x${cmd.toString(16)}`;
+}
+
+/** Payload as a small LE int (register scalars) or hex for larger buffers. */
+function describeJacdacPayload(p: Uint8Array): string {
+  if (p.length === 0) return '';
+  if (p.length <= 4) {
+    let v = 0;
+    for (let i = p.length - 1; i >= 0; i--) v = v * 256 + p[i];
+    return `=${v} [${hexBytes(p, 4)}]`;
+  }
+  return `[${hexBytes(p, 32)}]`;
+}
+
 /**
- * Compact one-line label for a Jacdac frame, for the comms panel. JD frame
- * layout: [0-1]=frame CRC, [2]=size, [3]=flags, [4-11]=sender device id,
- * [12+]=packets. We surface the size, the sender device id (so distinct
- * modules are visible), and the head bytes.
+ * Decode a Jacdac frame into a readable comms-panel line. JD frame layout:
+ * [0-1]=CRC, [2]=size, [3]=flags, [4-11]=sender device id, then one or more
+ * packets — each [service_size(1), service_index(1), service_command(2 LE),
+ * payload…] padded to 4 bytes (matches jacdac-ts Packet.fromFrame). For each
+ * packet we show the service index, the decoded command (get/set reg, event,
+ * announce, or raw), and the value/payload. The control announce (service 0,
+ * cmd 0) lists the device's advertised service classes (u32s from payload
+ * offset 4 — jacdac-ts serviceClassAt), so you can tell what the module is.
  */
 function formatJacdacFrame(frame: Uint8Array): string {
-  const dev = jacdacDeviceId(frame);
-  return `JD ${frame.length}B${dev ? ` dev=${dev}` : ''} [${hexBytes(frame)}]`;
+  const dev = jacdacDeviceId(frame) || '????';
+  if (frame.length < 12) return `JD ${frame.length}B dev=${dev} [${hexBytes(frame, 64)}]`;
+  const parts: string[] = [];
+  let o = 12;
+  while (o + 4 <= frame.length) {
+    const size = frame[o];
+    const srv = frame[o + 1] & JD_SERVICE_INDEX_MASK;
+    const cmd = frame[o + 2] | (frame[o + 3] << 8);
+    const payload = frame.slice(o + 4, o + 4 + size);
+    if (srv === 0 && cmd === 0) {
+      const classes: string[] = [];
+      for (let i = 4; i + 4 <= payload.length; i += 4) {
+        classes.push('0x' + u32le(payload, i).toString(16).padStart(8, '0'));
+      }
+      parts.push(classes.length ? `announce services=[${classes.join(', ')}]` : 'announce');
+    } else {
+      const d = describeJacdacPayload(payload);
+      parts.push(`s${srv} ${describeJacdacCommand(cmd)}${d ? ` ${d}` : ''}`);
+    }
+    o += (4 + size + 3) & ~3;
+  }
+  const body = parts.length ? parts.join(' | ') : `[${hexBytes(frame.slice(12), 64)}]`;
+  return `JD ${frame.length}B dev=${dev} · ${body}`;
 }
 
 // Poll cadence: 0ms while frames are flowing (browser throttles a busy loop),
