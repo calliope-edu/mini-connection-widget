@@ -119,6 +119,7 @@ export {
   sendJacdacFrame,
   onJacdacFrame,
   isJacdacAvailable,
+  startJacdacExchange,
   stopJacdacExchange,
 } from './jacdac';
 export {

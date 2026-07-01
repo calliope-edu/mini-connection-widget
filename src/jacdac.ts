@@ -73,6 +73,14 @@ function hexBytes(data: Uint8Array, max = 16): string {
   return s;
 }
 
+/** Sender device id from a JD frame (bytes [4-11], big-endian hex). '' if short. */
+function jacdacDeviceId(frame: Uint8Array): string {
+  if (frame.length < 12) return '';
+  let dev = '';
+  for (let i = 11; i >= 4; i--) dev += frame[i].toString(16).padStart(2, '0');
+  return dev;
+}
+
 /**
  * Compact one-line label for a Jacdac frame, for the comms panel. JD frame
  * layout: [0-1]=frame CRC, [2]=size, [3]=flags, [4-11]=sender device id,
@@ -80,10 +88,7 @@ function hexBytes(data: Uint8Array, max = 16): string {
  * modules are visible), and the head bytes.
  */
 function formatJacdacFrame(frame: Uint8Array): string {
-  let dev = '';
-  if (frame.length >= 12) {
-    for (let i = 11; i >= 4; i--) dev += frame[i].toString(16).padStart(2, '0');
-  }
+  const dev = jacdacDeviceId(frame);
   return `JD ${frame.length}B${dev ? ` dev=${dev}` : ''} [${hexBytes(frame)}]`;
 }
 
@@ -136,9 +141,23 @@ export async function sendJacdacFrame(frame: Uint8Array): Promise<void> {
 }
 
 /**
+ * Proactively start the exchange loop (scan + poll) WITHOUT an outbound frame —
+ * a dev/debug "sniffer" entry point so the device's Jacdac traffic appears in
+ * the comms panel (and reaches subscribers) even when the editor isn't driving
+ * the bridge. It's ONE scan per call: if no mailbox is found the loop stops (no
+ * scan-storm) until the next call/send. Inert while the Blocks editor owns the
+ * DAP bus. The campus host calls this on connect in dev mode.
+ */
+export function startJacdacExchange(): void {
+  if (getDapOwner() === 'blocks') return;
+  if (!loopActive && Date.now() >= scanCooldownUntil) void runLoop();
+}
+
+/**
  * Subscribe to raw Jacdac frames read from the device. Returns an unsubscribe.
- * Does not itself start the exchange loop (only `sendJacdacFrame` does), so a
- * non-Jacdac MakeCode session never triggers a RAM scan.
+ * Does not itself start the exchange loop (only `sendJacdacFrame` /
+ * `startJacdacExchange` do), so a non-Jacdac MakeCode session never triggers a
+ * RAM scan.
  */
 export function onJacdacFrame(cb: (frame: Uint8Array) => void): () => void {
   subscribers.add(cb);
@@ -250,7 +269,10 @@ async function runLoop(): Promise<void> {
       let didWork = false;
       const inbound = await mailbox.readInbound();
       if (inbound) {
-        pushProxy({ direction: 'rx', transport: 'usb', kind: 'jacdac', text: formatJacdacFrame(inbound) });
+        // Live tab: one row per sender device id, updating in place — a live
+        // view of the Jacdac devices on the bus (mirrors how Blocks-DAP live
+        // reads land in the Live tab).
+        pushProxy({ direction: 'rx', transport: 'usb', kind: 'jacdac', live: true, liveKey: `JD ${jacdacDeviceId(inbound) || '????'}`, text: formatJacdacFrame(inbound) });
         emit(inbound);
         didWork = true;
       }
@@ -258,7 +280,7 @@ async function runLoop(): Promise<void> {
         const out = outbound[0];
         const sent = await mailbox.trySendOutbound(out);
         if (sent) {
-          pushProxy({ direction: 'tx', transport: 'usb', kind: 'jacdac', text: formatJacdacFrame(out) });
+          pushProxy({ direction: 'tx', transport: 'usb', kind: 'jacdac', live: true, liveKey: `JD ${jacdacDeviceId(out) || 'sim'} TX`, text: formatJacdacFrame(out) });
           outbound.shift();
           didWork = true;
         }
