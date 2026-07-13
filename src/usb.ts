@@ -430,19 +430,14 @@ export function isSeggerJLinkDevice(device: any): boolean {
   return device != null && device.vendorId === SEGGER_JLINK_VENDOR_ID;
 }
 
-async function pickAndMaybeFlashJLink(hex: string, name: string): Promise<UsbFlashOutcome | null> {
-  const device = await requestCalliopeUsbDevice();
-  if (device === null) {
-    // Picker dismissed / nothing selected — a cancel, not a recoverable failure.
-    updateState((s) => ({ ...s, usbStatus: 'disconnected' }));
-    return 'aborted';
-  }
-  if (!isSeggerJLinkDevice(device)) {
-    // DAPLink (mini 1/3) — leave it authorized; the CMSIS-DAP path takes over.
-    return null;
-  }
-  // J-Link (mini 2): one-shot MSD-image flash. There's no persistent widget
-  // connection for this transport, so we drive the flash state directly.
+/**
+ * Flash a specific SEGGER J-Link device (Calliope mini 2) via the MSD-image path,
+ * driving the widget flash state. Shared by the picker path
+ * (`pickAndMaybeFlashJLink`) and the already-connected path
+ * (`flashConnectedMini2`). The J-Link bulk interface is independent of the CDC
+ * serial port, so a Web Serial comms link can stay open across the flash.
+ */
+async function flashJLinkDevice(device: any, hex: string, name: string): Promise<UsbFlashOutcome> {
   appendLog({ direction: 'info', text: `Flashing via USB (J-Link / mini 2) "${name}"` });
   updateState((s) => ({
     ...s,
@@ -482,6 +477,50 @@ async function pickAndMaybeFlashJLink(hex: string, name: string): Promise<UsbFla
     appendLog({ direction: 'error', text: `J-Link flash failed: ${(err as Error)?.message ?? err}` });
     return 'aborted';
   }
+}
+
+/** Find an already-authorized SEGGER J-Link via getDevices() — no picker. */
+async function getAuthorizedJLinkDevice(): Promise<any | null> {
+  if (typeof navigator === 'undefined' || !('usb' in navigator)) return null;
+  const usb = (navigator as unknown as { usb: { getDevices(): Promise<any[]> } }).usb;
+  try {
+    const devices = await usb.getDevices();
+    return devices.find((d) => d.vendorId === SEGGER_JLINK_VENDOR_ID) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Flash a Calliope mini 2 that's already connected for comms (Web Serial). Its
+ * J-Link WebUSB device was authorized during connect, so reuse it via
+ * getDevices() — no re-prompt and no transport-choice modal. Falls back to the
+ * picker only if the grant somehow vanished.
+ */
+export async function flashConnectedMini2(hex: string, name: string): Promise<UsbFlashOutcome> {
+  let device = await getAuthorizedJLinkDevice();
+  if (!device) {
+    device = await requestCalliopeUsbDevice();
+    if (!isSeggerJLinkDevice(device)) {
+      updateState((s) => ({ ...s, usbStatus: 'disconnected' }));
+      return 'aborted';
+    }
+  }
+  return flashJLinkDevice(device, hex, name);
+}
+
+async function pickAndMaybeFlashJLink(hex: string, name: string): Promise<UsbFlashOutcome | null> {
+  const device = await requestCalliopeUsbDevice();
+  if (device === null) {
+    // Picker dismissed / nothing selected — a cancel, not a recoverable failure.
+    updateState((s) => ({ ...s, usbStatus: 'disconnected' }));
+    return 'aborted';
+  }
+  if (!isSeggerJLinkDevice(device)) {
+    // DAPLink (mini 1/3) — leave it authorized; the CMSIS-DAP path takes over.
+    return null;
+  }
+  return flashJLinkDevice(device, hex, name);
 }
 
 export async function flashCalliopeViaUsb(hex: string, name: string): Promise<UsbFlashOutcome> {

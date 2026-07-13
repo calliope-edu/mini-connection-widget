@@ -68,7 +68,8 @@
   // Both transports' cards are always shown (each with its own connect / cancel /
   // disconnect / retry buttons), so the user always sees the full state of both
   // — we don't collapse or nudge.
-  const usbConnected = $derived(s.usbStatus === 'connected');
+  // jlinkSerialStatus = Calliope mini 2 serial (Web Serial); presents as USB.
+  const usbConnected = $derived(s.usbStatus === 'connected' || s.jlinkSerialStatus === 'connected');
   const bleConnected = $derived(s.bleStatus === 'connected');
   const anyConnected = $derived(usbConnected || bleConnected);
 

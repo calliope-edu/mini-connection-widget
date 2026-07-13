@@ -11,7 +11,7 @@ import {
   getBleConn,
   reconnectBleIfPermitted,
 } from './ble';
-import { flashCalliopeViaUsb, getUsbConn, primeBlocksRuntimeProbe, type UsbFlashOutcome } from './usb';
+import { flashCalliopeViaUsb, flashConnectedMini2, getUsbConn, primeBlocksRuntimeProbe, type UsbFlashOutcome } from './usb';
 import {
   BluetoothPartialFlashDalMismatchError,
   BluetoothPartialFlashInvalidHexError,
@@ -214,6 +214,16 @@ async function flashDispatch(
     } else {
       clearPendingFlash();
     }
+    return;
+  }
+
+  // Calliope mini 2 connected for comms over Web Serial (jlinkSerialStatus).
+  // Its J-Link WebUSB device is already authorized from connect, so flash it via
+  // the SEGGER MSD path directly — no transport-choice modal, no re-pick. (The
+  // bulk flash interface is independent of the CDC serial port, so comms stays
+  // open across the flash.)
+  if (s.jlinkSerialStatus === 'connected') {
+    await flashConnectedMini2(hex, name);
     return;
   }
 
