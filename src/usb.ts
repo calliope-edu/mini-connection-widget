@@ -353,17 +353,34 @@ async function waitForUsbConnected(c: MicrobitUSBConnection, timeoutMs = 2_000):
   }
 }
 
-export async function flashCalliopeViaUsb(hex: string, name: string): Promise<void> {
+/**
+ * Outcome of a USB flash attempt. Lets the dispatcher distinguish a completed
+ * flash from one that was merely *deferred* to the recovery ladder, so it can
+ * decide whether to keep the user's flash intent pending (see
+ * `pendingFlash`/the auto-resume hook in `flash.ts`).
+ *
+ *  - `flashed`    — the transfer completed.
+ *  - `deferred`   — connect (or the transfer) failed with a recoverable error;
+ *                   the USB recovery ladder (replug → reconnect → reload) is now
+ *                   armed. The caller should keep the flash pending so it
+ *                   auto-resumes the moment USB comes back.
+ *  - `aborted`    — the user dismissed the picker / no device, or a
+ *                   non-recoverable error with no recovery path. Drop the intent.
+ *  - `unsupported`— no WebUSB in this browser.
+ */
+export type UsbFlashOutcome = 'flashed' | 'deferred' | 'aborted' | 'unsupported';
+
+export async function flashCalliopeViaUsb(hex: string, name: string): Promise<UsbFlashOutcome> {
   if (!SUPPORT.usb) {
     updateState((s) => ({ ...s, usbStatus: 'error', usbErrorMessage: 'WebUSB not supported — flashing requires USB' }));
-    return;
+    return 'unsupported';
   }
   let c: MicrobitUSBConnection;
   try {
     c = await getUsbConnection();
   } catch (err) {
     updateState((s) => ({ ...s, usbStatus: 'error', usbErrorMessage: (err as Error).message }));
-    return;
+    return 'aborted';
   }
   if (c.status !== ConnectionStatus.Connected) {
     try {
@@ -371,14 +388,21 @@ export async function flashCalliopeViaUsb(hex: string, name: string): Promise<vo
     } catch (err) {
       const classified = classifyUsbError(err);
       if (classified.kind === 'no-device') {
+        // User dismissed the picker / selected nothing — a cancel, not a
+        // recoverable failure. No recovery ladder, so drop the flash intent.
         updateState((s) => ({ ...s, usbStatus: 'disconnected' }));
-        return;
+        return 'aborted';
       }
       updateState((s) => ({ ...s, usbStatus: 'error', usbErrorMessage: classified.userMessage }));
       if (classified.kind === 'device-in-use' || classified.kind === 'device-disconnected') {
+        // A cable/lock hiccup (common right after plugging in, before the OS
+        // releases the DAPLink endpoint). The recovery ladder is now armed —
+        // report 'deferred' so the caller keeps the flash intent pending and the
+        // transport-connected hook re-fires it once USB is back.
         escalateUsbRecovery(classified.kind);
+        return 'deferred';
       }
-      return;
+      return 'aborted';
     }
   }
   // `c.connect()` resolves before the lib's internal status flips to
@@ -416,6 +440,7 @@ export async function flashCalliopeViaUsb(hex: string, name: string): Promise<vo
   appendLog({ direction: 'info', text: 'Pausing serial polling for flash' });
   await pauseSerialDataPolling();
 
+  let outcome: UsbFlashOutcome = 'flashed';
   try {
     await runFlashWithTransferRetry(c, dataSource, progress);
     updateState((s) => ({
@@ -442,9 +467,14 @@ export async function flashCalliopeViaUsb(hex: string, name: string): Promise<vo
     appendLog({ direction: 'error', text: `Flash failed: ${(err as Error).message}` });
     // Mirror the connect-path routing: drive the banner's recovery ladder. The
     // "Verbinden" rung is a real user gesture, so it can run `requestDevice` if
-    // the session was wiped.
+    // the session was wiped. When the ladder is armed the flash is only
+    // deferred, not abandoned — report that so the caller keeps the intent
+    // pending and the transport-connected hook re-fires it after reconnect.
     if (classified.kind === 'device-in-use' || classified.kind === 'device-disconnected') {
       escalateUsbRecovery(classified.kind);
+      outcome = 'deferred';
+    } else {
+      outcome = 'aborted';
     }
   } finally {
     // Re-attach every subscriber. Upstream's eventActivated fires on the
@@ -460,6 +490,7 @@ export async function flashCalliopeViaUsb(hex: string, name: string): Promise<vo
     reinitBlocksDapAfterFlash();
     appendLog({ direction: 'info', text: 'Serial polling resumed' });
   }
+  return outcome;
 }
 
 /**

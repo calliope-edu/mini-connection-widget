@@ -11,7 +11,7 @@ import {
   getBleConn,
   reconnectBleIfPermitted,
 } from './ble';
-import { flashCalliopeViaUsb, getUsbConn, primeBlocksRuntimeProbe } from './usb';
+import { flashCalliopeViaUsb, getUsbConn, primeBlocksRuntimeProbe, type UsbFlashOutcome } from './usb';
 import {
   BluetoothPartialFlashDalMismatchError,
   BluetoothPartialFlashInvalidHexError,
@@ -191,16 +191,29 @@ async function flashDispatch(
   // ---- USB-first default --------------------------------------------------
 
   if (s.usbStatus === 'connected') {
-    await flashCalliopeViaUsb(hex, name);
-    // Mark the expected reboot AFTER the transfer completes, not before: the
-    // device reboots once flashing finishes, and a large universal hex over a
-    // slow DAPLink can take >20 s. Setting a fixed window at flash *start*
-    // could expire mid-transfer, so the post-flash reboot disconnect would be
-    // classified+surfaced as a spurious USB error toast. Anchoring the window
-    // here covers the reboot regardless of how long the transfer took.
-    markExpectedReboot(30_000);
-    await primeBlocksRuntimeProbe();
-    if (wasBleConnected) await scheduleBleReconnect();
+    // Record the intent first: if the device drops mid-flash and hands off to
+    // the recovery ladder, the transport-connected hook re-fires this flash the
+    // moment USB is back — the user never has to click Download again.
+    setPendingFlash(hex, name, 'usb', opts);
+    const outcome = await flashCalliopeViaUsb(hex, name);
+    if (outcome === 'flashed') {
+      clearPendingFlash();
+      // Mark the expected reboot AFTER the transfer completes, not before: the
+      // device reboots once flashing finishes, and a large universal hex over a
+      // slow DAPLink can take >20 s. Setting a fixed window at flash *start*
+      // could expire mid-transfer, so the post-flash reboot disconnect would be
+      // classified+surfaced as a spurious USB error toast. Anchoring the window
+      // here covers the reboot regardless of how long the transfer took.
+      markExpectedReboot(30_000);
+      await primeBlocksRuntimeProbe();
+      if (wasBleConnected) await scheduleBleReconnect();
+    } else if (outcome === 'deferred') {
+      // Recovery ladder armed — keep the intent alive (fresh TTL) so it
+      // auto-resumes once USB reconnects.
+      refreshPendingFlash();
+    } else {
+      clearPendingFlash();
+    }
     return;
   }
 
@@ -216,7 +229,7 @@ async function flashDispatch(
         direction: 'info',
         text: 'BLE flashing disabled — routing flash to USB (BLE stays available for comms).',
       });
-      await flashCalliopeHybrid(hex, name);
+      await flashCalliopeHybrid(hex, name, opts);
       if (wasBleConnected) await scheduleBleReconnect();
       return;
     }
@@ -236,7 +249,7 @@ async function flashDispatch(
         text: `BLE flash path exhausted (${(err as Error)?.message ?? err}) — trying USB hybrid.`,
       });
       if (SUPPORT.usb) {
-        await flashCalliopeHybrid(hex, name);
+        await flashCalliopeHybrid(hex, name, opts);
         if (wasBleConnected) await scheduleBleReconnect();
         return;
       }
@@ -274,10 +287,11 @@ async function flashDispatch(
       return;
     }
     case 'usb': {
-      setPendingFlash(hex, name, 'usb', opts);
+      // flashCalliopeHybrid records the flash intent and keeps it pending if the
+      // USB connect hands off to the recovery ladder, so the flash auto-resumes
+      // once USB is back instead of the user having to click Download again.
       appendLog({ direction: 'info', text: `User chose USB — opening picker, flash will resume after connect` });
-      await flashCalliopeHybrid(hex, name);
-      clearPendingFlash();
+      await flashCalliopeHybrid(hex, name, opts);
       if (wasBleConnected) await scheduleBleReconnect();
       return;
     }
@@ -485,6 +499,21 @@ function clearPendingFlash(): void {
 }
 
 /**
+ * Reset a pending flash's TTL clock to now. Called when a flash is deferred to
+ * the USB recovery ladder: the original `createdAt` was stamped when the user
+ * clicked Download, but the countdown that matters starts at the failure — the
+ * user may spend a while physically re-plugging the cable before the transport-
+ * connected auto-resume hook fires.
+ */
+function refreshPendingFlash(): void {
+  updateState((st) =>
+    st.pendingFlash
+      ? { ...st, pendingFlash: { ...st.pendingFlash, createdAt: Date.now() } }
+      : st,
+  );
+}
+
+/**
  * Subscribe once at module load to transport-status changes. When a transport
  * flips into `connected` AND we have a fresh `pendingFlash`, re-fire the
  * flash. Prevents the user from having to click Download a second time
@@ -610,17 +639,29 @@ async function scheduleBleReconnect(): Promise<void> {
  * Hybrid path: nothing is connected (or only BLE without flash capability),
  * but USB is supported. Ask the user to plug in a cable, then flash via USB.
  */
-async function flashCalliopeHybrid(hex: string, name: string): Promise<void> {
+async function flashCalliopeHybrid(
+  hex: string,
+  name: string,
+  opts: FlashOptions = {},
+): Promise<UsbFlashOutcome> {
   if (!SUPPORT.usb) {
     updateState((s) => ({ ...s, usbStatus: 'error', usbErrorMessage: 'Hybrid mode needs WebUSB' }));
-    return;
+    return 'unsupported';
   }
+  // Record the user's flash intent up front. If the USB connect then fails and
+  // hands off to the recovery ladder (replug → reconnect → reload), the
+  // transport-connected auto-resume hook re-fires this flash the moment USB is
+  // back — so the user doesn't have to click Download a second time. This is the
+  // whole point of the hybrid path: the connect is the *reason* we're here, so
+  // the flash that triggered it must survive the connect.
+  setPendingFlash(hex, name, 'usb', opts);
   appendLog({ direction: 'info', text: `Hybrid flash: prompting for USB cable` });
   try {
     await awaitUsbPlugConfirm(name);
   } catch {
     appendLog({ direction: 'info', text: 'Hybrid flash cancelled by user' });
-    return;
+    clearPendingFlash();
+    return 'aborted';
   }
   // If BLE is currently connected, the lib needs DAPLink to take over without
   // contention — drop BLE first so it doesn't fight for the device.
@@ -629,9 +670,20 @@ async function flashCalliopeHybrid(hex: string, name: string): Promise<void> {
     try { await ble.disconnect(); } catch { /* ignore */ }
   }
   void getUsbConn;
-  await flashCalliopeViaUsb(hex, name);
-  // Anchor the reboot window after the transfer (see the USB-first branch):
-  // a long flash must not let the window expire before the device reboots.
-  markExpectedReboot(30_000);
-  await primeBlocksRuntimeProbe();
+  const outcome = await flashCalliopeViaUsb(hex, name);
+  if (outcome === 'flashed') {
+    clearPendingFlash();
+    // Anchor the reboot window after the transfer (see the USB-first branch):
+    // a long flash must not let the window expire before the device reboots.
+    markExpectedReboot(30_000);
+    await primeBlocksRuntimeProbe();
+  } else if (outcome === 'deferred') {
+    // Connect (or transfer) failed but the recovery ladder is armed. Keep the
+    // intent pending with a fresh TTL so the reconnect auto-resumes it.
+    refreshPendingFlash();
+  } else {
+    // aborted / unsupported: nothing will reconnect on its own — drop the intent.
+    clearPendingFlash();
+  }
+  return outcome;
 }
