@@ -375,6 +375,16 @@ export type UsbFlashOutcome = 'flashed' | 'deferred' | 'aborted' | 'unsupported'
 const DAPLINK_VENDOR_ID = 0x0d28;
 
 /**
+ * Dev-mode escape hatch: when on, the USB flash picker drops ALL filters
+ * (`filters: []` → every USB device shows, even a keyboard), for debugging
+ * device enumeration. Off by default; the host wires it to its debug toggle.
+ */
+let usbPickerAllDevices = false;
+export function setUsbPickerAllDevices(enabled: boolean): void {
+  usbPickerAllDevices = enabled;
+}
+
+/**
  * Auto-route the USB interface chip before the CMSIS-DAP connect.
  *
  * A Calliope mini 2 exposes a SEGGER J-Link OB (VID 0x1366) that the CMSIS-DAP
@@ -398,11 +408,14 @@ async function pickAndMaybeFlashJLink(hex: string, name: string): Promise<UsbFla
   // to keep it clean under both.
   if (typeof navigator === 'undefined' || !('usb' in navigator)) return null;
   const usb = (navigator as unknown as { usb: { requestDevice(opts: unknown): Promise<any> } }).usb;
+  // Dev mode → no filters at all (every USB device). Normal → all Calliope
+  // interfaces: DAPLink (mini 1/3) + every J-Link OB layout (mini 2).
+  const requestOptions = usbPickerAllDevices
+    ? { filters: [] }
+    : { filters: [{ vendorId: DAPLINK_VENDOR_ID }, ...SEGGER_USB_FILTERS] };
   let device: any;
   try {
-    device = await usb.requestDevice({
-      filters: [{ vendorId: DAPLINK_VENDOR_ID }, ...SEGGER_USB_FILTERS],
-    });
+    device = await usb.requestDevice(requestOptions);
   } catch {
     // Picker dismissed / nothing selected — a cancel, not a recoverable failure.
     updateState((s) => ({ ...s, usbStatus: 'disconnected' }));

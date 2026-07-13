@@ -76,6 +76,8 @@ export { flashCalliope } from './flash';
 // BLE-as-flash-transport policy. BLE *comms* is always available; this only
 // gates the flash path + the connection-choice modal's Bluetooth option.
 export { setBleFlashEnabled, isBleFlashEnabled } from './ble-flash-policy';
+// Dev-mode escape hatch: drop all USB flash-picker filters (every device shows).
+export { setUsbPickerAllDevices } from './usb';
 export {
   sendSerialLine,
   onSerialLine,

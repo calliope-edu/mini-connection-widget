@@ -15,11 +15,6 @@
         </svg>
       </div>
       <h2 id="usb-plug-title">Calliope per USB anschließen</h2>
-      <p>
-        <strong>{req.fileName}</strong> lässt sich gerade nicht über
-        Bluetooth übertragen. Mit dem USB-Kabel klappt es trotzdem in
-        wenigen Sekunden.
-      </p>
       <ol class="steps">
         <li>USB-Kabel mit dem Calliope verbinden.</li>
         <li>Auf <em>"Übertragen"</em> klicken — beim allerersten Mal Browser-Dialog mit dem Calliope auswählen.</li>
