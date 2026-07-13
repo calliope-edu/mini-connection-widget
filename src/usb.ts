@@ -391,10 +391,16 @@ const DAPLINK_VENDOR_ID = 0x0d28;
  *  - picker dismissed → `'aborted'`.
  */
 async function pickAndMaybeFlashJLink(hex: string, name: string): Promise<UsbFlashOutcome | null> {
-  if (typeof navigator === 'undefined' || !navigator.usb) return null;
-  let device: USBDevice;
+  // WebUSB globals (`navigator.usb`, `USBDevice`) are only typed under this
+  // package's own tsconfig (@types/w3c-web-usb). A consumer that type-checks
+  // these sources — e.g. campus svelte-check — has no such lib, so we go through
+  // `any` here (and use the `'usb' in navigator` guard the rest of this file uses)
+  // to keep it clean under both.
+  if (typeof navigator === 'undefined' || !('usb' in navigator)) return null;
+  const usb = (navigator as unknown as { usb: { requestDevice(opts: unknown): Promise<any> } }).usb;
+  let device: any;
   try {
-    device = await navigator.usb.requestDevice({
+    device = await usb.requestDevice({
       filters: [{ vendorId: DAPLINK_VENDOR_ID }, ...SEGGER_USB_FILTERS],
     });
   } catch {
