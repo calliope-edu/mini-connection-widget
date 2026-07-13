@@ -29,6 +29,16 @@ export interface CalliopeState {
   usbDeviceName?: string;
   usbErrorMessage?: string;
 
+  /**
+   * Calliope mini 2 comms over Web Serial (the J-Link OB's CDC port). Tracked
+   * SEPARATELY from `usbStatus` on purpose: `usbStatus` means a CMSIS-DAP/DAPLink
+   * connection (mini 1/3), which the flash path keys on. A mini 2 serial link is
+   * comms-only (flashing still goes through the SEGGER MSD path), so it must not
+   * masquerade as a DAPLink USB connection. It DOES roll up into the overall
+   * `status` so the UI shows "connected". See web-serial.ts.
+   */
+  jlinkSerialStatus: CalliopeStatus;
+
   bleStatus: CalliopeStatus;
   bleDeviceName?: string;
   bleErrorMessage?: string;
@@ -184,9 +194,9 @@ export const SUPPORT = { usb: usbSupported, ble: bleSupported };
 function recomputeOverall(s: CalliopeState): CalliopeState {
   let status: CalliopeStatus;
   if (s.flashTransport) status = 'flashing';
-  else if (s.usbStatus === 'connected' || s.bleStatus === 'connected') status = 'connected';
-  else if (s.usbStatus === 'connecting' || s.bleStatus === 'connecting') status = 'connecting';
-  else if (s.usbStatus === 'error' || s.bleStatus === 'error') status = 'error';
+  else if (s.usbStatus === 'connected' || s.bleStatus === 'connected' || s.jlinkSerialStatus === 'connected') status = 'connected';
+  else if (s.usbStatus === 'connecting' || s.bleStatus === 'connecting' || s.jlinkSerialStatus === 'connecting') status = 'connecting';
+  else if (s.usbStatus === 'error' || s.bleStatus === 'error' || s.jlinkSerialStatus === 'error') status = 'error';
   else if (!s.usbSupported && !s.bleSupported) status = 'unsupported';
   else status = 'disconnected';
 
@@ -211,6 +221,7 @@ function recomputeOverall(s: CalliopeState): CalliopeState {
 
 const initial: CalliopeState = recomputeOverall({
   usbStatus: usbSupported ? 'disconnected' : 'unsupported',
+  jlinkSerialStatus: 'disconnected',
   bleStatus: bleSupported ? 'disconnected' : 'unsupported',
   bleHasPermission: false,
   bleCanFlash: false,

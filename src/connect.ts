@@ -11,7 +11,10 @@ import {
   disconnectUsb,
   forgetAllUsbDevices,
   getUsbConnection,
+  requestCalliopeUsbDevice,
+  isSeggerJLinkDevice,
 } from './usb';
+import { connectJLinkSerial, disconnectJLinkSerial } from './web-serial';
 import { armUsbRecovery, escalateUsbRecovery } from './usb-recovery';
 import { showBleOfflineInfo } from './ble-offline-info';
 import { classifyBleError, classifyUsbError } from './connection-errors';
@@ -118,6 +121,23 @@ export async function connectCalliope(
       return;
     } else {
       if (!SUPPORT.usb) return;
+
+      // User-initiated connect only (silent auto-reconnect uses
+      // tryAutoReconnectUsb, not this). Show the combined Calliope USB picker and
+      // route by the picked device: a J-Link (Calliope mini 2) connects its CDC
+      // serial over Web Serial; a DAPLink (mini 1/3) is left browser-authorized
+      // so the CMSIS-DAP connect below reuses it with NO second picker.
+      const picked = await requestCalliopeUsbDevice();
+      if (picked === null) {
+        // Picker dismissed — stay idle; don't fall through to the lib's own picker.
+        updateState((s) => ({ ...s, usbStatus: 'disconnected', userDisconnectedUsb: false }));
+        return;
+      }
+      if (isSeggerJLinkDevice(picked)) {
+        await connectJLinkSerial();
+        return;
+      }
+
       updateState((s) => ({
         ...s,
         usbStatus: 'connecting',
@@ -192,6 +212,7 @@ export async function disconnectAndForget(transport: CalliopeTransport): Promise
   }
   if (transport === 'usb') {
     await disconnectUsb();
+    await disconnectJLinkSerial();
     await forgetAllUsbDevices();
     clearUsbConn();
     updateState((s) => ({

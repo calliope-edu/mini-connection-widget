@@ -400,28 +400,44 @@ export function setUsbPickerAllDevices(enabled: boolean): void {
  *              NO second picker, and flashing continues down the CMSIS-DAP path.
  *  - picker dismissed → `'aborted'`.
  */
-async function pickAndMaybeFlashJLink(hex: string, name: string): Promise<UsbFlashOutcome | null> {
-  // WebUSB globals (`navigator.usb`, `USBDevice`) are only typed under this
-  // package's own tsconfig (@types/w3c-web-usb). A consumer that type-checks
-  // these sources — e.g. campus svelte-check — has no such lib, so we go through
-  // `any` here (and use the `'usb' in navigator` guard the rest of this file uses)
-  // to keep it clean under both.
+/**
+ * Show the combined Calliope USB picker — DAPLink (mini 1/3) + every J-Link OB
+ * layout (mini 2) — or EVERY USB device when dev-mode `setUsbPickerAllDevices`
+ * is on. Returns the picked device, or null if the picker was dismissed / WebUSB
+ * is unavailable. Shared by the flash path (below) and the connect path
+ * (connect.ts), so both offer the same device list.
+ *
+ * WebUSB globals (`navigator.usb`, `USBDevice`) are only typed under this
+ * package's own tsconfig (@types/w3c-web-usb); a consumer that type-checks these
+ * sources (e.g. campus svelte-check) has no such lib, so we go through `any` and
+ * the `'usb' in navigator` guard used elsewhere in this file.
+ */
+export async function requestCalliopeUsbDevice(): Promise<any | null> {
   if (typeof navigator === 'undefined' || !('usb' in navigator)) return null;
   const usb = (navigator as unknown as { usb: { requestDevice(opts: unknown): Promise<any> } }).usb;
-  // Dev mode → no filters at all (every USB device). Normal → all Calliope
-  // interfaces: DAPLink (mini 1/3) + every J-Link OB layout (mini 2).
   const requestOptions = usbPickerAllDevices
     ? { filters: [] }
     : { filters: [{ vendorId: DAPLINK_VENDOR_ID }, ...SEGGER_USB_FILTERS] };
-  let device: any;
   try {
-    device = await usb.requestDevice(requestOptions);
+    return await usb.requestDevice(requestOptions);
   } catch {
+    return null;
+  }
+}
+
+/** True when a picked WebUSB device is a SEGGER J-Link OB (Calliope mini 2). */
+export function isSeggerJLinkDevice(device: any): boolean {
+  return device != null && device.vendorId === SEGGER_JLINK_VENDOR_ID;
+}
+
+async function pickAndMaybeFlashJLink(hex: string, name: string): Promise<UsbFlashOutcome | null> {
+  const device = await requestCalliopeUsbDevice();
+  if (device === null) {
     // Picker dismissed / nothing selected — a cancel, not a recoverable failure.
     updateState((s) => ({ ...s, usbStatus: 'disconnected' }));
     return 'aborted';
   }
-  if (device.vendorId !== SEGGER_JLINK_VENDOR_ID) {
+  if (!isSeggerJLinkDevice(device)) {
     // DAPLink (mini 1/3) — leave it authorized; the CMSIS-DAP path takes over.
     return null;
   }

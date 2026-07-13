@@ -8,6 +8,7 @@ import {
   getBleConn,
 } from './ble';
 import { calliopeState, getState } from './state';
+import { isJlinkSerialConnected, jlinkSerialWrite, addJlinkRawSubscriber } from './web-serial';
 import { pushTx } from './comms';
 import { isNativeMode, addNativeSerialListener } from './native-bridge';
 import { nativeSerialWrite } from './native-mode';
@@ -102,6 +103,11 @@ export async function sendSerialLine(line: string): Promise<void> {
     if (usb?.status === ConnectionStatus.Connected) {
       await usb.serialWrite(latin1Bytes(out));
       transport = 'usb';
+    } else if (isJlinkSerialConnected()) {
+      // Calliope mini 2 over Web Serial — same transport tag as USB for the
+      // comms panel (it's a USB device).
+      await jlinkSerialWrite(latin1Bytes(out));
+      transport = 'usb';
     } else {
       const ble = getBleConn();
       if (ble?.status !== ConnectionStatus.Connected) return;
@@ -136,6 +142,11 @@ export async function sendSerialData(data: string): Promise<void> {
       pushTx('usb', data);
       return;
     }
+    if (isJlinkSerialConnected()) {
+      await jlinkSerialWrite(latin1Bytes(data));
+      pushTx('usb', data);
+      return;
+    }
     const ble = getBleConn();
     if (ble?.status !== ConnectionStatus.Connected) return;
     await bleSerialWrite(data);
@@ -159,9 +170,11 @@ export function onSerialData(cb: (chunk: string) => void): () => void {
   const unsubUsb = registerSerialDataListener((ev) => {
     if (ev.data) cb(ev.data);
   });
+  const unsubJlink = addJlinkRawSubscriber(cb);
   return () => {
     unsubBle();
     unsubUsb();
+    unsubJlink();
   };
 }
 
@@ -195,8 +208,21 @@ export function onSerialLine(cb: (line: string) => void): () => void {
       if (line) cb(line);
     }
   });
+  // Calliope mini 2 (Web Serial) delivers raw chunks; buffer into lines here,
+  // mirroring the USB path above.
+  let jlinkBuf = '';
+  const unsubJlink = addJlinkRawSubscriber((chunk) => {
+    jlinkBuf += chunk;
+    let idx: number;
+    while ((idx = jlinkBuf.indexOf('\n')) >= 0) {
+      const line = jlinkBuf.slice(0, idx).replace(/\r$/, '');
+      jlinkBuf = jlinkBuf.slice(idx + 1);
+      if (line) cb(line);
+    }
+  });
   return () => {
     unsubBle();
     unsubUsb();
+    unsubJlink();
   };
 }
