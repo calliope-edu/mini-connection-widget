@@ -211,7 +211,22 @@ export async function getUsbConnection(): Promise<MicrobitUSBConnection> {
       const mapped = mapStatus(ev.status);
       const dev = c.getDevice();
       const pn = dev?.productName ?? undefined;
-      const cv = detectCalliopeVersion(pn, undefined);
+      // Hardware version over USB. Unlike BLE — which fingerprints the GATT
+      // service set authoritatively (boardVersionFromServices) — the only
+      // Calliope-specific signal DAPLink exposes here is the productName; a
+      // mini 3 reports "Arm Calliope mini V3 CMSIS-DAP". When the name carries
+      // a version digit we trust it (V3 ⇒ mini 3). Otherwise any device that
+      // still connects over this CMSIS-DAP path is a legacy Calliope, so once
+      // connected we default to V1 — the safe bet: it picks the DAL Blocks
+      // runtime and trips the editor's "mini 3 only" gate rather than leaving
+      // the version unknown (which BLE never does). A mini 2's SEGGER J-Link
+      // interface (VID 0x1366) is excluded from this transport and flashes via
+      // segger-jlink.ts, so it can't reach this handler — the vendorId branch
+      // only matters if that exclusion is ever lifted.
+      let cv = detectCalliopeVersion(pn, undefined);
+      if (!cv && mapped === 'connected') {
+        cv = dev?.vendorId === SEGGER_JLINK_VENDOR_ID ? 'V2' : 'V1';
+      }
       // FICR.DEVICEID[1] from DAPLink — same number the firmware feeds
       // into `microbit_friendly_name`. Throws when not yet connected, so
       // we only attempt it on the connected transition.
