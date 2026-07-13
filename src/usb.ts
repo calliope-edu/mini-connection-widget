@@ -20,7 +20,8 @@ import { appendLog } from './log';
 import { detectCalliopeVersion, stripMakeCodeMetadata } from './helpers';
 import { friendlyNameFromDeviceId } from './friendly-name';
 import { startHeartbeat, stopHeartbeat } from './serial';
-import { classifyUsbError, isExpectedRebootWindow, SEGGER_JLINK_VENDOR_ID } from './connection-errors';
+import { classifyUsbError, isExpectedRebootWindow, SEGGER_JLINK_VENDOR_ID, MINI2_JLINK_USB_HINT } from './connection-errors';
+import { flashViaJLinkMsdImage, SEGGER_USB_FILTERS } from './segger-jlink';
 import { escalateUsbRecovery } from './usb-recovery';
 import { pauseJacdacExchange, resumeJacdacExchange, stopJacdacExchange } from './jacdac';
 import { pauseBlocksDapExchange, resumeBlocksDapExchange, stopBlocksDapExchange, reinitBlocksDapAfterFlash } from './blocks-dap';
@@ -370,6 +371,84 @@ async function waitForUsbConnected(c: MicrobitUSBConnection, timeoutMs = 2_000):
  */
 export type UsbFlashOutcome = 'flashed' | 'deferred' | 'aborted' | 'unsupported';
 
+/** DAPLink / CMSIS-DAP interface (Calliope mini 1 & 3). */
+const DAPLINK_VENDOR_ID = 0x0d28;
+
+/**
+ * Auto-route the USB interface chip before the CMSIS-DAP connect.
+ *
+ * A Calliope mini 2 exposes a SEGGER J-Link OB (VID 0x1366) that the CMSIS-DAP
+ * flash path can't drive; mini 1 & 3 expose DAPLink (VID 0x0d28). Rather than
+ * make the user choose a transport, we show ONE combined WebUSB picker (DAPLink
+ * + every J-Link OB layout) and decide from the *picked device*:
+ *
+ *  - J-Link  → flash it right here over the SEGGER MSD transport; return the
+ *              outcome. On failure (e.g. old J-Link OB firmware) surface the
+ *              download+drag hint.
+ *  - DAPLink → return `null`. The device is now browser-authorized, so the
+ *              caller's normal `connectWithRetry` (UseAnyAllowed) reuses it with
+ *              NO second picker, and flashing continues down the CMSIS-DAP path.
+ *  - picker dismissed → `'aborted'`.
+ */
+async function pickAndMaybeFlashJLink(hex: string, name: string): Promise<UsbFlashOutcome | null> {
+  if (typeof navigator === 'undefined' || !navigator.usb) return null;
+  let device: USBDevice;
+  try {
+    device = await navigator.usb.requestDevice({
+      filters: [{ vendorId: DAPLINK_VENDOR_ID }, ...SEGGER_USB_FILTERS],
+    });
+  } catch {
+    // Picker dismissed / nothing selected — a cancel, not a recoverable failure.
+    updateState((s) => ({ ...s, usbStatus: 'disconnected' }));
+    return 'aborted';
+  }
+  if (device.vendorId !== SEGGER_JLINK_VENDOR_ID) {
+    // DAPLink (mini 1/3) — leave it authorized; the CMSIS-DAP path takes over.
+    return null;
+  }
+  // J-Link (mini 2): one-shot MSD-image flash. There's no persistent widget
+  // connection for this transport, so we drive the flash state directly.
+  appendLog({ direction: 'info', text: `Flashing via USB (J-Link / mini 2) "${name}"` });
+  updateState((s) => ({
+    ...s,
+    flashTransport: 'usb',
+    flashPhase: 'flashing',
+    flashProgress: 0,
+    flashPartial: false,
+    usbErrorMessage: undefined,
+    lastFlashName: name,
+  }));
+  try {
+    await flashViaJLinkMsdImage(device, hex, {
+      onProgress: (f) => updateState((s) => ({ ...s, flashProgress: Math.round(f * 100) })),
+      onLog: (line) => appendLog({ direction: 'info', text: `jlink: ${line}` }),
+    });
+    updateState((s) => ({
+      ...s,
+      flashTransport: undefined,
+      flashPhase: undefined,
+      flashProgress: undefined,
+      flashPartial: undefined,
+      lastFlashAt: Date.now(),
+    }));
+    appendLog({ direction: 'info', text: `Flash finished (J-Link): ${name}` });
+    return 'flashed';
+  } catch (err) {
+    // Typically old J-Link OB firmware that can't accept a WebUSB MSD image →
+    // point the user at the reliable download+drag route.
+    updateState((s) => ({
+      ...s,
+      flashTransport: undefined,
+      flashPhase: undefined,
+      flashProgress: undefined,
+      usbStatus: 'error',
+      usbErrorMessage: MINI2_JLINK_USB_HINT,
+    }));
+    appendLog({ direction: 'error', text: `J-Link flash failed: ${(err as Error)?.message ?? err}` });
+    return 'aborted';
+  }
+}
+
 export async function flashCalliopeViaUsb(hex: string, name: string): Promise<UsbFlashOutcome> {
   if (!SUPPORT.usb) {
     updateState((s) => ({ ...s, usbStatus: 'error', usbErrorMessage: 'WebUSB not supported — flashing requires USB' }));
@@ -383,6 +462,11 @@ export async function flashCalliopeViaUsb(hex: string, name: string): Promise<Us
     return 'aborted';
   }
   if (c.status !== ConnectionStatus.Connected) {
+    // Nothing connected yet → one combined picker that also lists mini 2 J-Link
+    // devices. A J-Link pick is flashed via SEGGER inside here; a DAPLink pick
+    // falls through (now authorized) to the CMSIS-DAP connect below.
+    const routed = await pickAndMaybeFlashJLink(hex, name);
+    if (routed) return routed;
     try {
       await connectWithRetry(c);
     } catch (err) {
