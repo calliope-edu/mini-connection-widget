@@ -86,11 +86,11 @@ export const DEFAULT_LABELS: ConnectLabels = {
   usbConnected: 'Flashen & Kommunikation',
   bleConnectedFull: 'Flashen & Kommunikation',
   bleConnectedCommOnly: 'Nur Kommunikation',
-  notSupportedUsb: 'WebUSB nicht verfuegbar',
-  notSupportedBle: 'Web Bluetooth nicht verfuegbar',
+  notSupportedUsb: 'USB nicht verfügbar',
+  notSupportedBle: 'Bluetooth nicht verfügbar',
   unsupportedHint:
-    'In diesem Browser ist weder WebUSB noch Web Bluetooth verfuegbar. ' +
-    'Bitte einen Chromium basierten Browser wie Chrome, Edge, Opera, Vivaldi oder Brave benutzen.',
+    'In diesem Browser ist weder USB noch Bluetooth verfügbar. ' +
+    'Bitte einen Chromium-Browser (Chrome, Edge, Opera, Brave) verwenden.',
 
   connect: 'Verbinden',
   disconnect: 'Trennen',
