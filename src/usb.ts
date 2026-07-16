@@ -20,7 +20,7 @@ import { appendLog } from './log';
 import { detectCalliopeVersion, stripMakeCodeMetadata } from './helpers';
 import { friendlyNameFromDeviceId } from './friendly-name';
 import { startHeartbeat, stopHeartbeat } from './serial';
-import { classifyUsbError, isExpectedRebootWindow, SEGGER_JLINK_VENDOR_ID, MINI2_JLINK_USB_HINT } from './connection-errors';
+import { classifyUsbError, isExpectedRebootWindow, markExpectedReboot, SEGGER_JLINK_VENDOR_ID, MINI2_JLINK_USB_HINT } from './connection-errors';
 import { flashViaJLinkMsdImage, SEGGER_USB_FILTERS } from './segger-jlink';
 import { escalateUsbRecovery } from './usb-recovery';
 import { pauseJacdacExchange, resumeJacdacExchange, stopJacdacExchange } from './jacdac';
@@ -29,6 +29,13 @@ import { pauseBlocksDapExchange, resumeBlocksDapExchange, stopBlocksDapExchange,
 let usbConn: MicrobitUSBConnection | null = null;
 let usbInitPromise: Promise<MicrobitUSBConnection> | null = null;
 let rxBuffer = '';
+
+// Set by applyFlashProgress when a full byte-transfer pass reaches completion,
+// reset at the start of each USB flash. Gates the post-flash reinit-race
+// recovery (see flashCalliopeViaUsb's catch): we only treat a TRANSFER_WAIT
+// throw as "flash succeeded, connection just needs a bounce" if the bytes
+// actually made it to the board.
+let flashByteTransferComplete = false;
 
 /** Internal accessor — used by serial.ts/connect.ts/flash.ts. */
 export function getUsbConn(): MicrobitUSBConnection | null { return usbConn; }
@@ -180,6 +187,9 @@ function applyFlashProgress(stage: ProgressStage, progress: number | undefined):
   }
   // PartialFlashing / FullFlashing — actual byte transfer with 0..1 progress.
   const intPct = progress === undefined ? undefined : Math.round(progress * 100);
+  // A full transfer pass reaching ~100% means the bytes are on the board even
+  // if the library's post-flash reinit then throws (see the recovery below).
+  if (progress !== undefined && progress >= 0.98) flashByteTransferComplete = true;
   updateState((s) => ({
     ...s,
     flashPhase: 'flashing',
@@ -598,6 +608,7 @@ export async function flashCalliopeViaUsb(hex: string, name: string): Promise<Us
   appendLog({ direction: 'info', text: 'Pausing serial polling for flash' });
   await pauseSerialDataPolling();
 
+  flashByteTransferComplete = false;
   let outcome: UsbFlashOutcome = 'flashed';
   try {
     await runFlashWithTransferRetry(c, dataSource, progress);
@@ -613,6 +624,34 @@ export async function flashCalliopeViaUsb(hex: string, name: string): Promise<Us
     // USB connection persists across flash (the lib reinitialises serial
     // automatically) — no manual reconnect needed.
   } catch (err) {
+    // The flash bytes were fully written but the library's post-flash
+    // adi.reinit() raced the target's reboot: its first SWD read returned
+    // TRANSFER_WAIT, and upstream's cleanup closed the USB transport while
+    // leaving connection.device dangling with status stuck at "Connected".
+    // Resuming serial against that half-dead handle is the "No device opened"
+    // the user hits — today only a manual Cancel + reconnect clears it. Do
+    // that automatically: bounce the same connection once the board is back,
+    // then let the finally re-arm serial on the healed handle.
+    if (flashByteTransferComplete && isPostFlashReinitRace(err)) {
+      appendLog({ direction: 'info', text: 'Flash OK; post-flash SWD reinit raced the reboot — auto-recovering USB' });
+      const recovered = await recoverUsbAfterFlashReboot(c, name);
+      if (recovered) {
+        updateState((s) => ({
+          ...s,
+          flashTransport: undefined,
+          flashProgress: undefined,
+          flashPhase: undefined,
+          flashPartial: undefined,
+          usbErrorMessage: undefined,
+          lastFlashAt: Date.now(),
+        }));
+        appendLog({ direction: 'info', text: `Flash finished: ${name}` });
+        return 'flashed';
+      }
+      // Recovery didn't take (board slow to boot / cable pulled) — fall
+      // through to the normal error state so the user can still recover
+      // manually with Cancel + reconnect.
+    }
     const classified = classifyUsbError(err);
     updateState((s) => ({
       ...s,
@@ -750,6 +789,52 @@ function isTransientUsbTransferError(err: unknown): boolean {
     || /was cancelled|was canceled|aborted/i.test(msg)
     || name === 'AbortError'
   );
+}
+
+/**
+ * The distinctive throw when the library's post-flash `adi.reinit()` hits the
+ * target mid-reboot: a single-operation SWD debug-port read returns
+ * TRANSFER_WAIT — "Transfer WAIT (target busy, retries exhausted) at operation
+ * 0/1". We match WAIT + target-busy rather than the exact "0/1" so a wording
+ * tweak upstream doesn't silently disable recovery. Distinct from a mid-flash
+ * transfer error (those are `transferOut`/`transferIn` and handled by
+ * `runFlashWithTransferRetry`). Only acted on once the flash bytes completed.
+ */
+function isPostFlashReinitRace(err: unknown): boolean {
+  const msg = (err as Error)?.message ?? '';
+  return /transfer\s+wait/i.test(msg) && /target busy/i.test(msg);
+}
+
+/**
+ * Recover the USB connection after a full flash whose post-flash SWD reinit
+ * raced the reboot (see `flashCalliopeViaUsb`'s catch). Bounces the *same*
+ * connection instance — disconnect, wait for the freshly flashed board to
+ * finish booting, reconnect — WITHOUT clearing `usbConn`, so the serial-
+ * listener registry survives and the flash's `finally` re-arms serial on the
+ * healed handle (a manual Cancel does `clearUsbConn`, which wipes the registry
+ * and needs the higher layers to re-subscribe; the in-place bounce doesn't).
+ * The board reboots in well under 2 s, but the exact time varies, so retry
+ * across a few settle windows; each `c.connect()` re-runs SWD reinit and only
+ * succeeds once the target is actually up. Returns true when Connected.
+ */
+async function recoverUsbAfterFlashReboot(c: MicrobitUSBConnection, name: string): Promise<boolean> {
+  // Suppress the reboot-churn background-error toasts during the bounce.
+  markExpectedReboot(30_000);
+  updateState((s) => ({ ...s, flashPhase: 'reboot', flashProgress: undefined }));
+  const settleMs = [1200, 1200, 1800, 2500];
+  for (const settle of settleMs) {
+    await new Promise((r) => setTimeout(r, settle));
+    try { await c.disconnect(); } catch { /* transport already closed by the failed reinit — ignore */ }
+    try {
+      await c.connect();
+      await waitForUsbConnected(c);
+      appendLog({ direction: 'info', text: `USB reconnected after flash (${name})` });
+      return true;
+    } catch (e) {
+      appendLog({ direction: 'info', text: `Post-flash USB reconnect not ready yet: ${(e as Error).message}` });
+    }
+  }
+  return false;
 }
 
 /**

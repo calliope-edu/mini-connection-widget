@@ -385,21 +385,27 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
               text: `BLE state: ${result.kind} — ${result.reason}; services=[${summary}]`,
             });
             // Authoritative hardware-version verdict from the service set
-            // (legacy DFU-Control ⇒ V1-class Mini 1/2; Nordic Secure DFU or
-            // partial-flash ⇒ V2-class Mini 3). Leave the captured version
-            // untouched when the services don't fingerprint (UNIDENTIFIED) —
-            // never default to V2.
+            // (legacy DFU-Control ⇒ V1-class DAL, i.e. Mini 1 OR 2; Nordic
+            // Secure DFU or partial-flash ⇒ V2-class Mini 3). Mini 1 and Mini 2
+            // are indistinguishable over BLE — identical service set, confirmed
+            // against the shipping Android app which lumps them into one class
+            // too — so a DAL device on BLE is reported as 'V2' (the supported
+            // Mini 2). Mini 1 is only ever singled out as unsupported over USB
+            // (DAPLink). Leave the captured version untouched when the services
+            // don't fingerprint (UNIDENTIFIED) — never guess.
             const bv = boardVersionFromServices(result.services);
             const versionPatch = bv
               ? {
                   boardVersion: bv,
-                  calliopeVersion: (bv === 'V2' ? 'V3' : 'V1') as CalliopeVersion,
+                  // BoardVersion 'V2' = Mini 3 → CalliopeVersion 'V3'; 'V1' =
+                  // DAL (Mini 1/2 over BLE) → 'V2' (treated as the supported Mini 2).
+                  calliopeVersion: (bv === 'V2' ? 'V3' : 'V2') as CalliopeVersion,
                 }
               : {};
             if (bv) {
               appendLog({
                 direction: 'info',
-                text: `BLE hardware: ${bv === 'V2' ? 'Mini 3 (V2-class)' : 'Mini 1/2 (V1-class)'} (service fingerprint)`,
+                text: `BLE hardware: ${bv === 'V2' ? 'Mini 3 (V2-class)' : 'Mini 2 (DAL/V1-class, BLE)'} (service fingerprint)`,
               });
             }
             updateState((s) => {

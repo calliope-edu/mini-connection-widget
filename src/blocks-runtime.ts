@@ -72,11 +72,13 @@ export async function ensureBlocksRuntime(
   if (info.type === 'blocks' && !options.force) {
     return { flashed: false, detected: 'blocks' };
   }
-  // Calliope mini 1 & 2 (DAL, calliopeVersion 'V1') need the MbitMore DAL
-  // runtime; mini 3 (CODAL, 'V3') and the unknown/default case use the CODAL
-  // build. There is no 'V2' in practice — mini 2 fingerprints as 'V1'.
-  const variant: BlocksVariant =
-    (options.version ?? getState().calliopeVersion) === 'V1' ? 'dal' : 'codal';
+  // Calliope mini 1 & 2 (DAL) need the MbitMore DAL runtime; mini 3 (CODAL)
+  // uses the CODAL build. BOTH DAL versions map to 'dal': 'V1' (Mini 1 over
+  // DAPLink) and 'V2' (Mini 2 over J-Link, or ANY DAL device over BLE — see
+  // ble.ts, where Mini 1/2 can't be told apart and both report 'V2'). 'V3'
+  // and the unknown/default case use CODAL.
+  const cv = options.version ?? getState().calliopeVersion;
+  const variant: BlocksVariant = cv === 'V1' || cv === 'V2' ? 'dal' : 'codal';
   const hex = await options.loadHex(variant);
   appendLog({
     direction: 'info',
