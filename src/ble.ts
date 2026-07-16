@@ -400,6 +400,9 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
                   // BoardVersion 'V2' = Mini 3 → CalliopeVersion 'V3'; 'V1' =
                   // DAL (Mini 1/2 over BLE) → 'V2' (treated as the supported Mini 2).
                   calliopeVersion: (bv === 'V2' ? 'V3' : 'V2') as CalliopeVersion,
+                  // The DAL verdict can't tell Mini 1 and 2 apart — flag the
+                  // guess so the UI can render "V1/V2". Mini 3 is definitive.
+                  versionAmbiguous: bv !== 'V2',
                 }
               : {};
             if (bv) {
@@ -409,7 +412,16 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
               });
             }
             updateState((s) => {
-              if (s.flashTransport === 'ble') return { ...s, ...versionPatch, bleSessionKind: result.kind };
+              // A USB-side detection (DAPLink productName, J-Link pick) is
+              // definitive — never let the ambiguous BLE DAL guess ('V2' for
+              // any Mini 1/2) overwrite it. E.g. a Mini 1 confirmed V1 over
+              // DAPLink must not flip to V2 when BLE also connects. The
+              // Mini-3 verdict (bv === 'V2' → V3) is itself definitive.
+              const usbConfirmed =
+                s.calliopeVersion !== undefined && !s.versionAmbiguous
+                && (s.usbStatus === 'connected' || s.jlinkSerialStatus === 'connected' || s.jlinkUsbStatus === 'connected');
+              const patch = usbConfirmed && bv === 'V1' ? { boardVersion: bv } : versionPatch;
+              if (s.flashTransport === 'ble') return { ...s, ...patch, bleSessionKind: result.kind };
               // 'dfu-bootloader' is the one classification that downgrades
               // capabilities: the bootloader doesn't host UART or
               // partial-flash, so neither comms nor partial-flash work
@@ -417,7 +429,7 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
               if (result.kind === 'dfu-bootloader') {
                 return {
                   ...s,
-                  ...versionPatch,
+                  ...patch,
                   bleSessionKind: 'dfu-bootloader',
                   bleCanFlash: false,
                   bleCanCommunicate: false,
@@ -425,7 +437,7 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
                     'Calliope ist im DFU-Bootloader. Reset drücken, um zurück in die Anwendung zu kommen.',
                 };
               }
-              return { ...s, ...versionPatch, bleSessionKind: result.kind };
+              return { ...s, ...patch, bleSessionKind: result.kind };
             });
           } catch (err) {
             appendLog({

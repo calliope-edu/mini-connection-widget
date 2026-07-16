@@ -22,6 +22,7 @@
 
 import { getConnectedBleDevice } from './ble';
 import { getUsbConn, registerSerialDataListener } from './usb';
+import { addJlinkRawSubscriber, jlinkSerialWrite } from './web-serial';
 import { calliopeState, updateState, getState } from './state';
 import { buildBlocksFrame, BLOCKS_REQ, BlocksUsbProbe } from './blocks-frame';
 import { detectBlocksDap } from './blocks-dap';
@@ -68,10 +69,17 @@ function hasNonZero(bytes: ArrayLike<number>): boolean {
 // The USB Blocks-frame matcher (`BlocksUsbProbe`) lives in `blocks-frame.ts`
 // so it can be unit-tested without a serial port.
 
-function readState(): { usbOn: boolean; bleOn: boolean } {
-  let snap = { usbOn: false, bleOn: false };
+function readState(): { usbOn: boolean; bleOn: boolean; jlinkSerialOn: boolean; jlinkUsbOn: boolean } {
+  let snap = { usbOn: false, bleOn: false, jlinkSerialOn: false, jlinkUsbOn: false };
   const unsub = calliopeState.subscribe((s) => {
-    snap = { usbOn: s.usbStatus === 'connected', bleOn: s.bleStatus === 'connected' };
+    snap = {
+      usbOn: s.usbStatus === 'connected',
+      bleOn: s.bleStatus === 'connected',
+      // Mini 2: CDC serial (probe-able) vs J-Link flash-only (connected, but
+      // nothing to probe over).
+      jlinkSerialOn: s.jlinkSerialStatus === 'connected',
+      jlinkUsbOn: s.jlinkUsbStatus === 'connected',
+    };
   });
   unsub();
   return snap;
@@ -214,6 +222,36 @@ function probeUsb(timeoutMs: number): Promise<CalliopeProgramInfo | null> {
 }
 
 /**
+ * Probe the Blocks serial handshake over the mini 2's CDC port (Web Serial).
+ * Same REQ_READ wake + frame matcher as `probeUsb`, but routed through the
+ * J-Link serial transport — the DAL Blocks runtime speaks the identical
+ * framed protocol over its UART, which the J-Link OB bridges to CDC.
+ */
+function probeJlinkSerial(timeoutMs: number): Promise<CalliopeProgramInfo | null> {
+  return new Promise((resolve) => {
+    if (getState().flashInProgress) { resolve(null); return; }
+    const probe = new BlocksUsbProbe();
+    let settled = false;
+    let unsubscribe: (() => void) | null = null;
+    const finish = (val: CalliopeProgramInfo | null) => {
+      if (settled) return;
+      settled = true;
+      try { unsubscribe?.(); } catch { /* ignore */ }
+      clearTimeout(timer);
+      resolve(val);
+    };
+    unsubscribe = addJlinkRawSubscriber((chunk) => {
+      if (!chunk) return;
+      const bytes = new Uint8Array(chunk.length);
+      for (let i = 0; i < chunk.length; i++) bytes[i] = chunk.charCodeAt(i) & 0xff;
+      if (probe.push(bytes)) finish({ type: 'blocks', via: 'usb' });
+    });
+    void jlinkSerialWrite(buildBlocksFrame(BLOCKS_REQ.READ, 0x0100)).catch(() => { /* ignore */ });
+    const timer = setTimeout(() => finish(null), timeoutMs);
+  });
+}
+
+/**
  * Probe BLE and USB in parallel; resolve as soon as either confirms blocks.
  * If neither confirms within `timeoutMs`, return 'unknown' (or
  * 'disconnected' when neither transport is connected).
@@ -223,8 +261,8 @@ function probeUsb(timeoutMs: number): Promise<CalliopeProgramInfo | null> {
 export async function getRunningProgramType(
   timeoutMs = 1500,
 ): Promise<CalliopeProgramInfo> {
-  const { usbOn, bleOn } = readState();
-  if (!usbOn && !bleOn) return { type: 'disconnected' };
+  const { usbOn, bleOn, jlinkSerialOn, jlinkUsbOn } = readState();
+  if (!usbOn && !bleOn && !jlinkSerialOn && !jlinkUsbOn) return { type: 'disconnected' };
 
   // Never probe during a flash: the post-flash window has serial / GATT busy
   // and the device mid-reboot. The auto-refresh subscription re-probes once
@@ -232,10 +270,13 @@ export async function getRunningProgramType(
   if (getState().flashInProgress) return { type: 'unknown' };
 
   // Kick off whichever probes are available. Skip a probe if its transport
-  // isn't connected — saves opening a stray serial subscription.
+  // isn't connected — saves opening a stray serial subscription. A flash-only
+  // mini 2 (`jlinkUsbOn` without CDC serial) has nothing to probe over and
+  // falls through to 'unknown' — connected, program unconfirmed.
   const probes: Promise<CalliopeProgramInfo | null>[] = [];
   if (bleOn) probes.push(probeBle(timeoutMs));
   if (usbOn) probes.push(probeUsb(timeoutMs));
+  if (jlinkSerialOn) probes.push(probeJlinkSerial(timeoutMs));
 
   // Resolve on first positive hit, else wait for all and report 'unknown'.
   const firstHit = await new Promise<CalliopeProgramInfo | null>((resolve) => {
@@ -268,7 +309,9 @@ let flashWasInProgress = false;
 
 if (typeof window !== 'undefined') {
   calliopeState.subscribe((s) => {
-    const key = `${s.usbStatus === 'connected' ? 'u' : ''}${s.bleStatus === 'connected' ? 'b' : ''}`;
+    const key =
+      `${s.usbStatus === 'connected' ? 'u' : ''}${s.bleStatus === 'connected' ? 'b' : ''}` +
+      `${s.jlinkSerialStatus === 'connected' ? 'j' : ''}${s.jlinkUsbStatus === 'connected' ? 'J' : ''}`;
     // Re-probe whenever transports change OR a flash just completed. We detect
     // "flash completed" two ways and take whichever the backend gives us:
     //   - `lastFlashAt` advances (set by the web/native flash dispatchers), or

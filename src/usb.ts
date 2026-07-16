@@ -17,7 +17,9 @@ import {
   type CalliopeStatus,
 } from './state';
 import { appendLog } from './log';
-import { detectCalliopeVersion, stripMakeCodeMetadata } from './helpers';
+import { detectCalliopeVersion, downloadHexFile, stripMakeCodeMetadata } from './helpers';
+import { awaitMini2FlashChoice } from './mini2-flash-fallback';
+import { connectJLinkSerial } from './web-serial';
 import { friendlyNameFromDeviceId } from './friendly-name';
 import { startHeartbeat, stopHeartbeat } from './serial';
 import { classifyUsbError, isExpectedRebootWindow, markExpectedReboot, SEGGER_JLINK_VENDOR_ID, MINI2_JLINK_USB_HINT } from './connection-errors';
@@ -260,6 +262,8 @@ export async function getUsbConnection(): Promise<MicrobitUSBConnection> {
             : s.usbDeviceName,
           usbErrorMessage: mapped === 'connected' ? undefined : s.usbErrorMessage,
           calliopeVersion: cv ?? s.calliopeVersion,
+          // A USB-side verdict is definitive — clears any BLE "Mini 1 or 2?" guess.
+          versionAmbiguous: cv ? false : s.versionAmbiguous,
           friendlyName: friendly ?? s.friendlyName,
           connectedAt: mapped === 'connected' ? Date.now() : s.connectedAt,
         };
@@ -441,6 +445,73 @@ export function isSeggerJLinkDevice(device: any): boolean {
 }
 
 /**
+ * Record the mini 2's J-Link WebUSB flash link as connected. Called the moment
+ * the combined picker grants a J-Link (connect.ts) — BEFORE the Web Serial
+ * picker — so a dismissed CDC picker still leaves the device visibly connected
+ * and flashable. The grant itself lives in browser permissions (reused via
+ * getDevices()); this state field is the UI/dispatcher-visible mirror.
+ */
+export function setJlinkUsbConnected(): void {
+  updateState((s) => ({
+    ...s,
+    jlinkUsbStatus: 'connected',
+    usbDeviceName: 'Calliope mini 2 (USB)',
+    calliopeVersion: 'V2',
+    versionAmbiguous: false,
+    usbErrorMessage: undefined,
+    userDisconnectedUsb: false,
+    connectedAt: s.connectedAt ?? Date.now(),
+  }));
+}
+
+/** Drop the J-Link flash-link state (device unplugged / user disconnect). */
+export function clearJlinkUsb(): void {
+  updateState((s) => (s.jlinkUsbStatus === 'disconnected' ? s : {
+    ...s,
+    jlinkUsbStatus: 'disconnected',
+    // Leave usbDeviceName/calliopeVersion to whichever transport still holds
+    // the device; the CDC read loop clears its own state independently.
+  }));
+}
+
+/**
+ * Keep `jlinkUsbStatus` honest across plug events and page loads:
+ *  - on init, an already-authorized J-Link that's present (getDevices) counts
+ *    as connected — flashing works without any picker;
+ *  - WebUSB 'connect'/'disconnect' events (they only fire for authorized
+ *    devices) flip the state as the cable comes and goes.
+ * Called once from `initializeCalliopeConnection`.
+ */
+export function initJlinkUsbWatch(): void {
+  if (typeof navigator === 'undefined' || !('usb' in navigator)) return;
+  const usb = (navigator as any).usb;
+  const resume = () => {
+    setJlinkUsbConnected();
+    // Re-link the CDC serial silently when its grant survived (no picker, no
+    // gesture needed) — the mini 2 counterpart of the DAPLink/BLE reconnect
+    // daemon. A cancelled outcome just means "no grant"; flash-only stands.
+    void connectJLinkSerial({ silentOnly: true });
+  };
+  void (async () => {
+    try {
+      const devices: any[] = await usb.getDevices();
+      if (devices.some((d) => isSeggerJLinkDevice(d)) && !getState().userDisconnectedUsb) {
+        appendLog({ direction: 'info', text: 'Calliope mini 2 (J-Link) still authorized — flash link ready.' });
+        resume();
+      }
+    } catch { /* ignore */ }
+  })();
+  try {
+    usb.addEventListener('connect', (ev: any) => {
+      if (isSeggerJLinkDevice(ev?.device) && !getState().userDisconnectedUsb) resume();
+    });
+    usb.addEventListener('disconnect', (ev: any) => {
+      if (isSeggerJLinkDevice(ev?.device)) clearJlinkUsb();
+    });
+  } catch { /* ignore */ }
+}
+
+/**
  * Flash a specific SEGGER J-Link device (Calliope mini 2) via the MSD-image path,
  * driving the widget flash state. Shared by the picker path
  * (`pickAndMaybeFlashJLink`) and the already-connected path
@@ -449,7 +520,10 @@ export function isSeggerJLinkDevice(device: any): boolean {
  */
 async function flashJLinkDevice(device: any, hex: string, name: string): Promise<UsbFlashOutcome> {
   appendLog({ direction: 'info', text: `Flashing via USB (J-Link / mini 2) "${name}"` });
-  updateState((s) => ({
+  // The picked/held device is live — reflect the flash link so the mini 2
+  // reads as connected even when the CDC serial was never added.
+  setJlinkUsbConnected();
+  const enterFlashState = () => updateState((s) => ({
     ...s,
     flashTransport: 'usb',
     flashPhase: 'flashing',
@@ -458,34 +532,52 @@ async function flashJLinkDevice(device: any, hex: string, name: string): Promise
     usbErrorMessage: undefined,
     lastFlashName: name,
   }));
-  try {
-    await flashViaJLinkMsdImage(device, hex, {
-      onProgress: (f) => updateState((s) => ({ ...s, flashProgress: Math.round(f * 100) })),
-      onLog: (line) => appendLog({ direction: 'info', text: `jlink: ${line}` }),
-    });
-    updateState((s) => ({
-      ...s,
-      flashTransport: undefined,
-      flashPhase: undefined,
-      flashProgress: undefined,
-      flashPartial: undefined,
-      lastFlashAt: Date.now(),
-    }));
-    appendLog({ direction: 'info', text: `Flash finished (J-Link): ${name}` });
-    return 'flashed';
-  } catch (err) {
-    // Typically old J-Link OB firmware that can't accept a WebUSB MSD image →
-    // point the user at the reliable download+drag route.
-    updateState((s) => ({
-      ...s,
-      flashTransport: undefined,
-      flashPhase: undefined,
-      flashProgress: undefined,
-      usbStatus: 'error',
-      usbErrorMessage: MINI2_JLINK_USB_HINT,
-    }));
-    appendLog({ direction: 'error', text: `J-Link flash failed: ${(err as Error)?.message ?? err}` });
-    return 'aborted';
+  const leaveFlashState = () => updateState((s) => ({
+    ...s,
+    flashTransport: undefined,
+    flashPhase: undefined,
+    flashProgress: undefined,
+    flashPartial: undefined,
+  }));
+  enterFlashState();
+  let attempts = 0;
+  for (;;) {
+    try {
+      attempts++;
+      await flashViaJLinkMsdImage(device, hex, {
+        onProgress: (f) => updateState((s) => ({ ...s, flashProgress: Math.round(f * 100) })),
+        onLog: (line) => appendLog({ direction: 'info', text: `jlink: ${line}` }),
+      });
+      leaveFlashState();
+      updateState((s) => ({ ...s, lastFlashAt: Date.now() }));
+      appendLog({ direction: 'info', text: `Flash finished (J-Link): ${name}` });
+      return 'flashed';
+    } catch (err) {
+      const msg = (err as Error)?.message ?? String(err);
+      appendLog({ direction: 'error', text: `J-Link flash failed (attempt ${attempts}): ${msg}` });
+      // One silent auto-retry: intermittent claim/enumeration races (Windows
+      // releasing the composite device, a previous session's lingering claim)
+      // routinely clear after a short settle — don't bother the user for those.
+      if (attempts === 1) {
+        await new Promise((r) => setTimeout(r, 1_200));
+        continue;
+      }
+      // Out of automatic options — ask via modal: retry again, download the
+      // hex for drag&drop onto the MINI drive, or give up. (Previously this
+      // was an inline hint the state roll-up could even swallow.)
+      leaveFlashState();
+      const choice = await awaitMini2FlashChoice(name, attempts, msg);
+      if (choice === 'retry') {
+        enterFlashState();
+        continue;
+      }
+      if (choice === 'download') {
+        downloadHexFile(hex, name);
+        return 'aborted';
+      }
+      updateState((s) => ({ ...s, usbErrorMessage: MINI2_JLINK_USB_HINT }));
+      return 'aborted';
+    }
   }
 }
 
@@ -510,6 +602,9 @@ async function getAuthorizedJLinkDevice(): Promise<any | null> {
 export async function flashConnectedMini2(hex: string, name: string): Promise<UsbFlashOutcome> {
   let device = await getAuthorizedJLinkDevice();
   if (!device) {
+    // Grant vanished (device unplugged / permissions cleared) — reflect that,
+    // then fall back to the picker.
+    clearJlinkUsb();
     device = await requestCalliopeUsbDevice();
     if (!isSeggerJLinkDevice(device)) {
       updateState((s) => ({ ...s, usbStatus: 'disconnected' }));

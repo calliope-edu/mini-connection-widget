@@ -18,7 +18,9 @@ import {
   BluetoothPartialFlashServiceMissingError,
 } from './ble-flash-web';
 import { BluetoothDfuServiceMissingError } from './ble-dfu-web';
-import { inspectHex, type HexFlavor } from './hex-inspect';
+import { detectHexRamClass, inspectHex, type HexFlavor } from './hex-inspect';
+import { awaitMini12VersionAnswer } from './mini12-version-ask';
+import { downloadHexFile } from './helpers';
 import { clearExpectedReboot, markExpectedReboot } from './connection-errors';
 import { showBleOfflineInfo } from './ble-offline-info';
 import { isNativeMode } from './native-bridge';
@@ -169,7 +171,10 @@ async function flashDispatch(
   // Either transport is connected? Clear any leftover pending flash —
   // we're about to handle the request live, no need for the auto-resume
   // hook to fire a duplicate.
-  if (s.bleStatus === 'connected' || s.usbStatus === 'connected') {
+  if (
+    s.bleStatus === 'connected' || s.usbStatus === 'connected'
+    || s.jlinkUsbStatus === 'connected' || s.jlinkSerialStatus === 'connected'
+  ) {
     clearPendingFlash();
   }
 
@@ -181,6 +186,7 @@ async function flashDispatch(
   // surface an error rather than silently switching transports — the user
   // would expect a different UI prompt if we wanted to switch.
   if (bleFlashAllowed && preferredTransport === 'ble' && s.bleStatus === 'connected') {
+    if (!(await confirmRamFitForBleFlash(hex, name))) return;
     try {
       return await flashOverBle(hex, name, flavor, s.bleSessionKind, opts.forceFullDfu);
     } finally {
@@ -217,12 +223,13 @@ async function flashDispatch(
     return;
   }
 
-  // Calliope mini 2 connected for comms over Web Serial (jlinkSerialStatus).
-  // Its J-Link WebUSB device is already authorized from connect, so flash it via
-  // the SEGGER MSD path directly — no transport-choice modal, no re-pick. (The
-  // bulk flash interface is independent of the CDC serial port, so comms stays
-  // open across the flash.)
-  if (s.jlinkSerialStatus === 'connected') {
+  // Calliope mini 2 connected — either full (CDC serial over Web Serial) or
+  // flash-only (J-Link WebUSB grant from the combined picker, second picker
+  // dismissed). Both mean the J-Link device is authorized, so flash via the
+  // SEGGER MSD path directly — no transport-choice modal, no re-pick. (The
+  // bulk flash interface is independent of the CDC serial port, so comms —
+  // when present — stays open across the flash.)
+  if (s.jlinkSerialStatus === 'connected' || s.jlinkUsbStatus === 'connected') {
     await flashConnectedMini2(hex, name);
     return;
   }
@@ -249,6 +256,7 @@ async function flashDispatch(
 
   // BLE connected and BLE flashing allowed (dev mode). Try BLE.
   if (bleFlashAllowed && s.bleStatus === 'connected') {
+    if (!(await confirmRamFitForBleFlash(hex, name))) return;
     try {
       await flashOverBle(hex, name, flavor, s.bleSessionKind, opts.forceFullDfu);
       if (wasBleConnected) await scheduleBleReconnect();
@@ -490,6 +498,54 @@ async function flashOverBle(
   }
 }
 
+// ---- Mini 1/2 RAM-fit gate (BLE only) ---------------------------------------
+
+/**
+ * A 32 KB-RAM hex (initial MSP = 0x20008000, see `detectHexRamClass`) runs
+ * only on a Calliope mini 2 — on a mini 1 (16 KB) it faults on boot. Over BLE
+ * we often can't tell the two apart (`versionAmbiguous`), so before a BLE
+ * flash of such a hex:
+ *
+ *  - version known V1        → refuse with a clear message;
+ *  - version ambiguous       → ask the user via modal (their answer is
+ *                              latched into state so we ask at most once);
+ *  - 16 KB / unknown RAM hex → no gate (16 KB builds run on both; unknown
+ *                              means we couldn't parse a DAL vector table,
+ *                              e.g. a mini 3 image — not our case).
+ *
+ * USB paths never need this: DAPLink vs J-Link identifies the board.
+ * Returns `true` when the flash may proceed.
+ */
+async function confirmRamFitForBleFlash(hex: string, name: string): Promise<boolean> {
+  const ram = detectHexRamClass(hex);
+  if (ram !== '32kb') return true;
+  const s = getState();
+  const refuse = () => {
+    updateState((st) => ({
+      ...st,
+      bleErrorMessage:
+        'Dieses Programm benötigt 32 KB RAM und läuft nur auf dem Calliope mini 2 — auf dem Calliope mini 1 kann es nicht starten.',
+    }));
+    flashLog(`RAM-fit gate: refused 32kb hex "${name}" for mini 1`);
+    return false;
+  };
+  if (!s.versionAmbiguous) {
+    if (s.calliopeVersion === 'V1') return refuse();
+    return true;
+  }
+  flashLog(`RAM-fit gate: 32kb hex "${name}" + ambiguous mini 1/2 — asking the user`);
+  const answer = await awaitMini12VersionAnswer(name);
+  if (answer === 'cancel') {
+    flashLog('RAM-fit gate: user cancelled');
+    return false;
+  }
+  // Latch the answer — the user just told us what's on the table, so stop
+  // asking (and let the rest of the UI show the settled version).
+  updateState((st) => ({ ...st, calliopeVersion: answer, versionAmbiguous: false }));
+  if (answer === 'V1') return refuse();
+  return true;
+}
+
 // ---- Pending-flash plumbing -----------------------------------------------
 
 function setPendingFlash(
@@ -533,7 +589,10 @@ let prevBleConnected = false;
 let prevUsbConnected = false;
 calliopeState.subscribe((s) => {
   const bleConnected = s.bleStatus === 'connected';
-  const usbConnected = s.usbStatus === 'connected';
+  // Mini 2 counts: a J-Link flash link (with or without CDC serial) can carry
+  // the pending flash just like a DAPLink connection.
+  const usbConnected =
+    s.usbStatus === 'connected' || s.jlinkUsbStatus === 'connected' || s.jlinkSerialStatus === 'connected';
   const edge =
     (bleConnected && !prevBleConnected) ||
     (usbConnected && !prevUsbConnected);
@@ -569,28 +628,7 @@ calliopeState.subscribe((s) => {
   });
 });
 
-// ---- Hex download ---------------------------------------------------------
-
-/**
- * Save the hex string to the user's downloads folder. Used by the
- * "Download .hex file" choice in the connection-choice modal — the user
- * then drags the file onto the Calliope's USB mass-storage drive (DAPLink)
- * to flash it manually.
- */
-function downloadHexFile(hex: string, name: string): void {
-  const safeName = name.replace(/[^a-zA-Z0-9._-]+/g, '-');
-  const fileName = safeName.endsWith('.hex') ? safeName : `${safeName}.hex`;
-  const blob = new Blob([hex], { type: 'application/octet-stream' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = fileName;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  // Defer revoke so the download has time to start.
-  setTimeout(() => URL.revokeObjectURL(url), 5_000);
-}
+// downloadHexFile lives in helpers.ts (shared with the mini 2 flash fallback).
 
 /**
  * After a successful flash the Calliope reboots and the BLE GATT drops for

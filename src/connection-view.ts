@@ -79,15 +79,16 @@ function transportView(
 
 /** Map the raw state (+ recovery rung) into the shared UI view-model. */
 export function deriveConnectionView(s: CalliopeState, recovery: UsbRecoveryRung): ConnectionView {
-  // A Calliope mini 2 comms link is a Web Serial connection, but to the user it's
-  // "connected over USB" (a USB cable). Fold jlinkSerialStatus into the USB
-  // transport view so the badge / panel / banner show USB connected. The flash
-  // path keys on the raw `usbStatus` / `jlinkSerialStatus` fields (not this view),
-  // so routing stays correct.
+  // A Calliope mini 2 link — CDC serial (Web Serial) and/or the J-Link flash
+  // grant — is "connected over USB" to the user (a USB cable). Fold both into
+  // the USB transport view so the badge / panel / banner show USB connected;
+  // a flash-only mini 2 (serial picker dismissed) still reads as connected.
+  // The flash path keys on the raw `usbStatus`/`jlinkSerialStatus`/
+  // `jlinkUsbStatus` fields (not this view), so routing stays correct.
   const usbStatusForView: CalliopeStatus =
-    s.usbStatus === 'connected' || s.jlinkSerialStatus === 'connected' ? 'connected'
-    : s.usbStatus === 'connecting' || s.jlinkSerialStatus === 'connecting' ? 'connecting'
-    : s.usbStatus === 'error' || s.jlinkSerialStatus === 'error' ? 'error'
+    s.usbStatus === 'connected' || s.jlinkSerialStatus === 'connected' || s.jlinkUsbStatus === 'connected' ? 'connected'
+    : s.usbStatus === 'connecting' || s.jlinkSerialStatus === 'connecting' || s.jlinkUsbStatus === 'connecting' ? 'connecting'
+    : s.usbStatus === 'error' || s.jlinkSerialStatus === 'error' || s.jlinkUsbStatus === 'error' ? 'error'
     : s.usbStatus;
   const usb = transportView(s.usbSupported, usbStatusForView, s.flashTransport, 'usb', s.usbErrorMessage, s.usbDeviceName);
   const ble = transportView(s.bleSupported, s.bleStatus, s.flashTransport, 'ble', s.bleErrorMessage, s.bleDeviceName);
@@ -130,8 +131,9 @@ export function statusLabel(s: CalliopeState, labels: ConnectLabels): string {
   }
   switch (s.status) {
     case 'connected': {
-      // jlinkSerialStatus (Calliope mini 2 serial) reads as USB to the user.
-      const usbUp = s.usbStatus === 'connected' || s.jlinkSerialStatus === 'connected';
+      // Mini 2 links (CDC serial and/or J-Link flash grant) read as USB.
+      const usbUp =
+        s.usbStatus === 'connected' || s.jlinkSerialStatus === 'connected' || s.jlinkUsbStatus === 'connected';
       if (usbUp && s.bleStatus === 'connected') return `${labels.usb} + ${labels.ble}`;
       if (usbUp) return labels.usb;
       return labels.ble;

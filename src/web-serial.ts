@@ -56,31 +56,69 @@ function decodeLatin1(bytes: Uint8Array): string {
   return s;
 }
 
+/** How a `connectJLinkSerial` attempt ended. `cancelled` = the user dismissed
+ *  the port picker — NOT an error; the mini 2 stays usable flash-only via its
+ *  J-Link WebUSB grant (`jlinkUsbStatus`). */
+export type JlinkSerialOutcome = 'connected' | 'cancelled' | 'failed' | 'unsupported';
+
 /**
  * Prompt for the mini 2's CDC serial port (Web Serial) and open it. This is the
  * second browser dialog after the WebUSB identify picker in connect.ts — Web
- * Serial grants are independent of WebUSB, so it can't be avoided.
+ * Serial grants are independent of WebUSB, so it can't be avoided. Callers must
+ * invoke this from a user gesture (`requestPort` requires one).
+ *
+ * A silent resume is tried first: if the browser already remembers a granted
+ * J-Link CDC port (`getPorts()`), it is reused with NO picker.
  */
-export async function connectJLinkSerial(): Promise<void> {
+export async function connectJLinkSerial(
+  opts: { silentOnly?: boolean } = {},
+): Promise<JlinkSerialOutcome> {
   const nav = navigator as any;
   if (!nav.serial) {
+    if (opts.silentOnly) return 'unsupported';
     updateState((s) => ({
       ...s,
       jlinkSerialStatus: 'error',
       usbErrorMessage: 'Web Serial wird in diesem Browser nicht unterstützt (für Calliope mini 2 nötig).',
     }));
-    return;
+    return 'unsupported';
   }
+  if (getState().jlinkSerialStatus === 'connected') return 'connected';
+  // While 'connecting', the panel/banner show the "pick CDC – COM x" phase
+  // hint — the native picker floats above them, so the user sees what to do.
   updateState((s) => ({ ...s, jlinkSerialStatus: 'connecting', usbErrorMessage: undefined }));
   try {
-    port = await nav.serial.requestPort({ filters: [{ usbVendorId: SEGGER_JLINK_VENDOR_ID }] });
-    await port.open({ baudRate: JLINK_BAUD_RATE });
+    // Silent resume: a previously-granted port needs no picker (and no user
+    // gesture) — this is what re-links serial after a re-plug or page reload.
+    try {
+      const ports: any[] = await nav.serial.getPorts();
+      const prior = ports.find((p) => p?.getInfo?.()?.usbVendorId === SEGGER_JLINK_VENDOR_ID) ?? null;
+      if (prior) {
+        await prior.open({ baudRate: JLINK_BAUD_RATE });
+        port = prior;
+      }
+    } catch { /* fall through to the picker */ }
+    if (!port && opts.silentOnly) {
+      // No grant to resume and no gesture to open a picker with — stay quiet.
+      updateState((s) => ({ ...s, jlinkSerialStatus: 'disconnected' }));
+      return 'cancelled';
+    }
+    if (!port) {
+      port = await nav.serial.requestPort({ filters: [{ usbVendorId: SEGGER_JLINK_VENDOR_ID }] });
+      await port.open({ baudRate: JLINK_BAUD_RATE });
+    }
   } catch (err) {
-    // Picker dismissed / nothing selected / open failed — treat as a cancel.
     port = null;
     updateState((s) => ({ ...s, jlinkSerialStatus: 'disconnected' }));
-    appendLog({ direction: 'info', text: `mini 2 serial connect cancelled/failed: ${(err as Error)?.message ?? err}` });
-    return;
+    // Distinguish "user dismissed the picker" (NotFoundError) from a real open
+    // failure — the caller keeps the flash-only connection either way, but a
+    // failure is worth logging as such.
+    const cancelled = (err as DOMException)?.name === 'NotFoundError';
+    appendLog({
+      direction: 'info',
+      text: `mini 2 serial connect ${cancelled ? 'cancelled' : 'failed'}: ${(err as Error)?.message ?? err}`,
+    });
+    return cancelled ? 'cancelled' : 'failed';
   }
   try { writer = port.writable ? port.writable.getWriter() : null; } catch { writer = null; }
   updateState((s) => ({
@@ -88,10 +126,12 @@ export async function connectJLinkSerial(): Promise<void> {
     jlinkSerialStatus: 'connected',
     usbDeviceName: 'Calliope mini 2 (USB)',
     calliopeVersion: 'V2',
+    versionAmbiguous: false,
     connectedAt: Date.now(),
   }));
   appendLog({ direction: 'info', text: 'Connected (Calliope mini 2 serial / Web Serial)' });
   readLoopDone = startReadLoop();
+  return 'connected';
 }
 
 async function startReadLoop(): Promise<void> {
@@ -124,6 +164,24 @@ async function startReadLoop(): Promise<void> {
 export async function jlinkSerialWrite(data: Uint8Array): Promise<void> {
   if (!writer) return;
   try { await writer.write(data); } catch { /* ignore — callers may be in a tight loop */ }
+}
+
+/**
+ * Revoke every granted J-Link CDC Web Serial port. Companion to
+ * `forgetAllUsbDevices` for the "Trennen & vergessen" action — without this the
+ * silent-resume in `connectJLinkSerial` would quietly re-open the old port on
+ * the next connect even though the user explicitly forgot the device.
+ */
+export async function forgetJLinkSerialPorts(): Promise<void> {
+  const nav = navigator as any;
+  if (!nav.serial?.getPorts) return;
+  try {
+    const ports: any[] = await nav.serial.getPorts();
+    for (const p of ports) {
+      if (p?.getInfo?.()?.usbVendorId !== SEGGER_JLINK_VENDOR_ID) continue;
+      try { await p.forget?.(); } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
 }
 
 export async function disconnectJLinkSerial(): Promise<void> {

@@ -100,7 +100,7 @@
     }
   });
 
-  type BannerKind = 'hidden' | 'flashing' | 'recovery' | 'connecting' | 'no-connection' | 'unsupported' | 'extra' | 'success';
+  type BannerKind = 'hidden' | 'flashing' | 'recovery' | 'jlink-serial-pick' | 'connecting' | 'no-connection' | 'unsupported' | 'extra' | 'success';
 
   // Flash phase → German label / progress.
   const flashIndeterminate = $derived(isIndeterminateFlash(s));
@@ -121,6 +121,10 @@
     // silently swallowed.
     if (view.flashing) return 'flashing';
     if (view.recovering) return 'recovery';
+    // Mini 2, second browser dialog (Web Serial / CDC port) is open — the
+    // native picker floats above the page, so say which phase this is and
+    // that cancelling is harmless (flash-only still works).
+    if (s.jlinkSerialStatus === 'connecting') return 'jlink-serial-pick';
     // A BLE connect in flight — show progress even if USB is already connected
     // (e.g. adding Bluetooth while USB is up). USB connects show progress via the
     // recovery ladder instead (connectCalliope('usb') arms it), so we DON'T key
@@ -158,6 +162,7 @@
       case 'flashing': return 'flashing';
       case 'success': return 'success';
       case 'recovery': return `recovery:${recovery}`;
+      case 'jlink-serial-pick': return 'jlink-serial-pick';
       case 'connecting': return 'connecting';
       case 'no-connection': return 'no-connection';
       case 'unsupported': return 'unsupported';
@@ -174,7 +179,7 @@
   // change keeps it hidden. Tracked as a signature so any of those resets it.
   let lastConnSig: string | undefined = undefined;
   $effect(() => {
-    const sig = `${s.usbStatus}|${s.bleStatus}|${recovery}|${s.flashTransport ?? ''}|${s.lastFlashAt ?? 0}|${extra?.id ?? ''}`;
+    const sig = `${s.usbStatus}|${s.jlinkSerialStatus}|${s.jlinkUsbStatus}|${s.bleStatus}|${recovery}|${s.flashTransport ?? ''}|${s.lastFlashAt ?? 0}|${extra?.id ?? ''}`;
     if (sig !== lastConnSig) {
       lastConnSig = sig;
       dismissedKey = null;
@@ -185,6 +190,7 @@
   const neutral = $derived(
     kind === 'connecting'
     || kind === 'flashing'
+    || kind === 'jlink-serial-pick'
     || (kind === 'recovery' && recovery === 'reconnecting')
     || (kind === 'extra' && extra?.tone === 'loading'),
   );
@@ -279,6 +285,9 @@
           <strong>Das hat nicht geholfen.</strong>
           <span>Lade die Seite neu, um die USB-Verbindung zurückzusetzen. Dein Calliope mini bleibt verbunden.</span>
         {/if}
+      {:else if kind === 'jlink-serial-pick'}
+        <strong>USB verbunden (1/2)</strong>
+        <span>Wähle jetzt noch „CDC – COM x“, um die Datenverbindung (Serial) herzustellen. Abbrechen ist okay: Programme übertragen geht auch ohne.</span>
       {:else if kind === 'connecting'}
         <strong>{connectingLabel}</strong>
       {:else if kind === 'no-connection'}

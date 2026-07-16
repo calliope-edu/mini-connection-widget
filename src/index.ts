@@ -18,7 +18,7 @@
  */
 
 import { connectCalliope } from './connect';
-import { registerSerialDataListener } from './usb';
+import { initJlinkUsbWatch, registerSerialDataListener } from './usb';
 import { addBleRawSubscriber, refreshPairedBleStatus } from './ble';
 import { attachCommsFeeds, pushRx } from './comms';
 import { installReconnectDaemon, triggerReconnectEvaluation } from './reconnect-daemon';
@@ -70,6 +70,20 @@ export {
 export type { TransferProgram, RearmInputs } from './connection-banner-extra';
 export { calliopeBleOfflineInfo, dismissBleOfflineInfo, showBleOfflineInfo } from './ble-offline-info';
 export { calliopeConnectionChoiceRequest } from './connection-choice';
+// Mini 2 (J-Link) affordances: the "USB flash failed → retry/download" modal
+// request, the "add the CDC serial link?" offer + the host-declared serial
+// interest that triggers it, and the direct "add serial now" action (must be
+// called from a user gesture — Web Serial requestPort requires one).
+export { mini2FlashFallbackRequest } from './mini2-flash-fallback';
+export type { Mini2FlashChoice, Mini2FlashFallbackRequest } from './mini2-flash-fallback';
+export { mini2SerialOfferRequest, serialConsumer, setSerialConsumer } from './mini2-serial';
+export type { Mini2SerialOfferRequest } from './mini2-serial';
+export { connectJLinkSerial } from './web-serial';
+export type { JlinkSerialOutcome } from './web-serial';
+// Mini 1/2 disambiguation: the flash dispatcher's RAM-fit gate asks via this
+// request before BLE-flashing a 32 KB hex to a device that could be either.
+export { mini12VersionAskRequest } from './mini12-version-ask';
+export type { Mini12VersionAnswer, Mini12VersionAskRequest } from './mini12-version-ask';
 
 export { connectCalliope, disconnectAndForget } from './connect';
 export { flashCalliope } from './flash';
@@ -87,8 +101,8 @@ export {
 export { getConnectedBleDevice } from './ble';
 export { getRunningProgramType } from './program-type';
 export type { CalliopeProgramType, CalliopeProgramInfo } from './program-type';
-export { inspectHex } from './hex-inspect';
-export type { HexFlavor, HexInspection } from './hex-inspect';
+export { inspectHex, detectHexRamClass } from './hex-inspect';
+export type { HexFlavor, HexInspection, HexRamClass } from './hex-inspect';
 export {
   classifyBleSession,
   classifyBleSessionFromDevice,
@@ -165,6 +179,9 @@ export { default as CommsPanel } from './ui/CommsPanel.svelte';
 export { default as UsbPlugRequestModal } from './ui/UsbPlugRequestModal.svelte';
 export { default as ConnectionBanner } from './ui/ConnectionBanner.svelte';
 export { default as ConnectionChoiceModal } from './ui/ConnectionChoiceModal.svelte';
+export { default as Mini2FlashFallbackModal } from './ui/Mini2FlashFallbackModal.svelte';
+export { default as Mini2SerialOfferModal } from './ui/Mini2SerialOfferModal.svelte';
+export { default as Mini12VersionModal } from './ui/Mini12VersionModal.svelte';
 export { default as BleOfflineModal } from './ui/BleOfflineModal.svelte';
 export { default as MiniNamePattern } from './ui/MiniNamePattern.svelte';
 export { default as PatternPad } from './ui/PatternPad.svelte';
@@ -262,6 +279,9 @@ export function initializeCalliopeConnection(): void {
   }
   attachCommsFeeds(addBleRawSubscriber, registerSerialDataListener);
   installReconnectDaemon();
+  // Mini 2 flash-link tracking: an authorized-and-present J-Link counts as
+  // connected (flash-only) across page loads and re-plugs.
+  initJlinkUsbWatch();
   // Brief delay so the page has time to settle before we fire WebUSB calls.
   setTimeout(async () => {
     // Refresh the BLE permission flag first — the daemon's BLE side checks

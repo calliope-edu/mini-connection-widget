@@ -17,6 +17,7 @@
   import { untrack } from 'svelte';
   import { calliopeState } from '../state';
   import { connectCalliope, disconnectAndForget } from '../connect';
+  import { connectJLinkSerial } from '../web-serial';
   import { statusLabel } from '../connection-view';
   import { connectionTransferProgram, connectionRearmInputs } from '../connection-banner-extra';
   import { mergeLabels, type ConnectLabels } from './labels';
@@ -68,8 +69,27 @@
   // Both transports' cards are always shown (each with its own connect / cancel /
   // disconnect / retry buttons), so the user always sees the full state of both
   // — we don't collapse or nudge.
-  // jlinkSerialStatus = Calliope mini 2 serial (Web Serial); presents as USB.
-  const usbConnected = $derived(s.usbStatus === 'connected' || s.jlinkSerialStatus === 'connected');
+  // Mini 2 presents as USB: jlinkSerialStatus = CDC serial (Web Serial),
+  // jlinkUsbStatus = J-Link flash link (WebUSB) — flash-only when serial is off.
+  const usbConnected = $derived(
+    s.usbStatus === 'connected' || s.jlinkSerialStatus === 'connected' || s.jlinkUsbStatus === 'connected',
+  );
+  // Mini 2 connected for flashing but without its CDC serial — offer to add it.
+  const mini2SerialMissing = $derived(
+    s.jlinkUsbStatus === 'connected'
+    && s.jlinkSerialStatus !== 'connected'
+    && s.jlinkSerialStatus !== 'connecting',
+  );
+  let addingSerial = $state(false);
+  async function doAddSerial(): Promise<void> {
+    if (addingSerial) return;
+    addingSerial = true;
+    try {
+      await connectJLinkSerial();
+    } finally {
+      addingSerial = false;
+    }
+  }
   const bleConnected = $derived(s.bleStatus === 'connected');
   const anyConnected = $derived(usbConnected || bleConnected);
 
@@ -247,7 +267,9 @@
         {#if s.calliopeVersion || s.boardVersion}
           <div class="meta-row">
             <span class="meta-key">{labels.version}</span>
-            <span class="meta-val">{s.calliopeVersion ?? s.boardVersion}</span>
+            <!-- Over BLE, Mini 1 und Mini 2 sind nicht unterscheidbar — zeige
+                 die Unschärfe statt einer falschen Gewissheit. -->
+            <span class="meta-val">{s.versionAmbiguous ? 'V1/V2' : (s.calliopeVersion ?? s.boardVersion)}</span>
           </div>
         {/if}
         {#if s.programType === 'blocks'}
@@ -302,6 +324,23 @@
             </button>
           {/if}
         </div>
+
+        {#if s.jlinkSerialStatus === 'connecting'}
+          <!-- The native Web Serial picker floats above this panel — tell the
+               user what phase they're in and that cancelling is harmless. -->
+          <p class="usb-hint">
+            USB 1/2 verbunden — wähle jetzt noch „CDC – COM x“, um die
+            Datenverbindung (Serial) herzustellen. Abbrechen ist okay:
+            Programme übertragen geht auch ohne.
+          </p>
+        {:else if mini2SerialMissing}
+          <div class="usb-serial-add">
+            <span class="usb-hint">Übertragen bereit — Serial (Datenverbindung) fehlt noch.</span>
+            <button type="button" class="row-btn connect" onclick={doAddSerial} disabled={addingSerial || s.status === 'flashing'}>
+              {addingSerial ? 'Verbinde…' : 'Serial verbinden'}
+            </button>
+          </div>
+        {/if}
       </div>
     {/if}
 
@@ -533,6 +572,22 @@
   }
 
   .badge-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+
+  // Mini 2: CDC-picker phase hint + "add serial" affordance inside the USB badge.
+  .usb-hint {
+    margin: 10px 0 0;
+    font-size: 11.5px;
+    color: #9ca3af;
+    line-height: 1.4;
+  }
+  .usb-serial-add {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 10px;
+    .usb-hint { margin: 0; flex: 1; min-width: 0; }
+  }
 
   // "Verbinden" / "Erneut verbinden" are always green; cancel / disconnect are a
   // decent (ghost) outline. State is conveyed by which buttons show + the error

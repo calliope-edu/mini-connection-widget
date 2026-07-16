@@ -29,6 +29,27 @@ export function detectCalliopeVersion(
 }
 
 /**
+ * Save the hex string to the user's downloads folder. Used by the "Download
+ * .hex file" choice in the connection-choice modal and the mini 2 flash
+ * fallback — the user then drags the file onto the Calliope's USB
+ * mass-storage drive to flash it manually.
+ */
+export function downloadHexFile(hex: string, name: string): void {
+  const safeName = name.replace(/[^a-zA-Z0-9._-]+/g, '-');
+  const fileName = safeName.endsWith('.hex') ? safeName : `${safeName}.hex`;
+  const blob = new Blob([hex], { type: 'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Defer revoke so the download has time to start.
+  setTimeout(() => URL.revokeObjectURL(url), 5_000);
+}
+
+/**
  * MakeCode appends its own metadata records (compressed project source, header)
  * after the Intel-HEX EOF record so the `.hex` file can be re-imported as a
  * project. dapjs's parser rejects any records after EOF ("there is data after

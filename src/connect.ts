@@ -7,14 +7,16 @@ import {
 } from './ble';
 import {
   clearUsbConn,
+  clearJlinkUsb,
   connectWithRetry,
   disconnectUsb,
   forgetAllUsbDevices,
   getUsbConnection,
   requestCalliopeUsbDevice,
   isSeggerJLinkDevice,
+  setJlinkUsbConnected,
 } from './usb';
-import { connectJLinkSerial, disconnectJLinkSerial } from './web-serial';
+import { connectJLinkSerial, disconnectJLinkSerial, forgetJLinkSerialPorts } from './web-serial';
 import { armUsbRecovery, escalateUsbRecovery } from './usb-recovery';
 import { showBleOfflineInfo } from './ble-offline-info';
 import { classifyBleError, classifyUsbError } from './connection-errors';
@@ -134,7 +136,18 @@ export async function connectCalliope(
         return;
       }
       if (isSeggerJLinkDevice(picked)) {
-        await connectJLinkSerial();
+        // Picker 1 granted a J-Link — the mini 2 is flash-capable from THIS
+        // moment, independent of the CDC serial below. Record it first so a
+        // dismissed second picker still leaves a usable (flash-only)
+        // connection instead of silently dropping everything.
+        setJlinkUsbConnected();
+        const serialOutcome = await connectJLinkSerial();
+        if (serialOutcome === 'cancelled' || serialOutcome === 'failed') {
+          appendLog({
+            direction: 'info',
+            text: 'mini 2 connected flash-only (CDC serial not added) — serial can be added later from the connection panel.',
+          });
+        }
         return;
       }
 
@@ -214,10 +227,13 @@ export async function disconnectAndForget(transport: CalliopeTransport): Promise
     await disconnectUsb();
     await disconnectJLinkSerial();
     await forgetAllUsbDevices();
+    await forgetJLinkSerialPorts();
     clearUsbConn();
+    clearJlinkUsb();
     updateState((s) => ({
       ...s,
       usbStatus: SUPPORT.usb ? 'disconnected' : 'unsupported',
+      jlinkUsbStatus: 'disconnected',
       usbDeviceName: undefined,
       usbErrorMessage: undefined,
       userDisconnectedUsb: true,

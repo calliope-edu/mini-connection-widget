@@ -189,6 +189,29 @@ export interface JlinkFlashOptions {
   signal?: AbortSignal;
 }
 
+/** Handshake / per-chunk operations should answer within seconds. */
+const OP_TIMEOUT_MS = 10_000;
+/** END legitimately blocks while the J-Link OB programs the target over SWD
+ *  (~10–30 s observed) — allow a wide margin before declaring it hung. */
+const END_TIMEOUT_MS = 90_000;
+
+/**
+ * Bound a USB operation. Without this a wedged J-Link OB leaves `transferIn`
+ * pending forever — the flash UI then sits at a frozen percentage with no
+ * error, no retry and no fallback. On timeout the underlying transfer is
+ * abandoned; callers must treat the transport as dead (we disconnect in the
+ * `finally` of `flashViaJLinkMsdImage`).
+ */
+function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`J-Link USB timeout: ${what} did not answer within ${Math.round(ms / 1000)}s`)), ms);
+    p.then(
+      (v) => { clearTimeout(t); resolve(v); },
+      (e) => { clearTimeout(t); reject(e); },
+    );
+  });
+}
+
 /**
  * Stream a raw hex file (Intel HEX text) to a J-Link OB which routes it to
  * its built-in flash programmer for the connected target chip. Calliope
@@ -246,8 +269,8 @@ export async function flashViaJLinkMsdImage(
 
 /** Send EMU_CMD_GET_CAPS_EX and verify the probe-info bit. */
 async function assertCapsEx(bulk: SeggerBulkTransport): Promise<void> {
-  await bulk.send(new Uint8Array([EMU_CMD_GET_CAPS_EX]));
-  const caps = await bulk.receiveAtLeast(32);
+  await withTimeout(bulk.send(new Uint8Array([EMU_CMD_GET_CAPS_EX])), OP_TIMEOUT_MS, 'GET_CAPS_EX send');
+  const caps = await withTimeout(bulk.receiveAtLeast(32), OP_TIMEOUT_MS, 'GET_CAPS_EX reply');
   if (!getBit(caps, EMU_CAP_EX_GET_PROBE_INFO)) {
     throw new Error('J-Link does not advertise EMU_CAP_EX_GET_PROBE_INFO — too old to flash via WebUSB');
   }
@@ -255,8 +278,11 @@ async function assertCapsEx(bulk: SeggerBulkTransport): Promise<void> {
 
 /** Send EMU_CMD_GET_PROBE_INFO/GET_CAPS and verify the MSD-image bit. */
 async function assertProbeInfoCaps(bulk: SeggerBulkTransport): Promise<void> {
-  await bulk.send(new Uint8Array([EMU_CMD_GET_PROBE_INFO, EMU_PROBE_INFO_CMD_GET_CAPS]));
-  const caps = await bulk.receiveAtLeast(4);
+  await withTimeout(
+    bulk.send(new Uint8Array([EMU_CMD_GET_PROBE_INFO, EMU_PROBE_INFO_CMD_GET_CAPS])),
+    OP_TIMEOUT_MS, 'GET_PROBE_INFO/GET_CAPS send',
+  );
+  const caps = await withTimeout(bulk.receiveAtLeast(4), OP_TIMEOUT_MS, 'GET_PROBE_INFO/GET_CAPS reply');
   if (!getBit(caps, EMU_PROBE_INFO_CAP_MSD_IMG)) {
     throw new Error('J-Link does not support MSD-image target flash — update J-Link OB firmware');
   }
@@ -273,25 +299,34 @@ async function sendImageChunk(bulk: SeggerBulkTransport, chunk: Uint8Array): Pro
   frame[4] = (n >>> 16) & 0xFF;
   frame[5] = (n >>> 24) & 0xFF;
   frame.set(chunk, 6);
-  await bulk.send(frame);
+  await withTimeout(bulk.send(frame), OP_TIMEOUT_MS, 'MSD_IMG_CHUNK send');
   // No response per chunk — J-Link only acknowledges via the final END
   // command. SEGGER's reference confirms this; we'd otherwise hang here
   // on `transferIn`.
 }
 
 async function sendImageEnd(bulk: SeggerBulkTransport): Promise<void> {
-  await bulk.send(new Uint8Array([EMU_CMD_GET_PROBE_INFO, EMU_PROBE_INFO_SUB_CMD_WRITE_MSD_IMG_END]));
+  await withTimeout(
+    bulk.send(new Uint8Array([EMU_CMD_GET_PROBE_INFO, EMU_PROBE_INFO_SUB_CMD_WRITE_MSD_IMG_END])),
+    OP_TIMEOUT_MS, 'MSD_IMG_END send',
+  );
   // The response is a 4-byte LE u32. 0 means success; non-zero is the
   // length of an ASCII error string that follows. Some J-Link OB builds
   // can sit on the END for ~10–30 s while they finalise the target
-  // flash write — receiveAtLeast handles arbitrary streaming.
-  const head = await bulk.receiveAtLeast(4);
+  // flash write — receiveAtLeast handles arbitrary streaming, the wide
+  // END_TIMEOUT_MS covers the legitimate wait.
+  const head = await withTimeout(bulk.receiveAtLeast(4), END_TIMEOUT_MS, 'MSD_IMG_END result');
   const code = readU32LE(head, 0);
   if (code === 0) return;
   // Error string follows; pull `code` bytes more if we don't have them yet.
+  // A stalled detail read must not mask the failure itself — bail out with
+  // whatever partial string we have.
   let buf = head;
   while (buf.length < 4 + code) {
-    const more = await bulk.receive();
+    let more: USBInTransferResult;
+    try {
+      more = await withTimeout(bulk.receive(), OP_TIMEOUT_MS, 'MSD_IMG_END error detail');
+    } catch { break; }
     if (!more.data) break;
     const u = new Uint8Array(more.data.buffer, more.data.byteOffset, more.data.byteLength);
     const merged = new Uint8Array(buf.length + u.length);

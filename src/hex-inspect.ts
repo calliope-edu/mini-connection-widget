@@ -96,3 +96,51 @@ export function inspectHex(hex: string): HexInspection {
   if (foundUpy1 >= 0 && foundUpy2 >= 0) return { flavor: 'micropython', byteCount };
   return { flavor: 'unknown', byteCount };
 }
+
+// ---- nRF51 RAM class (Calliope mini 1 = 16 KB vs mini 2 = 32 KB) -----------
+
+export type HexRamClass = '16kb' | '32kb';
+
+/**
+ * Detect which nRF51 RAM size a DAL-era hex was linked for.
+ *
+ * The first word of a Cortex-M vector table is the initial main stack
+ * pointer, and DAL/mbed linker scripts put the stack top at the END of RAM —
+ * so it directly encodes the RAM size the image needs:
+ *
+ *   0x20004000 → 16 KB build (runs on mini 1 AND mini 2)
+ *   0x20008000 → 32 KB build (mini 2 ONLY — hangs/faults on a mini 1)
+ *
+ * DAL images ship the S110 softdevice at 0x0 with the application vector
+ * table at 0x18000; softdevice-less images keep theirs at 0x0. Anything else
+ * (mini 3 CODAL images point into 128 KB nRF52 RAM, universal-hex containers
+ * whose custom records the parser skips) returns `undefined` — callers must
+ * treat that as "unknown", never as "fits".
+ */
+export function detectHexRamClass(hex: string): HexRamClass | undefined {
+  let map: ReturnType<typeof MemoryMap.fromHex>;
+  try {
+    map = MemoryMap.fromHex(hex);
+  } catch {
+    return undefined;
+  }
+  const readU32 = (addr: number): number | undefined => {
+    for (const [start, bytes] of map) {
+      const off = addr - start;
+      if (off >= 0 && off + 4 <= bytes.length) {
+        return (bytes[off] | (bytes[off + 1] << 8) | (bytes[off + 2] << 16) | (bytes[off + 3] << 24)) >>> 0;
+      }
+    }
+    return undefined;
+  };
+  for (const vectorTable of [0x18000, 0x0]) {
+    const msp = readU32(vectorTable);
+    if (msp === undefined) continue;
+    // Sanity: an initial MSP points into nRF51 RAM (0x2000_0000 + size).
+    if ((msp & 0xffff0000) >>> 0 !== 0x20000000) continue;
+    const ramTop = msp - 0x20000000;
+    if (ramTop > 0x4000 && ramTop <= 0x8000) return '32kb';
+    if (ramTop > 0 && ramTop <= 0x4000) return '16kb';
+  }
+  return undefined;
+}

@@ -39,6 +39,17 @@ export interface CalliopeState {
    */
   jlinkSerialStatus: CalliopeStatus;
 
+  /**
+   * Calliope mini 2 J-Link WebUSB flash link. 'connected' once the combined USB
+   * picker granted a J-Link device (or one is already authorized + present via
+   * getDevices()) — flashing over the SEGGER MSD path works from that moment,
+   * with or without the CDC serial port. Kept separate from `jlinkSerialStatus`
+   * so a cancelled Web Serial picker still leaves the mini 2 usable: flash-only
+   * (`jlinkUsbStatus` connected) vs flash+comms (both connected). Rolls up into
+   * the overall `status`. See usb.ts `setJlinkUsbConnected`/`initJlinkUsbWatch`.
+   */
+  jlinkUsbStatus: CalliopeStatus;
+
   bleStatus: CalliopeStatus;
   bleDeviceName?: string;
   bleErrorMessage?: string;
@@ -99,6 +110,13 @@ export interface CalliopeState {
 
   boardVersion?: BoardVersion;
   calliopeVersion?: CalliopeVersion;
+  /**
+   * True when `calliopeVersion` is a best guess that can't tell Mini 1 and
+   * Mini 2 apart — the BLE service fingerprint case, where any DAL device
+   * reports 'V2'. USB detection (DAPLink productName / J-Link pick) is
+   * definitive and clears this. UI may render "V1/V2" while set.
+   */
+  versionAmbiguous?: boolean;
   connectedAt?: number;
 
   /**
@@ -194,9 +212,9 @@ export const SUPPORT = { usb: usbSupported, ble: bleSupported };
 function recomputeOverall(s: CalliopeState): CalliopeState {
   let status: CalliopeStatus;
   if (s.flashTransport) status = 'flashing';
-  else if (s.usbStatus === 'connected' || s.bleStatus === 'connected' || s.jlinkSerialStatus === 'connected') status = 'connected';
-  else if (s.usbStatus === 'connecting' || s.bleStatus === 'connecting' || s.jlinkSerialStatus === 'connecting') status = 'connecting';
-  else if (s.usbStatus === 'error' || s.bleStatus === 'error' || s.jlinkSerialStatus === 'error') status = 'error';
+  else if (s.usbStatus === 'connected' || s.bleStatus === 'connected' || s.jlinkSerialStatus === 'connected' || s.jlinkUsbStatus === 'connected') status = 'connected';
+  else if (s.usbStatus === 'connecting' || s.bleStatus === 'connecting' || s.jlinkSerialStatus === 'connecting' || s.jlinkUsbStatus === 'connecting') status = 'connecting';
+  else if (s.usbStatus === 'error' || s.bleStatus === 'error' || s.jlinkSerialStatus === 'error' || s.jlinkUsbStatus === 'error') status = 'error';
   else if (!s.usbSupported && !s.bleSupported) status = 'unsupported';
   else status = 'disconnected';
 
@@ -208,7 +226,14 @@ function recomputeOverall(s: CalliopeState): CalliopeState {
   // transport the user is actively on are kept: those transports never sit at
   // `'connected'`, so we only ever clear the idle one's message here.
   if (status === 'connected' || status === 'flashing') {
-    if (s.usbStatus !== 'connected' && s.usbErrorMessage !== undefined) {
+    // `usbErrorMessage` is shared by the whole USB family (DAPLink, mini 2
+    // J-Link flash, mini 2 CDC serial) — only treat it as an idle-transport
+    // background error when NONE of them is connected. Without this, a mini 2
+    // flash failure would be silently cleared because `usbStatus` (DAPLink)
+    // sits at 'disconnected' while the J-Link links are up.
+    const usbFamilyConnected =
+      s.usbStatus === 'connected' || s.jlinkSerialStatus === 'connected' || s.jlinkUsbStatus === 'connected';
+    if (!usbFamilyConnected && s.usbErrorMessage !== undefined) {
       s = { ...s, usbErrorMessage: undefined };
     }
     if (s.bleStatus !== 'connected' && s.bleErrorMessage !== undefined) {
@@ -222,6 +247,7 @@ function recomputeOverall(s: CalliopeState): CalliopeState {
 const initial: CalliopeState = recomputeOverall({
   usbStatus: usbSupported ? 'disconnected' : 'unsupported',
   jlinkSerialStatus: 'disconnected',
+  jlinkUsbStatus: 'disconnected',
   bleStatus: bleSupported ? 'disconnected' : 'unsupported',
   bleHasPermission: false,
   bleCanFlash: false,
