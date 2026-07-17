@@ -320,15 +320,18 @@ async function sendImageEnd(bulk: SeggerBulkTransport): Promise<void> {
   if (code === 0) return;
   // Error string follows; pull `code` bytes more if we don't have them yet.
   // A stalled detail read must not mask the failure itself — bail out with
-  // whatever partial string we have.
+  // whatever partial string we have. (No explicit WebUSB type annotation here
+  // — consumers type-checking these sources lack the w3c-web-usb lib.)
   let buf = head;
   while (buf.length < 4 + code) {
-    let more: USBInTransferResult;
+    let u: Uint8Array | null = null;
     try {
-      more = await withTimeout(bulk.receive(), OP_TIMEOUT_MS, 'MSD_IMG_END error detail');
-    } catch { break; }
-    if (!more.data) break;
-    const u = new Uint8Array(more.data.buffer, more.data.byteOffset, more.data.byteLength);
+      const more = await withTimeout(bulk.receive(), OP_TIMEOUT_MS, 'MSD_IMG_END error detail');
+      u = more.data
+        ? new Uint8Array(more.data.buffer, more.data.byteOffset, more.data.byteLength)
+        : null;
+    } catch { /* stalled detail read — keep the partial string */ }
+    if (!u) break;
     const merged = new Uint8Array(buf.length + u.length);
     merged.set(buf, 0);
     merged.set(u, buf.length);
