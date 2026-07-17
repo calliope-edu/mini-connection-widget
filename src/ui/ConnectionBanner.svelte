@@ -324,7 +324,14 @@
         {/if}
       {:else if kind === 'extra' && extra}
         {#if extra.action}
-          <button type="button" class="btn usb" onclick={runExtra} disabled={extraBusy}>
+          <button
+            type="button"
+            class="btn"
+            class:usb={extra.action.variant !== 'ble'}
+            class:ble={extra.action.variant === 'ble'}
+            onclick={runExtra}
+            disabled={extraBusy}
+          >
             {extraBusy ? (extra.action.busyLabel ?? 'Bitte warten…') : extra.action.label}
           </button>
         {/if}

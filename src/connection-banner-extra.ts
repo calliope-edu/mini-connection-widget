@@ -21,6 +21,9 @@ export interface BannerExtraAction {
   label: string;
   /** Label while the action's promise is in flight (e.g. "Lade…"). */
   busyLabel?: string;
+  /** Button color, following the transport palette: 'usb' = green (default),
+   *  'ble' = blue. Use 'ble' for actions that open the Bluetooth chooser. */
+  variant?: 'usb' | 'ble';
   run: () => void | Promise<void>;
 }
 

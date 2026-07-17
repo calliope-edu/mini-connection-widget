@@ -452,16 +452,22 @@ export function isSeggerJLinkDevice(device: any): boolean {
  * getDevices()); this state field is the UI/dispatcher-visible mirror.
  */
 export function setJlinkUsbConnected(): void {
-  updateState((s) => ({
-    ...s,
-    jlinkUsbStatus: 'connected',
-    usbDeviceName: 'Calliope mini 2 (USB)',
-    calliopeVersion: 'V2',
-    versionAmbiguous: false,
-    usbErrorMessage: undefined,
-    userDisconnectedUsb: false,
-    connectedAt: s.connectedAt ?? Date.now(),
-  }));
+  updateState((s) => {
+    // Don't clobber an active DAPLink session's identity: plugging in an
+    // (authorized) mini 2 while a mini 1/3 is connected must not relabel the
+    // device card / version — the DAPLink device is the one in use.
+    const dapActive = s.usbStatus === 'connected';
+    return {
+      ...s,
+      jlinkUsbStatus: 'connected',
+      usbDeviceName: dapActive ? s.usbDeviceName : 'Calliope mini 2 (USB)',
+      calliopeVersion: dapActive ? s.calliopeVersion : 'V2',
+      versionAmbiguous: dapActive ? s.versionAmbiguous : false,
+      usbErrorMessage: undefined,
+      userDisconnectedUsb: false,
+      connectedAt: s.connectedAt ?? Date.now(),
+    };
+  });
 }
 
 /** Drop the J-Link flash-link state (device unplugged / user disconnect). */

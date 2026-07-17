@@ -69,8 +69,21 @@ export type JlinkSerialOutcome = 'connected' | 'cancelled' | 'failed' | 'unsuppo
  *
  * A silent resume is tried first: if the browser already remembers a granted
  * J-Link CDC port (`getPorts()`), it is reused with NO picker.
+ *
+ * Single-flight: concurrent calls (page-load silent resume racing a panel
+ * click, offer-modal accept, connect flow) join the in-flight attempt instead
+ * of double-opening / double-locking the module-level port.
  */
-export async function connectJLinkSerial(
+let connectInFlight: Promise<JlinkSerialOutcome> | null = null;
+export function connectJLinkSerial(
+  opts: { silentOnly?: boolean } = {},
+): Promise<JlinkSerialOutcome> {
+  if (connectInFlight) return connectInFlight;
+  connectInFlight = doConnectJLinkSerial(opts).finally(() => { connectInFlight = null; });
+  return connectInFlight;
+}
+
+async function doConnectJLinkSerial(
   opts: { silentOnly?: boolean } = {},
 ): Promise<JlinkSerialOutcome> {
   const nav = navigator as any;
