@@ -412,15 +412,17 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
               });
             }
             updateState((s) => {
-              // A USB-side detection (DAPLink productName, J-Link pick) is
-              // definitive — never let the ambiguous BLE DAL guess ('V2' for
-              // any Mini 1/2) overwrite it. E.g. a Mini 1 confirmed V1 over
-              // DAPLink must not flip to V2 when BLE also connects. The
-              // Mini-3 verdict (bv === 'V2' → V3) is itself definitive.
-              const usbConfirmed =
-                s.calliopeVersion !== undefined && !s.versionAmbiguous
-                && (s.usbStatus === 'connected' || s.jlinkSerialStatus === 'connected' || s.jlinkUsbStatus === 'connected');
-              const patch = usbConfirmed && bv === 'V1' ? { boardVersion: bv } : versionPatch;
+              // The BLE DAL verdict ('V2' for any Mini 1/2) is a GUESS — never
+              // let it overwrite an already-settled V1/V2: a USB-side detection
+              // (DAPLink productName, J-Link pick) or the user's answer to the
+              // RAM-fit modal (flash.ts confirmRamFitForBleFlash), both of which
+              // clear versionAmbiguous. E.g. a Mini 1 confirmed over DAPLink —
+              // or declared by the user — must not flip back to ambiguous 'V2'
+              // on a BLE (re)connect. The Mini-3 verdict (bv === 'V2' → V3) is
+              // itself definitive and always applies.
+              const alreadySettled =
+                !s.versionAmbiguous && (s.calliopeVersion === 'V1' || s.calliopeVersion === 'V2');
+              const patch = alreadySettled && bv === 'V1' ? { boardVersion: bv } : versionPatch;
               if (s.flashTransport === 'ble') return { ...s, ...patch, bleSessionKind: result.kind };
               // 'dfu-bootloader' is the one classification that downgrades
               // capabilities: the bootloader doesn't host UART or

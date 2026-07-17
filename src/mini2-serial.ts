@@ -68,13 +68,18 @@ function maybeOffer(): void {
   const unsub = _consumer.subscribe((v) => { consumer = v; });
   unsub();
 
+  // Never offer where accepting cannot succeed: without Web Serial (e.g.
+  // Android Chrome has WebUSB but no navigator.serial) the accept would fail
+  // instantly and the state churn would re-raise the modal in a loop.
+  const webSerialAvailable = typeof navigator !== 'undefined' && 'serial' in navigator;
+
   const flashOnly =
     s.jlinkUsbStatus === 'connected'
     && s.jlinkSerialStatus !== 'connected'
     && s.jlinkSerialStatus !== 'connecting'
     && !s.flashInProgress;
 
-  if (!consumer || !flashOnly) {
+  if (!consumer || !flashOnly || !webSerialAvailable) {
     // Situation resolved (serial up, device gone, editor left) — retract a
     // stale offer so the modal never outlives its reason.
     _offer.set(null);
@@ -92,6 +97,13 @@ function maybeOffer(): void {
   const consumerAtOffer = consumer;
   _offer.set({
     accept: async () => {
+      // ONE ask per connection/editor — latch BEFORE the connect attempt:
+      // updateState fires subscribers synchronously, so a dismissed picker
+      // would re-run maybeOffer (and re-raise the modal) before an
+      // after-the-await latch could take effect. A successful connect makes
+      // the latch moot (serial connected ⇒ no offer condition); the panel's
+      // persistent "Serial verbinden" button stays as the manual retry path.
+      declinedFor = consumerAtOffer;
       _offer.set(null);
       await connectJLinkSerial();
     },

@@ -74,9 +74,13 @@
   const usbConnected = $derived(
     s.usbStatus === 'connected' || s.jlinkSerialStatus === 'connected' || s.jlinkUsbStatus === 'connected',
   );
-  // Mini 2 connected for flashing but without its CDC serial — offer to add it.
+  // Mini 2 connected for flashing but without its CDC serial — offer to add
+  // it. Only where Web Serial exists at all (Android Chrome has WebUSB but no
+  // navigator.serial — there the flash-only link is simply all there is).
+  const webSerialSupported = typeof navigator !== 'undefined' && 'serial' in navigator;
   const mini2SerialMissing = $derived(
-    s.jlinkUsbStatus === 'connected'
+    webSerialSupported
+    && s.jlinkUsbStatus === 'connected'
     && s.jlinkSerialStatus !== 'connected'
     && s.jlinkSerialStatus !== 'connecting',
   );

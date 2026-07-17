@@ -84,12 +84,13 @@ export async function connectJLinkSerial(
     return 'unsupported';
   }
   if (getState().jlinkSerialStatus === 'connected') return 'connected';
-  // While 'connecting', the panel/banner show the "pick CDC – COM x" phase
-  // hint — the native picker floats above them, so the user sees what to do.
-  updateState((s) => ({ ...s, jlinkSerialStatus: 'connecting', usbErrorMessage: undefined }));
+  updateState((s) => ({ ...s, usbErrorMessage: undefined }));
   try {
     // Silent resume: a previously-granted port needs no picker (and no user
     // gesture) — this is what re-links serial after a re-plug or page reload.
+    // Deliberately NOT surfaced as 'connecting': that status drives the
+    // "wähle CDC – COM x" phase hint in panel/banner, which must only show
+    // while the native picker is actually on screen.
     try {
       const ports: any[] = await nav.serial.getPorts();
       const prior = ports.find((p) => p?.getInfo?.()?.usbVendorId === SEGGER_JLINK_VENDOR_ID) ?? null;
@@ -100,10 +101,12 @@ export async function connectJLinkSerial(
     } catch { /* fall through to the picker */ }
     if (!port && opts.silentOnly) {
       // No grant to resume and no gesture to open a picker with — stay quiet.
-      updateState((s) => ({ ...s, jlinkSerialStatus: 'disconnected' }));
       return 'cancelled';
     }
     if (!port) {
+      // 'connecting' = the CDC picker is open — panel/banner show the
+      // "USB 1/2 verbunden, wähle CDC – COM x" phase hint on this status.
+      updateState((s) => ({ ...s, jlinkSerialStatus: 'connecting' }));
       port = await nav.serial.requestPort({ filters: [{ usbVendorId: SEGGER_JLINK_VENDOR_ID }] });
       await port.open({ baudRate: JLINK_BAUD_RATE });
     }
