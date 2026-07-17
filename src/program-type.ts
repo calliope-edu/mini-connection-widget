@@ -24,7 +24,14 @@ import { getConnectedBleDevice } from './ble';
 import { getUsbConn, registerSerialDataListener } from './usb';
 import { addJlinkRawSubscriber, jlinkSerialWrite } from './web-serial';
 import { calliopeState, updateState, getState } from './state';
-import { buildBlocksFrame, BLOCKS_REQ, BlocksUsbProbe } from './blocks-frame';
+import {
+  buildBlocksFrame,
+  BLOCKS_REQ,
+  BLOCKS_RES,
+  BLOCKS_USB_CONFIRM_HITS,
+  BlocksFrameParser,
+  BlocksUsbProbe,
+} from './blocks-frame';
 import { detectBlocksDap } from './blocks-dap';
 import { isNativeMode } from './native-bridge';
 import { nativeGattRead, nativeGattWrite } from './native-mode';
@@ -35,10 +42,14 @@ export interface CalliopeProgramInfo {
   type: CalliopeProgramType;
   /** Which transport confirmed the match. */
   via?: 'usb' | 'ble';
-  /** Blocks protocol version reported by STATE characteristic (BLE only). */
+  /** Blocks protocol version — COMMAND payload byte[1] (BLE read, or the
+   *  RES_READ 0x0100 reply over the mini 2's CDC serial). */
   protocolVersion?: number;
-  /** Blocks hardware version byte (BLE only). */
+  /** Blocks hardware version byte — COMMAND payload byte[0]. */
   hardwareVersion?: number;
+  /** Blocks runtime (hex) version — COMMAND payload byte[3]. Lets hosts run
+   *  their outdated-check without a live editor connection. */
+  runtimeVersion?: number;
 }
 
 // ---- BLE constants --------------------------------------------------------
@@ -152,7 +163,8 @@ async function probeBle(timeoutMs: number): Promise<CalliopeProgramInfo | null> 
           type: 'blocks',
           via: 'ble',
           hardwareVersion: b[0],
-          protocolVersion: b[1]
+          protocolVersion: b[1],
+          runtimeVersion: b.byteLength >= 4 ? b[3] : undefined
         };
       }
     } catch { /* retryable within the window */ }
@@ -223,14 +235,21 @@ function probeUsb(timeoutMs: number): Promise<CalliopeProgramInfo | null> {
 
 /**
  * Probe the Blocks serial handshake over the mini 2's CDC port (Web Serial).
- * Same REQ_READ wake + frame matcher as `probeUsb`, but routed through the
- * J-Link serial transport — the DAL Blocks runtime speaks the identical
- * framed protocol over its UART, which the J-Link OB bridges to CDC.
+ * Same REQ_READ wake as `probeUsb`, but routed through the J-Link serial
+ * transport — the DAL Blocks runtime speaks the identical framed protocol
+ * over its UART, which the J-Link OB bridges to CDC.
+ *
+ * Confirms on `BLOCKS_USB_CONFIRM_HITS` checksum-valid frames (same bar as
+ * `BlocksUsbProbe`), and additionally captures the RES_READ reply on channel
+ * 0x0100 — its payload mirrors the BLE COMMAND characteristic (hardware /
+ * protocol / runtime version bytes), so hosts get version info over USB too.
  */
 function probeJlinkSerial(timeoutMs: number): Promise<CalliopeProgramInfo | null> {
   return new Promise((resolve) => {
     if (getState().flashInProgress) { resolve(null); return; }
-    const probe = new BlocksUsbProbe();
+    const parser = new BlocksFrameParser();
+    let validFrames = 0;
+    let versionInfo: Pick<CalliopeProgramInfo, 'hardwareVersion' | 'protocolVersion' | 'runtimeVersion'> = {};
     let settled = false;
     let unsubscribe: (() => void) | null = null;
     const finish = (val: CalliopeProgramInfo | null) => {
@@ -244,7 +263,20 @@ function probeJlinkSerial(timeoutMs: number): Promise<CalliopeProgramInfo | null
       if (!chunk) return;
       const bytes = new Uint8Array(chunk.length);
       for (let i = 0; i < chunk.length; i++) bytes[i] = chunk.charCodeAt(i) & 0xff;
-      if (probe.push(bytes)) finish({ type: 'blocks', via: 'usb' });
+      for (const f of parser.push(bytes)) {
+        validFrames++;
+        // The direct answer to our REQ_READ — usually the first frame.
+        if (f.type === BLOCKS_RES.READ && f.channel === 0x0100 && f.data.length >= 2) {
+          versionInfo = {
+            hardwareVersion: f.data[0],
+            protocolVersion: f.data[1],
+            runtimeVersion: f.data.length >= 4 ? f.data[3] : undefined,
+          };
+        }
+      }
+      if (validFrames >= BLOCKS_USB_CONFIRM_HITS) {
+        finish({ type: 'blocks', via: 'usb', ...versionInfo });
+      }
     });
     void jlinkSerialWrite(buildBlocksFrame(BLOCKS_REQ.READ, 0x0100)).catch(() => { /* ignore */ });
     const timer = setTimeout(() => finish(null), timeoutMs);
