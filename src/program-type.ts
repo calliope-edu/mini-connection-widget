@@ -23,6 +23,7 @@
 import { getConnectedBleDevice } from './ble';
 import { getUsbConn, registerSerialDataListener } from './usb';
 import { addJlinkRawSubscriber, jlinkSerialWrite } from './web-serial';
+import { appendLog } from './log';
 import { calliopeState, updateState, getState } from './state';
 import {
   buildBlocksFrame,
@@ -296,6 +297,10 @@ function probeJlinkSerial(timeoutMs: number): Promise<CalliopeProgramInfo | null
         validFrames++;
         // The direct answer to our REQ_READ — definitive on its own.
         if (f.type === BLOCKS_RES.READ && f.channel === 0x0100 && f.data.length >= 2) {
+          appendLog({
+            direction: 'info',
+            text: `Blocks probe (mini 2 serial): confirmed — hw=${f.data[0]} protocol=${f.data[1]} runtime=v${f.data.length >= 4 ? f.data[3] : '?'}`,
+          });
           finish({
             type: 'blocks',
             via: 'usb',
@@ -310,8 +315,15 @@ function probeJlinkSerial(timeoutMs: number): Promise<CalliopeProgramInfo | null
         finish({ type: 'blocks', via: 'usb' });
       }
     });
+    appendLog({ direction: 'info', text: 'Blocks probe (mini 2 serial): sending REQ_READ 0x0100 handshake' });
     void jlinkSerialWrite(buildBlocksFrame(BLOCKS_REQ.READ, 0x0100)).catch(() => { /* ignore */ });
-    const timer = setTimeout(() => finish(null), timeoutMs);
+    const timer = setTimeout(() => {
+      appendLog({
+        direction: 'info',
+        text: `Blocks probe (mini 2 serial): no handshake reply within ${timeoutMs}ms (${validFrames} valid frame(s) seen)`,
+      });
+      finish(null);
+    }, timeoutMs);
   });
 }
 
