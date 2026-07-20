@@ -170,8 +170,42 @@ async function startReadLoop(): Promise<void> {
     try { reader.releaseLock(); } catch { /* ignore */ }
     reader = null;
     // Reader ended on its own (device unplugged / stream error) rather than via
-    // an explicit disconnect → reflect the drop.
-    if (!readLoopAbort) void disconnectJLinkSerial();
+    // an explicit disconnect → reflect the drop, then try to resume silently:
+    // the common cause is the TARGET rebooting after an MSD flash, which
+    // glitches the CDC stream for a moment while the J-Link OB (and the
+    // browser's port grant) stay alive. Without the resume, the serial link —
+    // and with it the Blocks detection probe — stayed dead until a manual
+    // reconnect (observed: probe confirms once right after a flash, then
+    // every later probe reports 'unknown').
+    if (!readLoopAbort) {
+      void disconnectJLinkSerial().then(() => { void attemptSilentJlinkResume(); });
+    }
+  }
+}
+
+/**
+ * Bounded silent-reconnect burst after an unexpected read-loop end. Uses the
+ * gesture-free `getPorts()` resume only — never opens a picker. Ends quietly
+ * when the port is really gone (unplugged / permission revoked).
+ */
+let resumeBurstActive = false;
+async function attemptSilentJlinkResume(): Promise<void> {
+  if (resumeBurstActive) return;
+  resumeBurstActive = true;
+  try {
+    const delays = [1200, 1500, 2000, 3000];
+    for (const d of delays) {
+      await new Promise((r) => setTimeout(r, d));
+      if (getState().jlinkSerialStatus === 'connected') return;
+      const outcome = await connectJLinkSerial({ silentOnly: true });
+      if (outcome === 'connected') {
+        appendLog({ direction: 'info', text: 'mini 2 serial resumed after reboot' });
+        return;
+      }
+    }
+    appendLog({ direction: 'info', text: 'mini 2 serial did not come back after the drop — reconnect manually if needed' });
+  } finally {
+    resumeBurstActive = false;
   }
 }
 
