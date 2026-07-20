@@ -65,9 +65,11 @@ const PENDING_FLASH_TTL_MS = 60_000;
  */
 export interface FlashOptions {
   /**
-   * Skip partial flash and go straight to full Nordic DFU. Set when flashing
+   * Skip partial flash and go straight to a full flash. Set when flashing
    * the Blocks runtime, whose DAL hash collides with a pxt-calliope app so a
-   * partial flash would corrupt it. Honored on both the web and native paths.
+   * partial flash would corrupt it. On BLE this means full Nordic DFU; on USB
+   * it means the DAPLink vendor-command full flash (`partial: false`); native
+   * forwards it to the host. Honored on all paths.
    */
   forceFullDfu?: boolean;
   /**
@@ -201,7 +203,7 @@ async function flashDispatch(
     // the recovery ladder, the transport-connected hook re-fires this flash the
     // moment USB is back — the user never has to click Download again.
     setPendingFlash(hex, name, 'usb', opts);
-    const outcome = await flashCalliopeViaUsb(hex, name);
+    const outcome = await flashCalliopeViaUsb(hex, name, { forceFullDfu: opts.forceFullDfu });
     if (outcome === 'flashed') {
       clearPendingFlash();
       // Mark the expected reboot AFTER the transfer completes, not before: the
@@ -718,7 +720,7 @@ async function flashCalliopeHybrid(
     try { await ble.disconnect(); } catch { /* ignore */ }
   }
   void getUsbConn;
-  const outcome = await flashCalliopeViaUsb(hex, name);
+  const outcome = await flashCalliopeViaUsb(hex, name, { forceFullDfu: opts.forceFullDfu });
   if (outcome === 'flashed') {
     clearPendingFlash();
     // Anchor the reboot window after the transfer (see the USB-first branch):

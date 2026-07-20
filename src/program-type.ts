@@ -30,7 +30,6 @@ import {
   BLOCKS_RES,
   BLOCKS_USB_CONFIRM_HITS,
   BlocksFrameParser,
-  BlocksUsbProbe,
 } from './blocks-frame';
 import { detectBlocksDap } from './blocks-dap';
 import { isNativeMode } from './native-bridge';
@@ -77,7 +76,7 @@ function hasNonZero(bytes: ArrayLike<number>): boolean {
   return false;
 }
 
-// The USB Blocks-frame matcher (`BlocksUsbProbe`) lives in `blocks-frame.ts`
+// The USB Blocks-frame parsing (`BlocksFrameParser`) lives in `blocks-frame.ts`
 // so it can be unit-tested without a serial port.
 
 function readState(): { usbOn: boolean; bleOn: boolean; jlinkSerialOn: boolean; jlinkUsbOn: boolean } {
@@ -185,7 +184,14 @@ function probeUsb(timeoutMs: number): Promise<CalliopeProgramInfo | null> {
     const conn = getUsbConn();
     if (!conn) { resolve(null); return; }
 
-    const probe = new BlocksUsbProbe();
+    // Mirror `probeJlinkSerial`: count checksum-valid frames AND capture the
+    // RES_READ 0x0100 reply — its payload mirrors the BLE COMMAND
+    // characteristic (hardware / protocol / runtime version bytes), so the
+    // DAPLink CDC path reports the runtime version just like the mini 2
+    // path (used by the campus banner's outdated-firmware offer).
+    const parser = new BlocksFrameParser();
+    let validFrames = 0;
+    let versionInfo: Pick<CalliopeProgramInfo, 'hardwareVersion' | 'protocolVersion' | 'runtimeVersion'> = {};
     let settled = false;
     let unsubscribe: (() => void) | null = null;
     const finish = (val: CalliopeProgramInfo | null) => {
@@ -200,7 +206,19 @@ function probeUsb(timeoutMs: number): Promise<CalliopeProgramInfo | null> {
       if (!s) return;
       const bytes = new Uint8Array(s.length);
       for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i) & 0xff;
-      if (probe.push(bytes)) finish({ type: 'blocks', via: 'usb' });
+      for (const f of parser.push(bytes)) {
+        validFrames++;
+        if (f.type === BLOCKS_RES.READ && f.channel === 0x0100 && f.data.length >= 2) {
+          versionInfo = {
+            hardwareVersion: f.data[0],
+            protocolVersion: f.data[1],
+            runtimeVersion: f.data.length >= 4 ? f.data[3] : undefined,
+          };
+        }
+      }
+      if (validFrames >= BLOCKS_USB_CONFIRM_HITS) {
+        finish({ type: 'blocks', via: 'usb', ...versionInfo });
+      }
     });
     // Wake the firmware's serial broadcaster by sending a real Blocks
     // `REQ_READ on ch 0x0100` frame. The pxt-blocks runtime only starts

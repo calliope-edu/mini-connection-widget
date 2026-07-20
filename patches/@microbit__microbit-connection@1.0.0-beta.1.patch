@@ -59,7 +59,7 @@ index 8c3da78c27a79bc9759dd9af9b3079cfe245bcc6..817dc719d7736eb8a045c3e862c4a6d5
  }
  exports.DeviceInformationService = DeviceInformationService;
 diff --git a/build/cjs/usb/connection.d.ts b/build/cjs/usb/connection.d.ts
-index 5d63b9ce50c3c80907ff33444c2898f118379e32..013b6b4aa80b9d2b318963b915179852401d0cc6 100644
+index 5d63b9ce50c3c80907ff33444c2898f118379e32..081a4e871a7e056b6d3e75760e5f4585ae7ab553 100644
 --- a/build/cjs/usb/connection.d.ts
 +++ b/build/cjs/usb/connection.d.ts
 @@ -58,7 +58,7 @@ export interface MicrobitUSBConnection extends DeviceConnection {
@@ -72,7 +72,7 @@ index 5d63b9ce50c3c80907ff33444c2898f118379e32..013b6b4aa80b9d2b318963b915179852
       * Gets micro:bit deviceId.
       *
 diff --git a/build/cjs/usb/connection.js b/build/cjs/usb/connection.js
-index e04b8bfd599dbe03b3d8c5adb0d63f1a780a4b59..fa723e3b1d21e2e265cf6794d9e329eee770a93d 100644
+index e04b8bfd599dbe03b3d8c5adb0d63f1a780a4b59..1c98109603f77311be2bab9aa3db1b9e3afcde3b 100644
 --- a/build/cjs/usb/connection.js
 +++ b/build/cjs/usb/connection.js
 @@ -15,7 +15,16 @@ const promise_queue_js_1 = require("./promise-queue.js");
@@ -93,8 +93,80 @@ index e04b8bfd599dbe03b3d8c5adb0d63f1a780a4b59..fa723e3b1d21e2e265cf6794d9e329ee
  exports.DeviceSelectionMode = {
      /**
       * Attempts to connect to known device, otherwise asks which device to
+@@ -351,6 +360,7 @@ class MicrobitUSBConnectionImpl extends events_js_1.TypedEventTarget {
+         const data = await dataSource(boardVersion);
+         const flashing = new partial_flashing_js_1.PartialFlashing(this.device, this.logging, boardVersion, pageSize, numPages);
+         let wasPartial = false;
++        let flashSucceeded = false;
+         try {
+             if (partial) {
+                 wasPartial = await flashing.flashAsync(data, progress);
+@@ -358,6 +368,7 @@ class MicrobitUSBConnectionImpl extends events_js_1.TypedEventTarget {
+             else {
+                 await flashing.fullFlashAsync(data, progress);
+             }
++            flashSucceeded = true;
+         }
+         finally {
+             progress(wasPartial ? device_js_1.ProgressStage.PartialFlashing : device_js_1.ProgressStage.FullFlashing, undefined);
+@@ -367,14 +378,29 @@ class MicrobitUSBConnectionImpl extends events_js_1.TypedEventTarget {
+                 await this.disconnect(false, device_js_1.ConnectionStatus.Paused);
+             }
+             else {
+-                await this.device.adi.reinit();
+-                // Start serial before resetting so we capture startup output.
+-                // For full flash FLASH_CLOSE already reset the target, so its
+-                // early output accumulates in DAPLink's 512-byte serial ring
+-                // buffer until the first read here.
+-                if (this.hasSerialEventListeners()) {
+-                    this.log("Reinstating serial after flash");
+-                    await this.startSerialInternal();
++                // Patched by @calliope-edu/mini-connection-widget: the
++                // post-partial-flash reset MUST run even when reinit /
++                // serial reinstatement throw — previously any throw here
++                // skipped it, leaving a fully-flashed board halted at the
++                // flash stub's bkpt (dark display) while callers reported
++                // success. Reset failures are logged and rethrown (not
++                // silently swallowed) so callers can run their post-flash
++                // recovery instead of declaring an unstarted program done.
++                let postFlashError;
++                try {
++                    await this.device.adi.reinit();
++                    // Start serial before resetting so we capture startup output.
++                    // For full flash FLASH_CLOSE already reset the target, so its
++                    // early output accumulates in DAPLink's 512-byte serial ring
++                    // buffer until the first read here.
++                    if (this.hasSerialEventListeners()) {
++                        this.log("Reinstating serial after flash");
++                        await this.startSerialInternal();
++                    }
++                }
++                catch (e) {
++                    this.log("Post-flash reinit/serial failed: " + e);
++                    postFlashError = e;
+                 }
+                 if (wasPartial) {
+                     // Partial flash writes pages via SWD without resetting.
+@@ -384,9 +410,16 @@ class MicrobitUSBConnectionImpl extends events_js_1.TypedEventTarget {
+                         await this.device.cortexM.reset();
+                     }
+                     catch (e) {
+-                        // Allow errors on resetting, user can always manually reset if necessary.
++                        this.log("Post-flash reset failed: " + e);
++                        postFlashError = postFlashError ?? e;
+                     }
+                 }
++                // Only surface cleanup errors when the flash itself
++                // succeeded — never mask an in-flight flash error with a
++                // secondary cleanup failure.
++                if (postFlashError && flashSucceeded) {
++                    throw postFlashError;
++                }
+             }
+         }
+     }
 diff --git a/build/cjs/usb/daplink.js b/build/cjs/usb/daplink.js
-index 39d7da6871f850ac8eedd516a381740ebff55550..45e78ea6ef99d0a06a01561c5614e87398c72357 100644
+index 39d7da6871f850ac8eedd516a381740ebff55550..32ca22bf5daa921e19d118ab9a317acf66fb0a7a 100644
 --- a/build/cjs/usb/daplink.js
 +++ b/build/cjs/usb/daplink.js
 @@ -89,10 +89,23 @@ class DapLinkSerial {
@@ -123,6 +195,110 @@ index 39d7da6871f850ac8eedd516a381740ebff55550..45e78ea6ef99d0a06a01561c5614e873
          const payload = new Uint8Array(encoded.length + 1);
          payload[0] = encoded.length;
          payload.set(encoded, 1);
+@@ -165,12 +178,16 @@ async function dapLinkFlash(adi, buffer, onProgress) {
+             if (writeResult.getUint8(1) === DAPLINK_ERROR_SUCCESS_DONE)
+                 break;
+         }
+-        onProgress?.(1.0);
+         const closeResult = await dap.send(exports.DAPLINK_VENDOR_FLASH_CLOSE);
+         if (closeResult.getUint8(1) !== DAPLINK_ERROR_SUCCESS) {
+             throw new cmsis_dap_js_1.DapError(`Flash close error (status=${closeResult.getUint8(1)})`);
+         }
+         await dap.send(exports.DAPLINK_VENDOR_FLASH_RESET);
++        // Patched by @calliope-edu/mini-connection-widget: report the final
++        // 1.0 only AFTER FLASH_CLOSE (which flushes the last stream data) and
++        // FLASH_RESET succeed, so callers can treat an exact 1.0 as "flash
++        // really complete" — mirroring the partial path's verified-then-1.0.
++        onProgress?.(1.0);
+     }
+     catch (error) {
+         try {
+diff --git a/build/cjs/usb/partial-flashing.js b/build/cjs/usb/partial-flashing.js
+index 52ac6009ae741d29290dfd866626014bf43df0a4..cf9b60a35e3cc0ae0794d83001f6b52143ff9f48 100644
+--- a/build/cjs/usb/partial-flashing.js
++++ b/build/cjs/usb/partial-flashing.js
+@@ -190,7 +190,38 @@ class PartialFlashing {
+             updateProgress(device_js_1.ProgressStage.PartialFlashing, i / pages.length);
+             await this.partialFlashPageAsync(pages[i], pages[i + 1], i);
+         }
+-        updateProgress(device_js_1.ProgressStage.PartialFlashing, 1);
++        // Patched by @calliope-edu/mini-connection-widget: the final
++        // progress===1 is now emitted by partialFlashAsync only after the
++        // written pages have been checksum-verified (and UICR ensured), so
++        // callers can trust an exact 1.0 to mean "transfer really complete".
++    }
++    /**
++     * Patched by @calliope-edu/mini-connection-widget: write the changed
++     * pages, then re-run the on-chip checksum diff and re-flash any page
++     * that did not stick. Observed in the field: interleaved DAP traffic /
++     * WAIT-aborted transfers left pages silently missing or corrupted while
++     * the flash reported success ("dark display, shrinking changed-pages
++     * across attempts"). Bounded retries, then throw so callers fall back
++     * to a full flash instead of reporting an unverified partial flash.
++     */
++    async partialFlashVerifiedAsync(allPages, changed, updateProgress) {
++        let pending = changed;
++        for (let round = 0; round <= 2; round++) {
++            if (round > 0) {
++                this.log(`Verify: ${pending.length} page(s) still changed after write - re-flashing (round ${round})`);
++            }
++            // Retry rounds re-flash a handful of pages in well under a second;
++            // reporting their i/pending progress would visibly rewind the bar
++            // (fresh 0..1 over a shrunken denominator), so keep the UI quiet.
++            await this.partialFlashCoreAsync(pending, round === 0 ? updateProgress : () => { });
++            const checksums = await this.getFlashChecksumsAsync();
++            pending = (0, partial_flashing_utils_js_1.onlyChanged)(allPages, checksums, this.pageSize);
++            if (pending.length === 0) {
++                this.log("Verify: all pages match");
++                return;
++            }
++        }
++        throw new Error(`Partial flash verification failed: ${pending.length} page(s) still mismatched after retries`);
+     }
+     // Flash the micro:bit's ROM with the provided image by only copying over the pages that differ.
+     // Falls back to a full flash if partial flashing fails.
+@@ -199,10 +230,10 @@ class PartialFlashing {
+         const memoryMap = this.toMemoryMap(data);
+         const { flashBytes, uicrEntries } = this.extractFlashAndUicr(memoryMap);
+         const checksums = await this.getFlashChecksumsAsync();
+-        let aligned = (0, partial_flashing_utils_js_1.pageAlignBlocks)(flashBytes, 0, this.pageSize);
+-        const totalPages = aligned.length;
++        const allPages = (0, partial_flashing_utils_js_1.pageAlignBlocks)(flashBytes, 0, this.pageSize);
++        const totalPages = allPages.length;
+         this.log("Total pages: " + totalPages);
+-        aligned = (0, partial_flashing_utils_js_1.onlyChanged)(aligned, checksums, this.pageSize);
++        const aligned = (0, partial_flashing_utils_js_1.onlyChanged)(allPages, checksums, this.pageSize);
+         this.log("Changed pages: " + aligned.length);
+         let partial;
+         if (aligned.length > totalPages / 2) {
+@@ -217,13 +248,13 @@ class PartialFlashing {
+                 // so we must reconnect before partial flash can use it.
+                 await this.device.adi.reinit();
+                 await this.device.cortexM.reset(true);
+-                await this.partialFlashCoreAsync(aligned, updateProgress);
++                await this.partialFlashVerifiedAsync(allPages, aligned, updateProgress);
+                 partial = true;
+             }
+         }
+         else {
+             try {
+-                await this.partialFlashCoreAsync(aligned, updateProgress);
++                await this.partialFlashVerifiedAsync(allPages, aligned, updateProgress);
+                 partial = true;
+             }
+             catch (e) {
+@@ -238,6 +269,11 @@ class PartialFlashing {
+         if (partial && uicrEntries.length > 0) {
+             partial = await this.ensureUicr(data, uicrEntries, updateProgress);
+         }
++        // Patched: only now — pages verified + UICR ensured — report the
++        // exact 1.0 that callers treat as "byte transfer complete".
++        if (partial) {
++            updateProgress(device_js_1.ProgressStage.PartialFlashing, 1);
++        }
+         this.log("Flashing complete");
+         return partial;
+     }
 diff --git a/build/esm/bluetooth/connection.js b/build/esm/bluetooth/connection.js
 index 6ee75313cf8ee01d1a986112c6d101289e95eef2..1828d0427707cbe6614b84512a12e97b006ff694 100644
 --- a/build/esm/bluetooth/connection.js
@@ -185,7 +361,7 @@ index 496d40d498fbbe95895f48646c77f71c5f5a669c..31dbc2ad36849f54445416495cda6b4f
  //# sourceMappingURL=device-information-service.js.map
 \ No newline at end of file
 diff --git a/build/esm/usb/connection.d.ts b/build/esm/usb/connection.d.ts
-index 5d63b9ce50c3c80907ff33444c2898f118379e32..013b6b4aa80b9d2b318963b915179852401d0cc6 100644
+index 5d63b9ce50c3c80907ff33444c2898f118379e32..081a4e871a7e056b6d3e75760e5f4585ae7ab553 100644
 --- a/build/esm/usb/connection.d.ts
 +++ b/build/esm/usb/connection.d.ts
 @@ -58,7 +58,7 @@ export interface MicrobitUSBConnection extends DeviceConnection {
@@ -198,7 +374,7 @@ index 5d63b9ce50c3c80907ff33444c2898f118379e32..013b6b4aa80b9d2b318963b915179852
       * Gets micro:bit deviceId.
       *
 diff --git a/build/esm/usb/connection.js b/build/esm/usb/connection.js
-index f685da48a3bcab4dfcd4a13667efc2ff902dfb51..a490252bb91b6181fc6fec9b5c60ab25293931e7 100644
+index f685da48a3bcab4dfcd4a13667efc2ff902dfb51..0559cdf94cba79c794b1930dd2006bb1ad5bd641 100644
 --- a/build/esm/usb/connection.js
 +++ b/build/esm/usb/connection.js
 @@ -12,7 +12,16 @@ import { PromiseQueue } from "./promise-queue.js";
@@ -219,8 +395,80 @@ index f685da48a3bcab4dfcd4a13667efc2ff902dfb51..a490252bb91b6181fc6fec9b5c60ab25
  export const DeviceSelectionMode = {
      /**
       * Attempts to connect to known device, otherwise asks which device to
+@@ -347,6 +356,7 @@ class MicrobitUSBConnectionImpl extends TypedEventTarget {
+         const data = await dataSource(boardVersion);
+         const flashing = new PartialFlashing(this.device, this.logging, boardVersion, pageSize, numPages);
+         let wasPartial = false;
++        let flashSucceeded = false;
+         try {
+             if (partial) {
+                 wasPartial = await flashing.flashAsync(data, progress);
+@@ -354,6 +364,7 @@ class MicrobitUSBConnectionImpl extends TypedEventTarget {
+             else {
+                 await flashing.fullFlashAsync(data, progress);
+             }
++            flashSucceeded = true;
+         }
+         finally {
+             progress(wasPartial ? ProgressStage.PartialFlashing : ProgressStage.FullFlashing, undefined);
+@@ -363,14 +374,29 @@ class MicrobitUSBConnectionImpl extends TypedEventTarget {
+                 await this.disconnect(false, ConnectionStatus.Paused);
+             }
+             else {
+-                await this.device.adi.reinit();
+-                // Start serial before resetting so we capture startup output.
+-                // For full flash FLASH_CLOSE already reset the target, so its
+-                // early output accumulates in DAPLink's 512-byte serial ring
+-                // buffer until the first read here.
+-                if (this.hasSerialEventListeners()) {
+-                    this.log("Reinstating serial after flash");
+-                    await this.startSerialInternal();
++                // Patched by @calliope-edu/mini-connection-widget: the
++                // post-partial-flash reset MUST run even when reinit /
++                // serial reinstatement throw — previously any throw here
++                // skipped it, leaving a fully-flashed board halted at the
++                // flash stub's bkpt (dark display) while callers reported
++                // success. Reset failures are logged and rethrown (not
++                // silently swallowed) so callers can run their post-flash
++                // recovery instead of declaring an unstarted program done.
++                let postFlashError;
++                try {
++                    await this.device.adi.reinit();
++                    // Start serial before resetting so we capture startup output.
++                    // For full flash FLASH_CLOSE already reset the target, so its
++                    // early output accumulates in DAPLink's 512-byte serial ring
++                    // buffer until the first read here.
++                    if (this.hasSerialEventListeners()) {
++                        this.log("Reinstating serial after flash");
++                        await this.startSerialInternal();
++                    }
++                }
++                catch (e) {
++                    this.log("Post-flash reinit/serial failed: " + e);
++                    postFlashError = e;
+                 }
+                 if (wasPartial) {
+                     // Partial flash writes pages via SWD without resetting.
+@@ -380,9 +406,16 @@ class MicrobitUSBConnectionImpl extends TypedEventTarget {
+                         await this.device.cortexM.reset();
+                     }
+                     catch (e) {
+-                        // Allow errors on resetting, user can always manually reset if necessary.
++                        this.log("Post-flash reset failed: " + e);
++                        postFlashError = postFlashError ?? e;
+                     }
+                 }
++                // Only surface cleanup errors when the flash itself
++                // succeeded — never mask an in-flight flash error with a
++                // secondary cleanup failure.
++                if (postFlashError && flashSucceeded) {
++                    throw postFlashError;
++                }
+             }
+         }
+     }
 diff --git a/build/esm/usb/daplink.js b/build/esm/usb/daplink.js
-index 50c5a21add13678ef49e1857b380bfaad2b0e82d..822052a9fab11e22e477070da17f6f9e70b7869c 100644
+index 50c5a21add13678ef49e1857b380bfaad2b0e82d..a62de8b9ba71964b6ce840299a9e32deeb3edd1f 100644
 --- a/build/esm/usb/daplink.js
 +++ b/build/esm/usb/daplink.js
 @@ -83,10 +83,23 @@ export class DapLinkSerial {
@@ -249,3 +497,107 @@ index 50c5a21add13678ef49e1857b380bfaad2b0e82d..822052a9fab11e22e477070da17f6f9e
          const payload = new Uint8Array(encoded.length + 1);
          payload[0] = encoded.length;
          payload.set(encoded, 1);
+@@ -158,12 +171,16 @@ export async function dapLinkFlash(adi, buffer, onProgress) {
+             if (writeResult.getUint8(1) === DAPLINK_ERROR_SUCCESS_DONE)
+                 break;
+         }
+-        onProgress?.(1.0);
+         const closeResult = await dap.send(DAPLINK_VENDOR_FLASH_CLOSE);
+         if (closeResult.getUint8(1) !== DAPLINK_ERROR_SUCCESS) {
+             throw new DapError(`Flash close error (status=${closeResult.getUint8(1)})`);
+         }
+         await dap.send(DAPLINK_VENDOR_FLASH_RESET);
++        // Patched by @calliope-edu/mini-connection-widget: report the final
++        // 1.0 only AFTER FLASH_CLOSE (which flushes the last stream data) and
++        // FLASH_RESET succeed, so callers can treat an exact 1.0 as "flash
++        // really complete" — mirroring the partial path's verified-then-1.0.
++        onProgress?.(1.0);
+     }
+     catch (error) {
+         try {
+diff --git a/build/esm/usb/partial-flashing.js b/build/esm/usb/partial-flashing.js
+index 29760394b36be2cac5a80812f22346da97c04878..2d31048f3ba07b164d2d6a7bd263e2b3a52a495f 100644
+--- a/build/esm/usb/partial-flashing.js
++++ b/build/esm/usb/partial-flashing.js
+@@ -184,7 +184,38 @@ export class PartialFlashing {
+             updateProgress(ProgressStage.PartialFlashing, i / pages.length);
+             await this.partialFlashPageAsync(pages[i], pages[i + 1], i);
+         }
+-        updateProgress(ProgressStage.PartialFlashing, 1);
++        // Patched by @calliope-edu/mini-connection-widget: the final
++        // progress===1 is now emitted by partialFlashAsync only after the
++        // written pages have been checksum-verified (and UICR ensured), so
++        // callers can trust an exact 1.0 to mean "transfer really complete".
++    }
++    /**
++     * Patched by @calliope-edu/mini-connection-widget: write the changed
++     * pages, then re-run the on-chip checksum diff and re-flash any page
++     * that did not stick. Observed in the field: interleaved DAP traffic /
++     * WAIT-aborted transfers left pages silently missing or corrupted while
++     * the flash reported success ("dark display, shrinking changed-pages
++     * across attempts"). Bounded retries, then throw so callers fall back
++     * to a full flash instead of reporting an unverified partial flash.
++     */
++    async partialFlashVerifiedAsync(allPages, changed, updateProgress) {
++        let pending = changed;
++        for (let round = 0; round <= 2; round++) {
++            if (round > 0) {
++                this.log(`Verify: ${pending.length} page(s) still changed after write - re-flashing (round ${round})`);
++            }
++            // Retry rounds re-flash a handful of pages in well under a second;
++            // reporting their i/pending progress would visibly rewind the bar
++            // (fresh 0..1 over a shrunken denominator), so keep the UI quiet.
++            await this.partialFlashCoreAsync(pending, round === 0 ? updateProgress : () => { });
++            const checksums = await this.getFlashChecksumsAsync();
++            pending = onlyChanged(allPages, checksums, this.pageSize);
++            if (pending.length === 0) {
++                this.log("Verify: all pages match");
++                return;
++            }
++        }
++        throw new Error(`Partial flash verification failed: ${pending.length} page(s) still mismatched after retries`);
+     }
+     // Flash the micro:bit's ROM with the provided image by only copying over the pages that differ.
+     // Falls back to a full flash if partial flashing fails.
+@@ -193,10 +224,10 @@ export class PartialFlashing {
+         const memoryMap = this.toMemoryMap(data);
+         const { flashBytes, uicrEntries } = this.extractFlashAndUicr(memoryMap);
+         const checksums = await this.getFlashChecksumsAsync();
+-        let aligned = pageAlignBlocks(flashBytes, 0, this.pageSize);
+-        const totalPages = aligned.length;
++        const allPages = pageAlignBlocks(flashBytes, 0, this.pageSize);
++        const totalPages = allPages.length;
+         this.log("Total pages: " + totalPages);
+-        aligned = onlyChanged(aligned, checksums, this.pageSize);
++        const aligned = onlyChanged(allPages, checksums, this.pageSize);
+         this.log("Changed pages: " + aligned.length);
+         let partial;
+         if (aligned.length > totalPages / 2) {
+@@ -211,13 +242,13 @@ export class PartialFlashing {
+                 // so we must reconnect before partial flash can use it.
+                 await this.device.adi.reinit();
+                 await this.device.cortexM.reset(true);
+-                await this.partialFlashCoreAsync(aligned, updateProgress);
++                await this.partialFlashVerifiedAsync(allPages, aligned, updateProgress);
+                 partial = true;
+             }
+         }
+         else {
+             try {
+-                await this.partialFlashCoreAsync(aligned, updateProgress);
++                await this.partialFlashVerifiedAsync(allPages, aligned, updateProgress);
+                 partial = true;
+             }
+             catch (e) {
+@@ -232,6 +263,11 @@ export class PartialFlashing {
+         if (partial && uicrEntries.length > 0) {
+             partial = await this.ensureUicr(data, uicrEntries, updateProgress);
+         }
++        // Patched: only now — pages verified + UICR ensured — report the
++        // exact 1.0 that callers treat as "byte transfer complete".
++        if (partial) {
++            updateProgress(ProgressStage.PartialFlashing, 1);
++        }
+         this.log("Flashing complete");
+         return partial;
+     }

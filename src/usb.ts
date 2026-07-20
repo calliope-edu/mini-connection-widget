@@ -140,10 +140,15 @@ export async function pauseSerialDataPolling(settleMs = 150): Promise<void> {
  * polling again.
  */
 export function resumeSerialDataPolling(): void {
-  if (!serialPaused) return;
-  serialPaused = false;
+  // Resume the exchange gates UNCONDITIONALLY — before the serialPaused
+  // guard. clearUsbConn() (mid-flash cancel/recovery) resets serialPaused
+  // without resuming the exchanges; if the guard ran first, the flash
+  // finally's resume would early-return and leave blocks-dap/jacdac
+  // paused forever (their lazy loop restarts are hard-gated on `paused`).
   resumeJacdacExchange();
   resumeBlocksDapExchange();
+  if (!serialPaused) return;
+  serialPaused = false;
   if (!usbConn) return;
   for (const h of serialListeners) {
     try { usbConn.addEventListener('serialdata', h); } catch { /* ignore */ }
@@ -189,9 +194,12 @@ function applyFlashProgress(stage: ProgressStage, progress: number | undefined):
   }
   // PartialFlashing / FullFlashing — actual byte transfer with 0..1 progress.
   const intPct = progress === undefined ? undefined : Math.round(progress * 100);
-  // A full transfer pass reaching ~100% means the bytes are on the board even
-  // if the library's post-flash reinit then throws (see the recovery below).
-  if (progress !== undefined && progress >= 0.98) flashByteTransferComplete = true;
+  // Only an EXACT 1.0 means the transfer pass completed (the library emits
+  // per-page progress BEFORE writing each page, so >=0.98 could still have
+  // pages unwritten — treating that as complete masked real mid-flash
+  // failures as success). The library's rate limiter always delivers the
+  // final value===1, so this never misses a genuinely completed pass.
+  if (progress !== undefined && progress >= 1) flashByteTransferComplete = true;
   updateState((s) => ({
     ...s,
     flashPhase: 'flashing',
@@ -634,7 +642,19 @@ async function pickAndMaybeFlashJLink(hex: string, name: string): Promise<UsbFla
   return flashJLinkDevice(device, hex, name);
 }
 
-export async function flashCalliopeViaUsb(hex: string, name: string): Promise<UsbFlashOutcome> {
+export interface UsbFlashOptions {
+  /**
+   * Skip the CMSIS-DAP partial flash and go straight to the DAPLink
+   * vendor-command full flash. Set for the Blocks runtime hex (see
+   * `FlashOptions.forceFullDfu` in flash.ts): its image is declared
+   * partial-unsafe, and the partial path's overlapped SWD/NVMC writes are
+   * exactly what produced the "dark display, shrinking changed-pages"
+   * multi-attempt failures.
+   */
+  forceFullDfu?: boolean;
+}
+
+export async function flashCalliopeViaUsb(hex: string, name: string, opts: UsbFlashOptions = {}): Promise<UsbFlashOutcome> {
   if (!SUPPORT.usb) {
     updateState((s) => ({ ...s, usbStatus: 'error', usbErrorMessage: 'WebUSB not supported — flashing requires USB' }));
     return 'unsupported';
@@ -712,7 +732,7 @@ export async function flashCalliopeViaUsb(hex: string, name: string): Promise<Us
   flashByteTransferComplete = false;
   let outcome: UsbFlashOutcome = 'flashed';
   try {
-    await runFlashWithTransferRetry(c, dataSource, progress);
+    await runFlashWithTransferRetry(c, dataSource, progress, opts);
     updateState((s) => ({
       ...s,
       flashTransport: undefined,
@@ -737,6 +757,16 @@ export async function flashCalliopeViaUsb(hex: string, name: string): Promise<Us
       appendLog({ direction: 'info', text: 'Flash OK; post-flash SWD reinit raced the reboot — auto-recovering USB' });
       const recovered = await recoverUsbAfterFlashReboot(c, name);
       if (recovered) {
+        // The throw may have escaped BEFORE the library's own post-partial
+        // cortexM.reset() ran — in that case the core is still parked at the
+        // flash-copy routine's bkpt and the display stays dark despite all
+        // bytes being on the board. Reset explicitly so the new program runs.
+        try {
+          await c.softwareReset();
+          appendLog({ direction: 'info', text: 'Post-recovery target reset issued' });
+        } catch (resetErr) {
+          appendLog({ direction: 'info', text: `Post-recovery reset failed (${(resetErr as Error).message}) — press the reset button if the display stays dark` });
+        }
         updateState((s) => ({
           ...s,
           flashTransport: undefined,
@@ -775,17 +805,19 @@ export async function flashCalliopeViaUsb(hex: string, name: string): Promise<Us
       outcome = 'aborted';
     }
   } finally {
+    // The flash reset the target, so ArmDebug's cached SWD state is stale: force
+    // the next Blocks-DAP scan to reinit the debug session rather than resume on
+    // the pre-flash mailbox / stale cache (else "exchange buffer not found" until
+    // a full reconnect). Must run BEFORE resume below — resume un-pauses the
+    // Blocks-DAP gate, and a queued frame could otherwise lazily restart the
+    // exchange loop on the stale session just for this to kill it mid-scan.
+    reinitBlocksDapAfterFlash();
     // Re-attach every subscriber. Upstream's eventActivated fires on the
     // first listener and starts polling again. Safe to call even when
     // the connection was wiped — `usbConn` may now be null and resume
     // becomes a no-op; the next getUsbConnection() will replay the
     // subscriptions via registerSerialDataListener.
     resumeSerialDataPolling();
-    // The flash reset the target, so ArmDebug's cached SWD state is stale: force
-    // the next Blocks-DAP scan to reinit the debug session rather than resume on
-    // the pre-flash mailbox / stale cache (else "exchange buffer not found" until
-    // a full reconnect).
-    reinitBlocksDapAfterFlash();
     appendLog({ direction: 'info', text: 'Serial polling resumed' });
   }
   return outcome;
@@ -818,6 +850,7 @@ async function runFlashWithTransferRetry(
   c: MicrobitUSBConnection,
   dataSource: FlashDataSource,
   progress: ProgressCallback,
+  opts: UsbFlashOptions = {},
 ): Promise<void> {
   let lastErr: unknown = null;
   for (let attempt = 0; attempt <= TRANSFER_RETRY_SETTLE_MS.length; attempt++) {
@@ -827,7 +860,16 @@ async function runFlashWithTransferRetry(
         // doesn't jump backwards visually.
         updateState((s) => ({ ...s, flashPhase: 'check', flashProgress: undefined }));
       }
-      await c.flash(dataSource, { partial: true, progress, minimumProgressIncrement: 0.05 });
+      // Each pass is a fresh transfer — a stale completion flag from a pass
+      // that reached 100% and then died transiently must not launder a
+      // failure of THIS pass into reported success (the "dark display,
+      // shrinking changed-pages" bug).
+      flashByteTransferComplete = false;
+      await c.flash(dataSource, {
+        partial: !opts.forceFullDfu,
+        progress,
+        minimumProgressIncrement: 0.05,
+      });
       return;
     } catch (err) {
       lastErr = err;

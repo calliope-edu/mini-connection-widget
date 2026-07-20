@@ -195,7 +195,10 @@ export async function sendJacdacFrame(frame: Uint8Array): Promise<void> {
       appendLog({ direction: 'info', text: `Jacdac: outbound queue full — dropped ${droppedFrames} frame(s) so far (loop not draining)` });
     }
   }
-  if (!loopActive && Date.now() >= scanCooldownUntil) void runLoop();
+  // While paused (flash in progress) only queue — a lazy restart here would
+  // run adi.connect + a RAM scan (and possibly a target soft-reset!) on the
+  // same DAP bus the flash is using, silently corrupting written pages.
+  if (!loopActive && !paused && Date.now() >= scanCooldownUntil) void runLoop();
 }
 
 /**
@@ -208,7 +211,7 @@ export async function sendJacdacFrame(frame: Uint8Array): Promise<void> {
  */
 export function startJacdacExchange(): void {
   if (getDapOwner() === 'blocks') return;
-  if (!loopActive && Date.now() >= scanCooldownUntil) void runLoop();
+  if (!loopActive && !paused && Date.now() >= scanCooldownUntil) void runLoop();
 }
 
 /**
@@ -240,6 +243,8 @@ export function pauseJacdacExchange(): void {
 
 export function resumeJacdacExchange(): void {
   paused = false;
+  // Drain anything queued while the gate was closed.
+  if (!loopActive && outbound.length > 0 && Date.now() >= scanCooldownUntil) void runLoop();
 }
 
 // Lose the bus → tear down immediately. The Blocks editor (or "no editor")
@@ -264,6 +269,13 @@ async function runLoop(): Promise<void> {
   stopRequested = false;
   let mailbox: JacdacMailbox | null = null;
   try {
+    // Hard flash gate: park BEFORE any SWD access (connect/scan/resetTarget).
+    // The paused check inside the while loop below only covers the steady
+    // state — a loop started as a flash begins must not touch the bus at all.
+    while (paused && !stopRequested) {
+      await delay(20);
+    }
+    if (stopRequested) return;
     const adi = getArmDebug();
     if (!adi) {
       appendLog({ direction: 'info', text: 'Jacdac: USB not connected — exchange not started' });

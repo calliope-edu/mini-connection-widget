@@ -123,6 +123,10 @@ export function isBlocksDapAvailable(): boolean {
 export async function detectBlocksDap(): Promise<boolean> {
   // Bus owned by Jacdac (MakeCode editor) — don't probe over a contended bus.
   if (getDapOwner() === 'jacdac') return false;
+  // Flash in progress (paused) — NEVER scan: interleaved DAP commands retarget
+  // the flash's TAR auto-increment mid-chunk and silently corrupt written pages.
+  // The program-type auto-refresh re-probes once the flash window closes.
+  if (paused) return false;
   // If the live exchange loop is already running it has already located the
   // mailbox; return that instead of issuing a CONCURRENT scan. ArmDebug
   // readBlock isn't atomic across callers, so a second reader here would corrupt
@@ -157,7 +161,13 @@ export async function sendBlocksDapFrame(frame: Uint8Array): Promise<void> {
       appendLog({ direction: 'info', text: `Blocks-DAP: outbound queue full — dropped ${droppedFrames} frame(s) (loop not draining)` });
     }
   }
-  if (!loopActive && Date.now() >= scanCooldownUntil) void runLoop();
+  // While paused (flash in progress) only queue — restarting the loop here
+  // would run ensureSwd + a full RAM scan concurrently with the flash's SWD
+  // traffic and silently corrupt pages (TAR clobber). This lazy restart is
+  // exactly how a dead loop (e.g. after a failed scan against an old hex)
+  // used to resurrect itself mid-flash. resumeBlocksDapExchange() kicks the
+  // drain once the flash window closes.
+  if (!loopActive && !paused && Date.now() >= scanCooldownUntil) void runLoop();
 }
 
 /**
@@ -185,6 +195,9 @@ export function pauseBlocksDapExchange(): void {
 
 export function resumeBlocksDapExchange(): void {
   paused = false;
+  // Drain anything queued while the gate was closed. Without this kick a frame
+  // sent mid-flash would sit in the FIFO until the NEXT send restarts the loop.
+  if (!loopActive && outbound.length > 0 && Date.now() >= scanCooldownUntil) void runLoop();
 }
 
 // Lose the bus → tear down immediately. Jacdac (or "no editor") taking ownership
@@ -212,6 +225,15 @@ async function runLoop(): Promise<void> {
   // streaming parser so framing/checksum validation is shared with the serial path.
   const parser = new BlocksFrameParser();
   try {
+    // Hard flash gate: park BEFORE any SWD access. The old code only checked
+    // `paused` inside the exchange while-loop, so a loop started just as a
+    // flash began (or resurrected by a mid-flash send) would run ensureSwd +
+    // the full RAM scan concurrently with the flash — the silent page-
+    // corruption vector behind "dark display, shrinking changed-pages".
+    while (paused && !stopRequested) {
+      await delay(20);
+    }
+    if (stopRequested) return;
     const adi = getArmDebug();
     if (!adi) {
       appendLog({ direction: 'info', text: 'Blocks-DAP: USB not connected — exchange not started' });
