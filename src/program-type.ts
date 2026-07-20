@@ -191,7 +191,6 @@ function probeUsb(timeoutMs: number): Promise<CalliopeProgramInfo | null> {
     // path (used by the campus banner's outdated-firmware offer).
     const parser = new BlocksFrameParser();
     let validFrames = 0;
-    let versionInfo: Pick<CalliopeProgramInfo, 'hardwareVersion' | 'protocolVersion' | 'runtimeVersion'> = {};
     let settled = false;
     let unsubscribe: (() => void) | null = null;
     const finish = (val: CalliopeProgramInfo | null) => {
@@ -209,15 +208,25 @@ function probeUsb(timeoutMs: number): Promise<CalliopeProgramInfo | null> {
       for (const f of parser.push(bytes)) {
         validFrames++;
         if (f.type === BLOCKS_RES.READ && f.channel === 0x0100 && f.data.length >= 2) {
-          versionInfo = {
+          // The direct, checksum-valid reply to our REQ_READ handshake is
+          // definitive ON ITS OWN: the detection-only BlocksProbe firmware
+          // answers exactly ONE frame per request (no STATE/MOTION
+          // broadcaster), so waiting for a second valid frame would never
+          // confirm against a probe-only runtime.
+          finish({
+            type: 'blocks',
+            via: 'usb',
             hardwareVersion: f.data[0],
             protocolVersion: f.data[1],
             runtimeVersion: f.data.length >= 4 ? f.data[3] : undefined,
-          };
+          });
+          return;
         }
       }
+      // Fallback for older runtimes whose broadcaster streams frames but whose
+      // handshake reply may be missed: N generic checksum-valid frames.
       if (validFrames >= BLOCKS_USB_CONFIRM_HITS) {
-        finish({ type: 'blocks', via: 'usb', ...versionInfo });
+        finish({ type: 'blocks', via: 'usb' });
       }
     });
     // Wake the firmware's serial broadcaster by sending a real Blocks
@@ -257,17 +266,19 @@ function probeUsb(timeoutMs: number): Promise<CalliopeProgramInfo | null> {
  * transport — the DAL Blocks runtime speaks the identical framed protocol
  * over its UART, which the J-Link OB bridges to CDC.
  *
- * Confirms on `BLOCKS_USB_CONFIRM_HITS` checksum-valid frames (same bar as
- * `BlocksUsbProbe`), and additionally captures the RES_READ reply on channel
- * 0x0100 — its payload mirrors the BLE COMMAND characteristic (hardware /
- * protocol / runtime version bytes), so hosts get version info over USB too.
+ * Confirms IMMEDIATELY on the checksum-valid RES_READ 0x0100 reply — the
+ * direct answer to our handshake, whose payload mirrors the BLE COMMAND
+ * characteristic (hardware / protocol / runtime version bytes). The
+ * detection-only BlocksProbe firmware answers exactly ONE frame per request,
+ * so requiring a second frame would never confirm on a probe-only runtime.
+ * Falls back to `BLOCKS_USB_CONFIRM_HITS` generic checksum-valid frames for
+ * older broadcaster runtimes.
  */
 function probeJlinkSerial(timeoutMs: number): Promise<CalliopeProgramInfo | null> {
   return new Promise((resolve) => {
     if (getState().flashInProgress) { resolve(null); return; }
     const parser = new BlocksFrameParser();
     let validFrames = 0;
-    let versionInfo: Pick<CalliopeProgramInfo, 'hardwareVersion' | 'protocolVersion' | 'runtimeVersion'> = {};
     let settled = false;
     let unsubscribe: (() => void) | null = null;
     const finish = (val: CalliopeProgramInfo | null) => {
@@ -283,17 +294,20 @@ function probeJlinkSerial(timeoutMs: number): Promise<CalliopeProgramInfo | null
       for (let i = 0; i < chunk.length; i++) bytes[i] = chunk.charCodeAt(i) & 0xff;
       for (const f of parser.push(bytes)) {
         validFrames++;
-        // The direct answer to our REQ_READ — usually the first frame.
+        // The direct answer to our REQ_READ — definitive on its own.
         if (f.type === BLOCKS_RES.READ && f.channel === 0x0100 && f.data.length >= 2) {
-          versionInfo = {
+          finish({
+            type: 'blocks',
+            via: 'usb',
             hardwareVersion: f.data[0],
             protocolVersion: f.data[1],
             runtimeVersion: f.data.length >= 4 ? f.data[3] : undefined,
-          };
+          });
+          return;
         }
       }
       if (validFrames >= BLOCKS_USB_CONFIRM_HITS) {
-        finish({ type: 'blocks', via: 'usb', ...versionInfo });
+        finish({ type: 'blocks', via: 'usb' });
       }
     });
     void jlinkSerialWrite(buildBlocksFrame(BLOCKS_REQ.READ, 0x0100)).catch(() => { /* ignore */ });
