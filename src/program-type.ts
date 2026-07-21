@@ -442,8 +442,15 @@ if (typeof window !== 'undefined') {
     const flashEdge = flashAtEdge || flashDoneEdge;
     flashWasInProgress = s.flashInProgress;
     if (key === lastConnectedKey && !flashEdge) return;
+    const connectKeyChanged = key !== lastConnectedKey;
     lastConnectedKey = key;
     if (s.lastFlashAt) lastFlashAtSeen = s.lastFlashAt;
+    // The connected-transport set changed — this may be a DIFFERENT device
+    // (e.g. one drag&dropped to a new hex, or a device swap). Drop the passive
+    // liveness latch so a stale "blocks vX" from the previous device can't be
+    // reported for the new one before a fresh probe runs. (A drag&drop MSD
+    // flash never hits the widget flash path that also resets it.)
+    if (connectKeyChanged) resetBlocksLiveness();
 
     if (probeTimer) {
       clearTimeout(probeTimer);
