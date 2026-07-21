@@ -368,10 +368,21 @@ async function runLoop(): Promise<void> {
     }
   } catch (err) {
     appendLog({ direction: 'error', text: `Blocks-DAP exchange loop error: ${(err as Error)?.message ?? err}` });
-    // A transfer error mid-loop is usually a device reboot (e.g. after a flash)
-    // tearing down SWD. Back off before a restart so we don't tight-loop
-    // adi.connect() against a rebooting device.
+    // A mid-loop SWD fault = the target rebooted — almost always the RESET
+    // button (or a post-flash reboot). This is the ONLY reliable USB reset
+    // signal for a DAP-comms session: the lib's 'serialreset' never fires
+    // because the DAPLink interface stays enumerated (its serial read loop
+    // never ends), so attemptSilentDaplinkResume is never called and USB comms
+    // would otherwise stay dead until a manual reconnect. Own the recovery
+    // here: after the reset the SWD DP/AP cache is stale, so force a full
+    // reinit on the next scan, and re-kick the exchange once the device is
+    // back (gated in kickBlocksDapRescan: not paused, not jacdac, cooldown
+    // elapsed, a live-comms consumer still attached). Back off first so we
+    // don't tight-loop against a still-rebooting target.
     scanCooldownUntil = Date.now() + 1500;
+    needsReinit = true;
+    if (rescanTimer) clearTimeout(rescanTimer);
+    rescanTimer = setTimeout(() => { rescanTimer = null; kickBlocksDapRescan(); }, 2000);
   } finally {
     mailbox?.reset();
     available = false;
