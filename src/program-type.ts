@@ -33,6 +33,7 @@ import {
   BlocksFrameParser,
 } from './blocks-frame';
 import { detectBlocksDap } from './blocks-dap';
+import { getBlocksLiveness, isBlocksAlive, noteBlocksVersion, resetBlocksLiveness } from './blocks-liveness';
 import { isNativeMode } from './native-bridge';
 import { nativeGattRead, nativeGattWrite } from './native-mode';
 
@@ -159,6 +160,11 @@ async function probeBle(timeoutMs: number): Promise<CalliopeProgramInfo | null> 
       const v = await ch.readValue();
       const b = new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
       if (b.byteLength >= 2 && b[1] === EXPECTED_BLOCKS_PROTOCOL) {
+        noteBlocksVersion({
+          hardwareVersion: b[0],
+          protocolVersion: b[1],
+          runtimeVersion: b.byteLength >= 4 ? b[3] : undefined,
+        });
         return {
           type: 'blocks',
           via: 'ble',
@@ -214,6 +220,11 @@ function probeUsb(timeoutMs: number): Promise<CalliopeProgramInfo | null> {
           // answers exactly ONE frame per request (no STATE/MOTION
           // broadcaster), so waiting for a second valid frame would never
           // confirm against a probe-only runtime.
+          noteBlocksVersion({
+            hardwareVersion: f.data[0],
+            protocolVersion: f.data[1],
+            runtimeVersion: f.data.length >= 4 ? f.data[3] : undefined,
+          });
           finish({
             type: 'blocks',
             via: 'usb',
@@ -301,6 +312,11 @@ function probeJlinkSerial(timeoutMs: number): Promise<CalliopeProgramInfo | null
             direction: 'info',
             text: `Blocks probe (mini 2 serial): confirmed — hw=${f.data[0]} protocol=${f.data[1]} runtime=v${f.data.length >= 4 ? f.data[3] : '?'}`,
           });
+          noteBlocksVersion({
+            hardwareVersion: f.data[0],
+            protocolVersion: f.data[1],
+            runtimeVersion: f.data.length >= 4 ? f.data[3] : undefined,
+          });
           finish({
             type: 'blocks',
             via: 'usb',
@@ -344,6 +360,21 @@ export async function getRunningProgramType(
   // and the device mid-reboot. The auto-refresh subscription re-probes once
   // `flashInProgress` clears. Report 'unknown' so a stale result isn't latched.
   if (getState().flashInProgress) return { type: 'unknown' };
+
+  // Passive fast-path: live Blocks traffic (the DAP exchange loop, a recent
+  // probe or COMMAND read) is definitive on its own — answer instantly
+  // instead of racing a fresh probe against the busy transport. Previously
+  // the banner could sit on "wird überprüft…" while STATE/MOTION broadcasts
+  // and button events were streaming through this very widget.
+  if (isBlocksAlive()) {
+    const live = getBlocksLiveness();
+    return {
+      type: 'blocks',
+      hardwareVersion: live.hardwareVersion,
+      protocolVersion: live.protocolVersion,
+      runtimeVersion: live.runtimeVersion,
+    };
+  }
 
   // Kick off whichever probes are available. Skip a probe if its transport
   // isn't connected — saves opening a stray serial subscription. A flash-only
@@ -411,7 +442,9 @@ if (typeof window !== 'undefined') {
     }
 
     if (!key) {
-      // Neither transport connected — clear the latch.
+      // Neither transport connected — clear the latch (and the passive
+      // liveness: the next device may run something else entirely).
+      resetBlocksLiveness();
       updateState((st) => (st.programType === 'disconnected' ? st : { ...st, programType: 'disconnected' }));
       return;
     }

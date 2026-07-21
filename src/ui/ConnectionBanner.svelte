@@ -224,6 +224,17 @@
     }
   }
 
+  let extraSecondaryBusy = $state(false);
+  async function runExtraSecondary(): Promise<void> {
+    if (!extra?.secondaryAction || extraSecondaryBusy) return;
+    extraSecondaryBusy = true;
+    try {
+      await extra.secondaryAction.run();
+    } finally {
+      extraSecondaryBusy = false;
+    }
+  }
+
   function dismiss(): void {
     dismissedKey = bannerKey;
   }
@@ -330,9 +341,21 @@
             class:usb={extra.action.variant !== 'ble'}
             class:ble={extra.action.variant === 'ble'}
             onclick={runExtra}
-            disabled={extraBusy}
+            disabled={extraBusy || extraSecondaryBusy}
           >
             {extraBusy ? (extra.action.busyLabel ?? 'Bitte warten…') : extra.action.label}
+          </button>
+        {/if}
+        {#if extra.secondaryAction}
+          <button
+            type="button"
+            class="btn"
+            class:usb={extra.secondaryAction.variant !== 'ble'}
+            class:ble={extra.secondaryAction.variant === 'ble'}
+            onclick={runExtraSecondary}
+            disabled={extraBusy || extraSecondaryBusy}
+          >
+            {extraSecondaryBusy ? (extra.secondaryAction.busyLabel ?? 'Bitte warten…') : extra.secondaryAction.label}
           </button>
         {/if}
       {/if}

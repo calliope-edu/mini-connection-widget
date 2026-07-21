@@ -45,6 +45,9 @@ export interface BannerExtra {
   title: string;
   detail?: string;
   action?: BannerExtraAction;
+  /** Optional second button (e.g. "Bluetooth verbinden" next to a flash
+   *  offer). Rendered after `action`; both share mutual busy-locking. */
+  secondaryAction?: BannerExtraAction;
   /** Show an "Ausblenden" affordance. */
   dismissible?: boolean;
 }

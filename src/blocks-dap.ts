@@ -27,6 +27,7 @@ import { appendLog } from './log';
 import { BlocksMailbox, findBlocksExchange, type BlocksMemIO } from './blocks-mailbox';
 import { BlocksFrameParser, type BlocksFrame } from './blocks-frame';
 import { logIncomingFrame, logOutgoingFrame } from './blocks-protocol';
+import { noteBlocksFrame, resetBlocksLiveness } from './blocks-liveness';
 import { getDapOwner, setDapOwner, onDapOwnerChange, withDapBus } from './dap-arbiter';
 
 /** The slice of @microbit/microbit-connection's ArmDebug we use (same as jacdac.ts). */
@@ -94,6 +95,9 @@ export function reinitBlocksDapAfterFlash(): void {
   available = false;
   outbound = [];
   scanCooldownUntil = 0;
+  // The flash may have replaced the program — stale liveness must not keep
+  // reporting "blocks" for a hex that is no longer there.
+  resetBlocksLiveness();
 }
 
 /** Bring up SWD for a scan: a full `reinit()` once after a flash (the cache is
@@ -274,6 +278,10 @@ async function runLoop(): Promise<void> {
       if (inbound) {
         for (const f of parser.push(inbound)) {
           logIncomingFrame('usb', f); // surface device→host frames in the comms panel
+          // Passive liveness: every checksum-valid frame proves the Blocks
+          // runtime — program-type detection answers from this instead of
+          // racing its own probe against the busy exchange.
+          noteBlocksFrame(f);
           emit(f);
         }
         didWork = true;
