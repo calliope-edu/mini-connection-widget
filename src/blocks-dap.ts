@@ -98,6 +98,35 @@ export function reinitBlocksDapAfterFlash(): void {
   // The flash may have replaced the program — stale liveness must not keep
   // reporting "blocks" for a hex that is no longer there.
   resetBlocksLiveness();
+  // CRITICAL: we just STOPPED the loop, but nothing restarts it on its own —
+  // the campus host only re-subscribes on a usbStatus false→true edge, which a
+  // USB flash never produces (status is frozen 'connected' across the flash),
+  // and a target reset's resume clobbers a just-restarted loop. So the loop
+  // stayed dead → no live comms until a manual reconnect. Own the restart:
+  // after the device has had time to reboot, re-scan ourselves if a consumer
+  // (the campus bridge subscriber) is still attached. The gate inside
+  // kickBlocksDapRescan keeps this safe (never during a flash/jacdac/cooldown).
+  if (rescanTimer) clearTimeout(rescanTimer);
+  rescanTimer = setTimeout(() => { rescanTimer = null; kickBlocksDapRescan(); }, 2500);
+}
+
+let rescanTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Proactively restart the exchange loop (re-scan) WITHOUT waiting for an
+ * outbound frame — used after a flash / target-reset teardown, where the
+ * campus host won't re-trigger a send (its subscriptions still look "active",
+ * and no usbStatus edge fires). Only kicks when a consumer is attached and the
+ * bus is genuinely free, so it can never scan mid-flash (the TAR-clobber page
+ * corruption guard) or fight Jacdac.
+ */
+export function kickBlocksDapRescan(): void {
+  if (loopActive) return;
+  if (paused) return;                      // flash in progress — never scan
+  if (getDapOwner() === 'jacdac') return;  // MakeCode owns the bus
+  if (subscribers.size === 0) return;      // no live-comms consumer to serve
+  if (Date.now() < scanCooldownUntil) return;
+  void runLoop();
 }
 
 /** Bring up SWD for a scan: a full `reinit()` once after a flash (the cache is
