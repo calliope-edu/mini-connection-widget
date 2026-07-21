@@ -22,6 +22,8 @@ import { updateState, getState } from './state';
 import { appendLog } from './log';
 import { pushRx } from './comms';
 import { SEGGER_JLINK_VENDOR_ID } from './connection-errors';
+import { BlocksFrameParser } from './blocks-frame';
+import { noteBlocksFrame } from './blocks-liveness';
 
 /** Calliope's serial runs at 115200 (same as the CODAL/DAL default). */
 const JLINK_BAUD_RATE = 115200;
@@ -33,6 +35,14 @@ let readLoopAbort = false;
 let readLoopDone: Promise<void> | null = null;
 
 const rawSubs = new Set<(chunk: string) => void>();
+
+// Continuous Blocks liveness tap on the mini 2 CDC stream. The runtime
+// announces its RES_READ 0x0100 version frame ~once/second (BlocksProbe);
+// parsing every chunk into the liveness latch here — not only during an
+// active probe — means detection confirms passively the moment an announce
+// arrives, even after a page reload or reconnect where the device's UART
+// receive path has gone deaf and never hears the host's REQ_READ.
+const livenessParser = new BlocksFrameParser();
 
 /**
  * Subscribe to raw decoded chunks from the mini 2 serial port (no line
@@ -161,6 +171,8 @@ async function startReadLoop(): Promise<void> {
       if (value && value.length) {
         const chunk = decodeLatin1(value as Uint8Array);
         for (const cb of rawSubs) { try { cb(chunk); } catch { /* ignore */ } }
+        // Feed the passive liveness latch (version + "blocks is alive").
+        for (const f of livenessParser.push(value as Uint8Array)) noteBlocksFrame(f);
         pushRx('usb', chunk);
       }
     }
