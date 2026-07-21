@@ -10,8 +10,10 @@
     confirmReplug,
   } from '../usb-recovery';
   import { connectionBannerExtra, connectionUiActive } from '../connection-banner-extra';
-  import { connectCalliope } from '../connect';
+  import { connectCalliope, disconnectAndForget } from '../connect';
   import { deriveConnectionView, isIndeterminateFlash } from '../connection-view';
+  import { extractFriendlyName } from '../friendly-name';
+  import MiniNamePattern from './MiniNamePattern.svelte';
 
   /**
    * The single, app-wide light connection banner.
@@ -53,6 +55,21 @@
 
   let connecting = $state(false);
   let extraBusy = $state(false);
+
+  // Startup grace: on a page reload the editor flips `uiActive` on before the
+  // reconnect daemon has had a chance to re-grab a remembered device, so the
+  // proactive "Kein Calliope mini verbunden" prompt would flash for a moment.
+  // Suppress ONLY that prompt for ~2s after uiActive first turns on. One-way
+  // (never reset), so a genuine mid-session disconnect shows the prompt
+  // immediately; reactive states (recovery/connecting/extra) are earlier
+  // branches and are never delayed.
+  let graceElapsed = $state(false);
+  let graceTimer: ReturnType<typeof setTimeout> | null = null;
+  $effect(() => {
+    if (uiActive && !graceElapsed && graceTimer === null) {
+      graceTimer = setTimeout(() => { graceElapsed = true; }, 2000);
+    }
+  });
   // Brief green "verbunden ✓" the moment EITHER transport connects — so adding a
   // second transport (e.g. Bluetooth while USB is already up) gives explicit
   // feedback even though the badge was already green. Tracked per-transport so a
@@ -74,12 +91,20 @@
     prevUsbConnected = usbC;
     prevBleConnected = bleC;
   });
-  onDestroy(() => { if (successTimer) clearTimeout(successTimer); });
+  onDestroy(() => {
+    if (successTimer) clearTimeout(successTimer);
+    if (graceTimer) clearTimeout(graceTimer);
+  });
 
   // Transport-aware copy for the connecting + success states. (The `connecting`
   // kind only fires for BLE or native — USB connects show via the recovery
   // ladder — so this is Bluetooth/native.)
   const connectingLabel = $derived(view.nativeMode ? 'Verbinde über App…' : 'Verbinde per Bluetooth…');
+  // The mini being connected: the drawn-pattern target, else a captured friendly
+  // name, else one parsed from the advertised BLE name. Drives the name + LED
+  // pattern shown in the connecting banner. MiniNamePattern renders nothing for
+  // a non-CVCVC name, so unknown-name connects safely fall back to the spinner.
+  const targetName = $derived(s.connectTargetName ?? s.friendlyName ?? extractFriendlyName(s.bleDeviceName));
   const successLabel = $derived(
     view.usb.connected && view.ble.connected ? 'USB + Bluetooth verbunden'
     : view.usb.connected ? 'USB verbunden'
@@ -139,6 +164,9 @@
       // stay quiet until something actually happens (the cases above).
       if (uiActive) {
         if (!view.usb.supported && !view.ble.supported) return 'unsupported';
+        // Startup grace — let the reconnect daemon re-grab a remembered device
+        // before we tell the user nothing is connected.
+        if (!graceElapsed) return 'hidden';
         return 'no-connection';
       }
       return 'hidden';
@@ -214,6 +242,14 @@
     await connect('usb');
   }
 
+  // Give up on an in-flight BLE connect from the banner. Forgetting the device
+  // (disconnectAndForget) sets userDisconnectedBle — which stops the retry loop
+  // + reconnect daemon — and clears the browser grant, so the NEXT "Verbinden"
+  // opens a fresh picker instead of silently resuming the same (wrong) device.
+  async function cancelConnecting(): Promise<void> {
+    await disconnectAndForget('ble');
+  }
+
   async function runExtra(): Promise<void> {
     if (!extra?.action || extraBusy) return;
     extraBusy = true;
@@ -268,6 +304,10 @@
           <path d="M20 6 9 17l-5-5" />
         </svg>
       </span>
+    {:else if kind === 'connecting' && targetName}
+      <!-- Show the target mini's LED name-pattern so the user can confirm which
+           device is being connected. -->
+      <MiniNamePattern name={targetName} size={28} />
     {:else if neutral}
       <span class="spinner" aria-hidden="true"></span>
     {:else}
@@ -301,6 +341,7 @@
         <span>Wähle jetzt noch „CDC – COM x“, um die Datenverbindung (Serial) herzustellen. Abbrechen ist okay: Programme übertragen geht auch ohne.</span>
       {:else if kind === 'connecting'}
         <strong>{connectingLabel}</strong>
+        {#if targetName}<span>Calliope mini {targetName}</span>{/if}
       {:else if kind === 'no-connection'}
         <strong>Kein Calliope mini verbunden.</strong>
         <span>Verbinde deinen Calliope mini per USB-Kabel oder Bluetooth, um zu starten.</span>
@@ -322,6 +363,11 @@
         {:else if recovery === 'reload'}
           <button type="button" class="btn usb" onclick={reloadForUsbReconnect}>Seite neu laden</button>
         {/if}
+      {:else if kind === 'connecting'}
+        <!-- Abort an in-flight BLE connect. Forgets the device so the NEXT
+             "Verbinden" opens a fresh picker (switch minis) instead of silently
+             resuming the same one. -->
+        <button type="button" class="btn ghost" onclick={cancelConnecting}>Abbrechen</button>
       {:else if kind === 'no-connection'}
         {#if view.usb.supported}
           <button type="button" class="btn usb" onclick={() => connect('usb')} disabled={connecting}>
@@ -460,6 +506,13 @@
       background: #2f80ed;
       color: #fff;
       &:hover:not(:disabled) { background: #2670d8; }
+    }
+    // Ghost = quiet secondary (e.g. "Abbrechen" while connecting)
+    &.ghost {
+      background: transparent;
+      border-color: rgba(0, 0, 0, 0.2);
+      color: inherit;
+      &:hover:not(:disabled) { background: rgba(0, 0, 0, 0.06); }
     }
     &:disabled { opacity: 0.55; cursor: default; }
   }

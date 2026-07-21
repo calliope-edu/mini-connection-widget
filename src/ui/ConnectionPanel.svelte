@@ -16,7 +16,7 @@
    */
   import { untrack } from 'svelte';
   import { calliopeState } from '../state';
-  import { connectCalliope, disconnectAndForget } from '../connect';
+  import { connectCalliope, disconnectAndForget, disconnectUsbKeepPermission } from '../connect';
   import { connectJLinkSerial } from '../web-serial';
   import { statusLabel } from '../connection-view';
   import { connectionTransferProgram, connectionRearmInputs } from '../connection-banner-extra';
@@ -195,7 +195,10 @@
     const nameFilter = advanced || s.nativeMode ? undefined : (patternName ?? undefined);
     void connectCalliope('ble', false, nameFilter);
   }
-  function doForgetUsb() { fire(); void disconnectAndForget('usb'); }
+  // Plain "Trennen": reversible from the UI — keeps the WebUSB permission so
+  // the next "Verbinden" re-attaches silently (no picker, no cable replug).
+  // Forgetting is the separate "Anderen Calliope verbinden" path.
+  function doDisconnectUsb() { fire(); void disconnectUsbKeepPermission(); }
   function doForgetBle() { fire(); void disconnectAndForget('ble'); }
   // Give up on an in-flight / retrying BLE attempt: disconnectAndForget sets
   // userDisconnectedBle (which stops the reconnect daemon) and forgets the
@@ -307,7 +310,7 @@
         <div class="badge-head">
           <span class="transport-name">{labels.usb}</span>
           {#if usbConnected}
-            <button type="button" class="row-btn ghost" onclick={doForgetUsb} disabled={usbBusy}>
+            <button type="button" class="row-btn ghost" onclick={doDisconnectUsb} disabled={usbBusy}>
               {labels.disconnect}
             </button>
           {:else if s.usbStatus === 'connecting'}
@@ -361,8 +364,11 @@
             {/if}
           </span>
           {#if bleConnected}
+            <!-- Just "Trennen": for BLE this forgets the device (harmless — no
+                 stale-handle issue as on USB), so the next "Verbinden" opens the
+                 picker and can switch minis. Two buttons only: Verbinden / Trennen. -->
             <button type="button" class="row-btn ghost" onclick={doForgetBle} disabled={bleBusy}>
-              {labels.forget}
+              {labels.disconnect}
             </button>
           {/if}
         </div>

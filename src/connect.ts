@@ -11,6 +11,7 @@ import {
   connectWithRetry,
   disconnectUsb,
   forgetAllUsbDevices,
+  forgetOtherUsbDevices,
   getUsbConnection,
   requestCalliopeUsbDevice,
   isSeggerJLinkDevice,
@@ -22,6 +23,16 @@ import { showBleOfflineInfo } from './ble-offline-info';
 import { classifyBleError, classifyUsbError } from './connection-errors';
 import { isNativeMode } from './native-bridge';
 import { nativeConnect, nativeDisconnectAndForget } from './native-mode';
+
+/** Reject with `label` if `p` hasn't settled within `ms`. The underlying
+ *  promise keeps running; callers that move on must invalidate its effect
+ *  (e.g. clearDevice) so a late resolve can't take hold. */
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(label)), ms)),
+  ]);
+}
 
 /**
  * Connect to a Calliope on the chosen transport. Always tries the silent
@@ -56,6 +67,10 @@ export async function connectCalliope(
         // purpose" flag so the reconnect daemon resumes work if this attempt
         // ever drops.
         userDisconnectedBle: false,
+        // Show which mini is being connected (name + LED pattern) in the
+        // connecting banner. Only set when a name filter (drawn pattern) is
+        // known; cleared on resolve below.
+        connectTargetName: nameFilter,
       }));
 
       const c = await getBleConnection();
@@ -75,6 +90,35 @@ export async function connectCalliope(
           bleCanCommunicate: false,
         }));
       }
+
+      // Fast switch: when reconnecting to a REMEMBERED device (no chooser), give
+      // it only a short window. A gone/asleep saved device (the user switched
+      // minis) must not block behind the full retry ladder — after the timeout
+      // we forget it and reopen the picker, so switching is quick. A genuine
+      // transient is caught by the picker-reconnect that follows.
+      if (!forceChooser && getState().bleHasPermission) {
+        const SAVED_RECONNECT_MS = 2500;
+        try {
+          await withTimeout(c.connect(), SAVED_RECONNECT_MS, 'ble-saved-reconnect-timeout');
+          updateState((s) => ({ ...s, bleHasPermission: true, connectTargetName: undefined }));
+          return;
+        } catch (err) {
+          if (getState().userDisconnectedBle) return; // user cancelled meanwhile
+          const classified = classifyBleError(err);
+          if (classified.kind === 'aborted') {
+            updateState((s) => ({ ...s, bleStatus: 'disconnected', bleErrorMessage: undefined, connectTargetName: undefined }));
+            return;
+          }
+          // Timed out or failed → the saved device isn't answering. Forget it so
+          // the picker below lists all minis. clearDevice() also drops any late
+          // resolve of the timed-out c.connect() against the now-forgotten
+          // device, so we can't end up "connected" to the one we moved on from.
+          appendLog({ direction: 'info', text: `Saved BLE device did not answer in ${SAVED_RECONNECT_MS}ms — forgetting and opening picker.` });
+          try { await c.clearDevice(); } catch { /* ignore */ }
+          await forgetAllBleDevices();
+          updateState((s) => ({ ...s, bleDeviceName: undefined, bleHasPermission: false, bleCanFlash: false, bleCanCommunicate: false }));
+        }
+      }
       // Retry transient connect failures BEFORE surfacing the destructive
       // A+B+Reset offline modal — mirrors the USB connectWithRetry. A momentary
       // RF glitch / Windows-BT hiccup / device-asleep on a BLE-capable device
@@ -90,13 +134,13 @@ export async function connectCalliope(
           // `connect()` returning means the browser now remembers the device
           // for this origin. Reflect that so the daemon and UI can decide
           // without re-querying getDevices().
-          updateState((s) => ({ ...s, bleHasPermission: true }));
+          updateState((s) => ({ ...s, bleHasPermission: true, connectTargetName: undefined }));
           return;
         } catch (err) {
           const classified = classifyBleError(err);
           if (classified.kind === 'aborted') {
             // User cancelled the picker — not an error; don't retry or modal.
-            updateState((s) => ({ ...s, bleStatus: 'disconnected', bleErrorMessage: undefined }));
+            updateState((s) => ({ ...s, bleStatus: 'disconnected', bleErrorMessage: undefined, connectTargetName: undefined }));
             return;
           }
           // User hit "Abbrechen / give up" mid-retry → stop quietly.
@@ -118,7 +162,7 @@ export async function connectCalliope(
         direction: 'info',
         text: `BLE connect failed after ${BLE_TRIES} attempts (kind=${classified.kind}): ${(lastErr as Error)?.message ?? lastErr}`,
       });
-      updateState((s) => ({ ...s, bleStatus: 'error', bleErrorMessage: classified.userMessage }));
+      updateState((s) => ({ ...s, bleStatus: 'error', bleErrorMessage: classified.userMessage, connectTargetName: undefined }));
       if (classified.kind === 'transient') showBleOfflineInfo();
       return;
     } else {
@@ -151,6 +195,12 @@ export async function connectCalliope(
         return;
       }
 
+      // Prune any OTHER authorized Calliope so UseAnyAllowed deterministically
+      // connects to the one the user just picked — this is what makes a single
+      // "Verbinden" picker both connect AND switch devices (no separate
+      // "forget"/"other device" button). The picked device keeps its grant, so
+      // no replug is needed.
+      await forgetOtherUsbDevices(picked);
       updateState((s) => ({
         ...s,
         usbStatus: 'connecting',
@@ -176,7 +226,7 @@ export async function connectCalliope(
     if (transport === 'ble') {
       const classified = classifyBleError(err);
       if (classified.kind === 'aborted') {
-        updateState((s) => ({ ...s, bleStatus: 'disconnected', bleErrorMessage: undefined }));
+        updateState((s) => ({ ...s, bleStatus: 'disconnected', bleErrorMessage: undefined, connectTargetName: undefined }));
         return;
       }
       appendLog({
@@ -219,6 +269,39 @@ export async function connectCalliope(
  * stops trying — without this it would immediately reconnect to the device
  * we just forgot.
  */
+/**
+ * Plain, REVERSIBLE disconnect: close the transport but KEEP the browser's
+ * device permission, so the next "Verbinden" re-attaches to the same
+ * still-enumerated device from the UI — no picker, no physical replug.
+ *
+ * This is what the panel's "Trennen" button uses. It deliberately does NOT
+ * call forget(): on a mini 3 the DAPLink sits at the micro:bit VID/PID, so
+ * `forgetAllUsbDevices()` would revoke the WebUSB grant AND invalidate
+ * Chromium's platform handle while the board is still on the bus — the next
+ * open() then throws "The device was disconnected" until a hardware replug
+ * (the reported bug). Forgetting is reserved for the explicit
+ * "Anderen Calliope verbinden" / `disconnectAndForget` path.
+ */
+export async function disconnectUsbKeepPermission(): Promise<void> {
+  if (isNativeMode()) return;
+  await disconnectUsb();
+  await disconnectJLinkSerial();
+  clearUsbConn();
+  clearJlinkUsb();
+  updateState((s) => ({
+    ...s,
+    usbStatus: SUPPORT.usb ? 'disconnected' : 'unsupported',
+    jlinkUsbStatus: 'disconnected',
+    usbErrorMessage: undefined,
+    // Stop the reconnect daemon from immediately re-attaching; the next
+    // explicit "Verbinden" clears this. The permission is retained, so that
+    // reconnect is silent (getDevices) — no picker.
+    userDisconnectedUsb: true,
+    friendlyName: s.bleStatus === 'connected' ? s.friendlyName : undefined,
+  }));
+  appendLog({ direction: 'info', text: 'USB disconnected (permission kept — reconnect from the UI).' });
+}
+
 export async function disconnectAndForget(transport: CalliopeTransport): Promise<void> {
   if (isNativeMode()) {
     return nativeDisconnectAndForget(transport);

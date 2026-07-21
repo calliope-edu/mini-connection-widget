@@ -309,6 +309,15 @@ export async function getUsbConnection(): Promise<MicrobitUSBConnection> {
       }));
       appendLog({ direction: 'error', text: msg });
     });
+    // Pressing RESET on the mini resets only the target nRF; the DAPLink
+    // interface chip stays USB-enumerated, so the lib never fires a
+    // usb.disconnect (this.usbDevice stays set, status stays Connected) and the
+    // reconnect daemon — armed only on a connected→!connected edge — never runs.
+    // The target reset only tears down the serial read loop, which the lib
+    // signals via 'serialreset'. Mirror the mini-2 CDC silent resume: bounce
+    // the (still-enumerated) connection in place to rebuild SWD + serial with
+    // no picker and no user gesture.
+    c.addEventListener('serialreset', () => { void attemptSilentDaplinkResume(c); });
     usbConn = c;
     // Wire the rxBuffer line parser through the registry so it gets
     // detached during flash pause along with every other subscriber.
@@ -980,6 +989,56 @@ async function recoverUsbAfterFlashReboot(c: MicrobitUSBConnection, name: string
   return false;
 }
 
+// Single-flight guard for the DAPLink target-reset silent resume.
+let daplinkResumeActive = false;
+
+/**
+ * Silently recover the DAPLink USB connection after a TARGET reset (the mini's
+ * reset button). Mirrors web-serial.ts's `attemptSilentJlinkResume` for the
+ * CMSIS-DAP path: on the lib's `serialreset` event, bounce the SAME
+ * still-enumerated connection in place (disconnect → connect) so SWD + serial
+ * rebuild with NO picker and NO user gesture. Because `c.getDevice()` is still
+ * set, the lib's `connect()` takes its `device.reconnect()` branch.
+ *
+ * Guarded to fire only on a genuine unexpected drop: not during a user
+ * disconnect, not during a USB flash (that path has its own recovery), and
+ * only while the device is still enumerated and the lib still thinks it is
+ * Connected. Rebuilds the Blocks-DAP session on success so live comms resume
+ * on a fresh debug session rather than a stale ArmDebug handle.
+ */
+async function attemptSilentDaplinkResume(c: MicrobitUSBConnection): Promise<void> {
+  if (daplinkResumeActive) return;
+  const s = getState();
+  if (s.userDisconnectedUsb) return;          // user asked to disconnect — don't fight it
+  if (s.flashTransport === 'usb') return;      // flash owns recovery in its finally
+  if (!c.getDevice()) return;                  // usb.disconnect fired → needs a gesture
+  if (c.status !== ConnectionStatus.Connected) return;
+  daplinkResumeActive = true;
+  markExpectedReboot(15_000); // suppress reboot-churn toasts during the bounce
+  try {
+    const settleMs = [800, 1200, 1800, 2500];
+    for (const settle of settleMs) {
+      await new Promise((r) => setTimeout(r, settle));
+      if (getState().userDisconnectedUsb) return;
+      try { await c.disconnect(); } catch { /* already down — about to reconnect */ }
+      try {
+        await c.connect();
+        await waitForUsbConnected(c);
+        // The target reset invalidated ArmDebug's cached SWD state — force the
+        // Blocks-DAP loop to rebuild a fresh debug session, not resume stale.
+        reinitBlocksDapAfterFlash();
+        appendLog({ direction: 'info', text: 'USB serial link resumed after target reset' });
+        return;
+      } catch (e) {
+        appendLog({ direction: 'info', text: `Post-reset USB resume not ready yet: ${(e as Error).message}` });
+      }
+    }
+    appendLog({ direction: 'info', text: 'USB did not resume after target reset — reconnect from the UI if needed' });
+  } finally {
+    daplinkResumeActive = false;
+  }
+}
+
 /**
  * After a USB flash the Calliope reboots into the freshly-flashed app. If
  * that app is the blocks runtime, it auto-broadcasts STATE/MOTION
@@ -1065,5 +1124,40 @@ export async function forgetAllUsbDevices(): Promise<void> {
     // settle, the next user-initiated Connect can hit a "device not
     // selected" or stale-handle error.
     if (forgotAny) await new Promise((r) => setTimeout(r, 800));
+  } catch { /* ignore */ }
+}
+
+/**
+ * After the user picks a device in the "Verbinden" picker, forget every OTHER
+ * authorized Calliope USB device so exactly the picked one remains granted.
+ *
+ * Why: the connection is opened with `DeviceSelectionMode.UseAnyAllowed`, which
+ * connects to the FIRST authorized device — so with two Calliopes ever picked,
+ * "Verbinden" could silently reconnect the wrong one (the switch-devices bug).
+ * Pruning to the picked device makes UseAnyAllowed deterministic. The picked
+ * device is NOT forgotten, so its handle stays valid (no replug); the others
+ * were not connected, so forgetting them is harmless — they re-appear in the
+ * next picker. This keeps the UX at just "Verbinden" + "Trennen": one picker
+ * both connects and switches, with no separate "forget"/"other device" button.
+ */
+export async function forgetOtherUsbDevices(picked: unknown): Promise<void> {
+  if (typeof navigator === 'undefined' || !('usb' in navigator)) return;
+  const pickedSerial = (picked as { serialNumber?: string })?.serialNumber;
+  try {
+    const nav = navigator as unknown as {
+      usb: { getDevices(): Promise<{ vendorId: number; productId: number; serialNumber?: string; forget?: () => Promise<void> }[]> };
+    };
+    const devices = await nav.usb.getDevices();
+    for (const d of devices) {
+      const isDapLink = d.vendorId === 0x0d28 && d.productId === 0x0204;
+      const isJLink = d.vendorId === SEGGER_JLINK_VENDOR_ID;
+      if (!isJLink && !isDapLink) continue;
+      // Keep the just-picked device (match by serial when available, else by
+      // object identity) — forget the rest.
+      if (d === picked || (pickedSerial && d.serialNumber === pickedSerial)) continue;
+      if (typeof d.forget === 'function') {
+        try { await d.forget(); } catch { /* ignore */ }
+      }
+    }
   } catch { /* ignore */ }
 }

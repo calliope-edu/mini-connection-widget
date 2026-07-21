@@ -25,9 +25,9 @@ import { ConnectionStatus } from '@microbit/microbit-connection';
 import { getUsbConn } from './usb';
 import { appendLog } from './log';
 import { BlocksMailbox, findBlocksExchange, type BlocksMemIO } from './blocks-mailbox';
-import { BlocksFrameParser, type BlocksFrame } from './blocks-frame';
+import { BlocksFrameParser, buildBlocksFrame, BLOCKS_REQ, BLOCKS_RES, type BlocksFrame } from './blocks-frame';
 import { logIncomingFrame, logOutgoingFrame } from './blocks-protocol';
-import { noteBlocksFrame, resetBlocksLiveness } from './blocks-liveness';
+import { noteBlocksFrame, noteBlocksVersion, resetBlocksLiveness } from './blocks-liveness';
 import { getDapOwner, setDapOwner, onDapOwnerChange, withDapBus } from './dap-arbiter';
 
 /** The slice of @microbit/microbit-connection's ArmDebug we use (same as jacdac.ts). */
@@ -117,33 +117,73 @@ export function isBlocksDapAvailable(): boolean {
   return available;
 }
 
+/** Version payload from a COMMAND read, mirroring probeBle's return shape. */
+export interface BlocksDapInfo {
+  hardwareVersion?: number;
+  protocolVersion?: number;
+  runtimeVersion?: number;
+}
+
 /**
  * One-shot detection for program-type probing: bring up SWD (idempotent, no
- * halt) and scan RAM for the Blocks-DAP mailbox. Returns true if a Blocks-DAP
- * runtime is present. Does NOT start the exchange loop — cheap (a few RAM
- * reads), safe to call repeatedly. This is how the codal/mini-3 USB transport
- * is detected, since it emits nothing on the UART for the serial probe to see.
+ * halt), scan RAM for the Blocks-DAP mailbox, and — once found — issue ONE
+ * COMMAND (0x0100) read so the caller gets the runtime version, exactly like
+ * the BLE probe. Returns the version payload when a Blocks-DAP runtime is
+ * present, else `null`. Does NOT start the exchange loop.
+ *
+ * The COMMAND read is what makes USB detection version-complete: without it a
+ * mini 3 confirmed Blocks over USB with runtimeVersion=undefined, so an old
+ * hex was never flagged outdated over USB (it was over BLE). Bounded so it
+ * can't blow the probe's own timeout.
  */
-export async function detectBlocksDap(): Promise<boolean> {
+export async function detectBlocksDap(): Promise<BlocksDapInfo | null> {
   // Bus owned by Jacdac (MakeCode editor) — don't probe over a contended bus.
-  if (getDapOwner() === 'jacdac') return false;
+  if (getDapOwner() === 'jacdac') return null;
   // Flash in progress (paused) — NEVER scan: interleaved DAP commands retarget
   // the flash's TAR auto-increment mid-chunk and silently corrupt written pages.
   // The program-type auto-refresh re-probes once the flash window closes.
-  if (paused) return false;
+  if (paused) return null;
   // If the live exchange loop is already running it has already located the
   // mailbox; return that instead of issuing a CONCURRENT scan. ArmDebug
   // readBlock isn't atomic across callers, so a second reader here would corrupt
   // the loop's in-flight reads (and its own) — exactly the contention we avoid.
-  if (loopActive) return available;
+  // The loop's noteBlocksFrame already feeds the liveness latch (incl. version),
+  // and getRunningProgramType's isBlocksAlive fast-path carries it.
+  if (loopActive) return available ? {} : null;
   const adi = getArmDebug();
-  if (!adi) return false;
+  if (!adi) return null;
   try {
     await ensureSwd(adi);
-    const xchg = await findBlocksExchange(memIO(adi));
-    return xchg !== null;
+    const io = memIO(adi);
+    const mailbox = new BlocksMailbox(io);
+    if (!(await mailbox.scan())) return null;
+    // Mailbox present ⇒ Blocks runtime. Ask for the COMMAND payload to learn
+    // the version. Bounded: send once, poll a few short cycles for the reply
+    // (the runtime answers exactly one RES_READ 0x0100 frame).
+    const parser = new BlocksFrameParser();
+    await mailbox.trySendOutbound(buildBlocksFrame(BLOCKS_REQ.READ, 0x0100));
+    for (let i = 0; i < 12; i++) {
+      const inbound = await mailbox.readInbound();
+      if (inbound) {
+        for (const f of parser.push(inbound)) {
+          if (f.type === BLOCKS_RES.READ && f.channel === 0x0100 && f.data.length >= 2) {
+            const info: BlocksDapInfo = {
+              hardwareVersion: f.data[0],
+              protocolVersion: f.data[1],
+              runtimeVersion: f.data.length >= 4 ? f.data[3] : undefined,
+            };
+            noteBlocksVersion(info);
+            return info;
+          }
+        }
+      }
+      await delay(40);
+    }
+    // Mailbox found but no COMMAND reply in time — still a Blocks runtime,
+    // just without a version this pass (a later probe / the live loop fills it).
+    return {};
   } catch {
-    return false;
+    return null;
   }
 }
 

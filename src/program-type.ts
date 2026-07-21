@@ -265,7 +265,16 @@ function probeUsb(timeoutMs: number): Promise<CalliopeProgramInfo | null> {
     // (serial frames or DAP scan) confirms first wins.
     void (async () => {
       try {
-        if (await detectBlocksDap()) finish({ type: 'blocks', via: 'usb' });
+        const dap = await detectBlocksDap();
+        if (dap) {
+          finish({
+            type: 'blocks',
+            via: 'usb',
+            hardwareVersion: dap.hardwareVersion,
+            protocolVersion: dap.protocolVersion,
+            runtimeVersion: dap.runtimeVersion,
+          });
+        }
       } catch { /* ignore */ }
     })();
     const timer = setTimeout(() => finish(null), timeoutMs);

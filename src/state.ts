@@ -149,6 +149,14 @@ export interface CalliopeState {
   friendlyName?: string;
 
   /**
+   * Friendly name of the device we are ACTIVELY connecting to (from the drawn
+   * pairing pattern / nameFilter). Shown — with its LED pattern — in the
+   * connecting banner so the user sees which mini is being chosen. Cleared
+   * when the connect resolves (success / abort / error).
+   */
+  connectTargetName?: string;
+
+  /**
    * A flash request the dispatcher couldn't fulfil yet — usually because
    * no transport was connected, or BLE went into a re-pair state mid-flow.
    * The auto-resume hook in `flash.ts` watches transport-status changes
