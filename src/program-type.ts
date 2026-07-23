@@ -41,6 +41,12 @@ export type CalliopeProgramType = 'blocks' | 'unknown' | 'disconnected';
 
 export interface CalliopeProgramInfo {
   type: CalliopeProgramType;
+  /** Only set with type 'unknown'. 'comms-unavailable' = the transport reports
+   *  connected but we could not complete the GATT handshake (link still coming
+   *  up), so this is NOT a confirmed "not Blocks" — consumers should keep trying
+   *  rather than concluding the device has no Blocks hex. (Absence of a reason
+   *  on 'unknown' means we reached the device but did not confirm Blocks.) */
+  reason?: 'comms-unavailable';
   /** Which transport confirmed the match. */
   via?: 'usb' | 'ble';
   /** Blocks protocol version — COMMAND payload byte[1] (BLE read, or the
@@ -133,30 +139,38 @@ async function probeBle(timeoutMs: number): Promise<CalliopeProgramInfo | null> 
   }
 
   const device = await getConnectedBleDevice();
-  if (!device?.gatt) return null;
+  if (!device?.gatt) return { type: 'unknown', reason: 'comms-unavailable' };
   let server: BluetoothRemoteGATTServer;
   try {
     server = device.gatt.connected ? device.gatt : await device.gatt.connect();
   } catch {
-    return null;
-  }
-  let service: BluetoothRemoteGATTService;
-  let ch: BluetoothRemoteGATTCharacteristic;
-  try {
-    service = await server.getPrimaryService(BLOCKS_BLE_SERVICE_UUID);
-    ch = await service.getCharacteristic(BLOCKS_BLE_COMMAND_CHAR_UUID);
-  } catch {
-    // Service / characteristic not present → not the Blocks runtime.
-    return null;
+    // The transport reports connected but the GATT link isn't up yet. This is
+    // NOT "not Blocks" — signal comms-unavailable so the banner keeps trying
+    // instead of latching a wrong "no Blocks hex" (see getRunningProgramType).
+    return { type: 'unknown', reason: 'comms-unavailable' };
   }
   // Read COMMAND and check the protocol byte — instant, no waiting for the STATE
   // broadcaster to fill (that polling loop is what made detection slow). The
   // real runtime stamps byte[1] = EXPECTED_BLOCKS_PROTOCOL on connect
   // (updateVersionData); the CODAL stub (registers the service for partial-flash
-  // hash alignment) leaves it 0. A read error / not-yet-stamped value is retried
-  // within the window rather than treated as an immediate "not blocks".
+  // hash alignment) leaves it 0.
+  //
+  // Resolve the service+characteristic INSIDE the retry loop. On slower (Windows)
+  // BT stacks, Web Bluetooth service discovery can still be running right after
+  // gatt.connect() resolves, so getPrimaryService throws NotFoundError for the
+  // first ~250ms. Resolving once outside the loop turned that transient race into
+  // an instant "not blocks" — the "connected but no comms → no hex" bug — because
+  // a discovery-race throw is indistinguishable from a genuinely absent service.
+  // Retrying resolution within the window lets the race self-heal; a truly
+  // non-Blocks device keeps throwing for the whole window and falls through to
+  // null (correctly "not blocks", so the flash-Blocks offer still appears).
+  let ch: BluetoothRemoteGATTCharacteristic | null = null;
   do {
     try {
+      if (!ch) {
+        const service = await server.getPrimaryService(BLOCKS_BLE_SERVICE_UUID);
+        ch = await service.getCharacteristic(BLOCKS_BLE_COMMAND_CHAR_UUID);
+      }
       const v = await ch.readValue();
       const b = new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
       if (b.byteLength >= 2 && b[1] === EXPECTED_BLOCKS_PROTOCOL) {
@@ -173,7 +187,11 @@ async function probeBle(timeoutMs: number): Promise<CalliopeProgramInfo | null> 
           runtimeVersion: b.byteLength >= 4 ? b[3] : undefined
         };
       }
-    } catch { /* retryable within the window */ }
+    } catch {
+      // Service not discovered yet (retryable race) or read failed — drop the
+      // cached characteristic so the next iteration re-resolves, and retry.
+      ch = null;
+    }
     if (Date.now() + BLE_STATE_POLL_MS >= deadline) break;
     await sleep(BLE_STATE_POLL_MS);
   } while (Date.now() < deadline);
@@ -394,21 +412,35 @@ export async function getRunningProgramType(
   if (usbOn) probes.push(probeUsb(timeoutMs));
   if (jlinkSerialOn) probes.push(probeJlinkSerial(timeoutMs));
 
-  // Resolve on first positive hit, else wait for all and report 'unknown'.
-  const firstHit = await new Promise<CalliopeProgramInfo | null>((resolve) => {
+  // Resolve on first positive 'blocks' hit; otherwise collect ALL results and
+  // decide. If every attempted probe reported comms-unavailable (transport up
+  // but GATT handshake never completed), the honest answer is "can't reach it
+  // yet", NOT "not blocks" — so a consumer keeps trying instead of latching a
+  // wrong "no Blocks hex". Any probe that actually reached the device (returned
+  // null / a non-comms 'unknown') means we did talk to it and it isn't Blocks.
+  const results = await new Promise<(CalliopeProgramInfo | null)[]>((resolve) => {
+    const collected: (CalliopeProgramInfo | null)[] = [];
     let remaining = probes.length;
-    if (remaining === 0) { resolve(null); return; }
+    let settled = false;
+    if (remaining === 0) { resolve(collected); return; }
     for (const p of probes) {
       p.then((res) => {
-        if (res?.type === 'blocks') resolve(res);
-        else if (--remaining === 0) resolve(null);
+        collected.push(res);
+        if (res?.type === 'blocks' && !settled) { settled = true; resolve([res]); return; }
+        if (--remaining === 0 && !settled) { settled = true; resolve(collected); }
       }).catch(() => {
-        if (--remaining === 0) resolve(null);
+        collected.push(null);
+        if (--remaining === 0 && !settled) { settled = true; resolve(collected); }
       });
     }
   });
 
-  return firstHit ?? { type: 'unknown' };
+  const hit = results.find((r) => r?.type === 'blocks');
+  if (hit) return hit;
+  if (results.length > 0 && results.every((r) => r?.reason === 'comms-unavailable')) {
+    return { type: 'unknown', reason: 'comms-unavailable' };
+  }
+  return { type: 'unknown' };
 }
 
 // ---- Auto-refresh -------------------------------------------------------
