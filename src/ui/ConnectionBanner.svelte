@@ -15,6 +15,11 @@
   import { extractFriendlyName } from '../friendly-name';
   import MiniNamePattern from './MiniNamePattern.svelte';
 
+  // Animated illustration of the unplug → replug action, shown only on the
+  // `replug` rung. Resolved via `import.meta.url` so it survives being bundled
+  // from node_modules by the host (Vite) — no ambient `.gif` type needed.
+  const reconnectGif = new URL('../assets/device-reconnect.gif', import.meta.url).href;
+
   /**
    * The single, app-wide light connection banner.
    *
@@ -297,7 +302,7 @@
 </script>
 
 {#if visible}
-  <div class="banner" class:neutral class:success={kind === 'success'} class:portaled={!!container} use:portal={container} role="status" aria-live="polite">
+  <div class="banner" class:neutral class:success={kind === 'success'} class:illustrated={kind === 'recovery' && recovery === 'replug'} class:portaled={!!container} use:portal={container} role="status" aria-live="polite">
     {#if kind === 'success'}
       <span class="icon check" aria-hidden="true">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
@@ -310,6 +315,10 @@
       <MiniNamePattern name={targetName} size={28} />
     {:else if neutral}
       <span class="spinner" aria-hidden="true"></span>
+    {:else if kind === 'recovery' && recovery === 'replug'}
+      <!-- Show the unplug/replug motion right where the plug icon would be, so
+           the instruction and the illustration read as one unit. -->
+      <img class="reconnect-gif" src={reconnectGif} alt="" aria-hidden="true" />
     {:else}
       <span class="icon" aria-hidden="true">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -467,6 +476,37 @@
     color: #e53f4b;
     display: flex;
     flex-shrink: 0;
+  }
+  // The replug illustration takes the leading slot. The source gif is large
+  // (≈991×920), so cap it to a small square box — it never grows past 104px,
+  // keeping the toast well-proportioned. No frame/background: the artwork sits
+  // directly on the banner.
+  .reconnect-gif {
+    flex-shrink: 0;
+    align-self: center;
+    width: 104px;
+    height: 104px;
+    object-fit: contain;
+  }
+  // Narrow toast: the fixed illustration + button + text don't fit on one row,
+  // so stack them (illustration → text → full-width button). Only the
+  // illustrated (replug) banner is affected; every other state stays a row.
+  @media (max-width: 520px) {
+    .banner.illustrated {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 10px;
+      padding-top: 14px;
+    }
+    .banner.illustrated .actions { align-self: stretch; }
+    .banner.illustrated .btn { flex: 1; }
+    // Keep the hide affordance out of the flow so it stays pinned top-right
+    // instead of dropping to a lonely row of its own.
+    .banner.illustrated .close {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+    }
   }
   .spinner {
     width: 16px;
