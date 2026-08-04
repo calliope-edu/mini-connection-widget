@@ -80,12 +80,12 @@
             <div class="step-hint">
               {#if native}
                 Der Calliope startet in den Bluetooth-Modus. Wir verbinden uns
-                dann automatisch neu und spielen dein Programm auf.
+                dann automatisch neu und übertragen dein Programm.
               {:else}
                 Der Calliope startet in den DFU-Modus
                 (Display zeigt z.&nbsp;B. ein Plus „+"). Dann unten auf
-                <em>„Erneut verbinden"</em> klicken — wir spielen ein
-                BLE-fähiges Programm auf.
+                <em>„Erneut verbinden"</em> klicken — wir übertragen ein
+                BLE-fähiges Programm.
               {/if}
             </div>
           </div>

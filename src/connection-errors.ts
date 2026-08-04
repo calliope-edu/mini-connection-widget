@@ -178,7 +178,7 @@ export const SEGGER_JLINK_VENDOR_ID = 0x1366;
 /** Shown when a Mini 2 J-Link device is the only thing present: rather than a
  *  raw CMSIS-DAP failure, point the user at the reliable download+drag route. */
 export const MINI2_JLINK_USB_HINT =
-  'Calliope Mini 2 (J-Link) lässt sich nicht über den Standard-USB-Weg flashen. '
+  'Auf den Calliope mini 2 (J-Link) kann über den Standard-USB-Weg nicht übertragen werden. '
   + 'Bitte die .hex-Datei herunterladen und auf das Calliope-Laufwerk ziehen.';
 
 /** Returns the Mini 2 J-Link hint for a 0x1366 device, else undefined. Hosts

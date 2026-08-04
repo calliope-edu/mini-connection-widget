@@ -80,7 +80,7 @@ export async function nativeFlash(hex: string, name: string, forceFullDfu = fals
   if (s.flashInProgress) {
     appendLog({
       direction: 'info',
-      text: `Flash bereits aktiv — zusätzlicher Versuch ignoriert (${name}).`,
+      text: `Übertragung bereits aktiv — zusätzlicher Versuch ignoriert (${name}).`,
     });
     return;
   }

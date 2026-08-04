@@ -99,7 +99,7 @@ export async function flashCalliope(
   if (s.status === 'flashing' || s.flashInProgress) {
     appendLog({
       direction: 'info',
-      text: `Flash bereits aktiv — zusätzlicher Versuch ignoriert (${name}).`,
+      text: `Übertragung bereits aktiv — zusätzlicher Versuch ignoriert (${name}).`,
     });
     return;
   }
@@ -276,7 +276,7 @@ async function flashDispatch(
       updateState((st) => ({
         ...st,
         bleErrorMessage:
-          'BLE-Flash fehlgeschlagen und kein USB verfügbar — bitte ein BLE-fähiges Programm aufspielen (A+B halten und Reset drücken, dann erneut versuchen).',
+          'Übertragung per Bluetooth fehlgeschlagen und kein USB verfügbar — bitte ein BLE-fähiges Programm übertragen (A+B halten und Reset drücken, dann erneut versuchen).',
       }));
       return;
     }
@@ -674,7 +674,7 @@ async function scheduleBleReconnect(): Promise<void> {
     updateState((st) => ({
       ...st,
       bleErrorMessage:
-        'Nach dem Flashen ist keine Bluetooth-Verbindung zurückgekommen. Wenn dein Programm kein Bluetooth einschaltet '
+        'Nach dem Übertragen ist keine Bluetooth-Verbindung zurückgekommen. Wenn dein Programm kein Bluetooth einschaltet '
         + '(z. B. MakeCode auf Mini 1, ein Radio-Programm, oder MicroPython auf Mini 1/2), halte A+B gedrückt und drücke Reset, '
         + 'um Bluetooth wieder zu starten.',
     }));

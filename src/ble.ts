@@ -795,7 +795,7 @@ export async function flashCalliopeViaBleDfu(
   if (!hasSecureDfu) {
     throw new BluetoothDfuFailedError(
       'Kein BLE-DFU-Dienst gefunden. Halte A + B und drücke Reset (DFU-Modus) ' +
-      'und verbinde erneut — oder flashe per USB.',
+      'und verbinde erneut — oder übertrage per USB.',
     );
   }
   const boardVersion: 'V2' = 'V2';
@@ -902,21 +902,21 @@ function handleBleFlashError(err: unknown): void {
   // so we get one consistent BLE-error story.
   let userMsg: string;
   if (err instanceof BluetoothPartialFlashDalMismatchError) {
-    userMsg = 'Runtime auf dem Calliope passt nicht zum Programm — bitte einmal per USB voll flashen.';
+    userMsg = 'Runtime auf dem Calliope passt nicht zum Programm — bitte einmal per USB vollständig übertragen.';
     updateState((s) => ({ ...s, bleCanFlash: false }));
   } else if (err instanceof BluetoothPartialFlashServiceMissingError) {
-    userMsg = 'Calliope läuft gerade ohne Partial-Flashing-Service — einmal per USB ein MakeCode-Programm aufspielen.';
+    userMsg = 'Calliope läuft gerade ohne Partial-Flashing-Service — einmal per USB ein MakeCode-Programm übertragen.';
     updateState((s) => ({ ...s, bleCanFlash: false }));
   } else if (err instanceof BluetoothPartialFlashInvalidHexError) {
-    userMsg = 'Dieses Programm kann nicht über BLE geflasht werden (kein MakeCode-Marker).';
+    userMsg = 'Dieses Programm kann nicht über BLE übertragen werden (kein MakeCode-Marker).';
   } else if (err instanceof DOMException && err.name === 'AbortError') {
-    userMsg = 'Flash abgebrochen.';
+    userMsg = 'Übertragung abgebrochen.';
   } else if (err instanceof DeviceError && err.code === 'firmware-update-required') {
-    userMsg = 'Runtime auf dem Calliope passt nicht zum Programm — bitte einmal per USB voll flashen.';
+    userMsg = 'Runtime auf dem Calliope passt nicht zum Programm — bitte einmal per USB vollständig übertragen.';
     updateState((s) => ({ ...s, bleCanFlash: false }));
   } else {
     const classified = classifyBleError(err);
-    userMsg = classified.kind === 'aborted' ? 'Flash abgebrochen.' : classified.userMessage;
+    userMsg = classified.kind === 'aborted' ? 'Übertragung abgebrochen.' : classified.userMessage;
   }
   updateState((s) => ({
     ...s,
