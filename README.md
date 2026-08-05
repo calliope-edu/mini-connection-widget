@@ -5,7 +5,8 @@ Calliope mini connection layer on top of
 Adds Calliope hardware support, simultaneous USB+BLE tracking, automatic
 flash routing, and a framework-agnostic store.
 
-Status: **early — vanilla store API stable, UI widget not yet shipped.**
+Status: **vanilla store API stable; the Svelte 5 UI ships — see
+[Host contract](#host-contract) for what a consumer must mount.**
 
 ## What it does
 
@@ -36,14 +37,17 @@ and USB to WebUSB, so the same code runs across:
 
 ## Install
 
-Not published to npm — consume as a local checkout (link), submodule, or
-vendored copy. With pnpm:
+Not published to npm — consume as a git pin (what both shipping apps do), a
+local checkout (`link:`), or a vendored copy. With pnpm:
 
 ```jsonc
 // app/package.json
 {
   "dependencies": {
-    "@calliope-edu/mini-connection-widget": "link:../mini-connection-widget",
+    // Pin an exact commit. calliope-campus and Teachable both do this; a
+    // superrepo overlay can rewrite it to workspace:* for local widget work.
+    "@calliope-edu/mini-connection-widget":
+      "github:calliope-edu/mini-connection-widget#<full-sha>",
     "@capacitor-community/bluetooth-le": "^7.3.0",
     "@capacitor/core": "^7.4.4",
     "@capacitor/filesystem": "^7.1.6",
@@ -52,11 +56,35 @@ vendored copy. With pnpm:
   },
   "pnpm": {
     "patchedDependencies": {
+      // Copy the patch out of this repo's patches/ into your own patches/.
+      // A path into the widget checkout only resolves when it is a sibling.
       "@microbit/microbit-connection@1.0.0-beta.1":
-        "../mini-connection-widget/patches/@microbit__microbit-connection@1.0.0-beta.1.patch"
+        "patches/@microbit__microbit-connection@1.0.0-beta.1.patch"
     }
   }
 }
+```
+
+### Vite setup
+
+This package ships **unbuilt source** — its entry is `src/index.ts` and it
+imports `.svelte` files, which esbuild has no loader for. Two settings are
+required, and the second is easy to miss:
+
+```js
+// vite.config.js
+optimizeDeps: {
+  // Without this the dep optimizer tries to prebundle the widget and fails.
+  exclude: ['@calliope-edu/mini-connection-widget'],
+  // Excluded means Vite never crawls the widget's imports, so its transitive
+  // deps go un-prebundled too. nrf-intel-hex (MemoryMap, used by four widget
+  // modules) ships a UMD `browser` build with no ESM exports, which Vite
+  // prefers over its `module` entry — the import then dies with "does not
+  // provide an export named 'default'". Force-include it.
+  include: ['nrf-intel-hex'],
+},
+// Only when consuming the widget from a checkout outside node_modules:
+server: { fs: { allow: ['..'] } },
 ```
 
 ## Usage
@@ -81,26 +109,91 @@ await flashCalliope(hexString);         // auto-routed
 const unsub = onSerialLine((line) => console.log(line));
 ```
 
-### Public API
+### Core API
+
+`src/index.ts` is the full surface; these are the pieces every host touches.
 
 ```ts
 // Stores (Svelte-`subscribe` compatible)
 calliopeState: Readable<CalliopeState>
 calliopeLog: Readable<CalliopeLogEntry[]>
-calliopeBlePairingInfo: Readable<boolean>
 calliopeUsbPlugRequest: Readable<UsbPlugRequest | null>
 
 // Actions
 initializeCalliopeConnection(): void
-connectCalliope(transport: 'usb' | 'ble', forceChooser?: boolean): Promise<void>
+connectCalliope(transport?: 'usb' | 'ble', forceChooser?: boolean, nameFilter?: string): Promise<void>
 disconnectAndForget(transport: 'usb' | 'ble'): Promise<void>
-flashCalliope(hex: string, name?: string): Promise<void>
+flashCalliope(hex: string, name?: string, preferredTransport?: 'usb' | 'ble', opts?: FlashOptions): Promise<void>
 sendSerialLine(line: string): Promise<void>
 onSerialLine(cb: (line: string) => void): () => void
 clearCalliopeLog(): void
-showBlePairingInfo(): void
-dismissBlePairingInfo(): void
+// Save a hex to the downloads folder — also what a host should use for
+// MakeCode's "Als Datei herunterladen" (see Host contract). Don't hand-roll
+// it: revoking the object URL right after click() can cancel the download.
+downloadHexFile(hex: string, name: string): void
 ```
+
+## Host contract
+
+The Svelte UI is **not** self-mounting. Each modal below is a singleton driven
+by a store that carries a pending promise or callback, so a modal the host
+doesn't render is a flow that dead-ends. Mount all of them once, app-wide:
+
+```svelte
+<ConnectionBanner container={someElement} />
+<UsbPlugRequestModal />
+<ConnectionChoiceModal />
+<BleOfflineModal />
+<Mini2FlashFallbackModal />
+<Mini2SerialOfferModal />
+<Mini12VersionModal />
+```
+
+| Component | Omitting it means |
+|---|---|
+| `ConnectionChoiceModal` | `flashCalliope()` awaits `awaitConnectionChoice()` when nothing is connected. **No modal → the flash hangs forever.** |
+| `ConnectionBanner` | The only component that reaches `confirmReplug()`. A dropped USB link sits on "reconnecting" with no way out. Also owns the connect prompt and the post-reload recovery resume. |
+| `Mini2FlashFallbackModal` | A failed mini 2 USB transfer has no retry / download-instead exit. |
+| `Mini2SerialOfferModal` | A mini 2 linked flash-only never gets its CDC port offered. |
+| `Mini12VersionModal` | The BLE RAM-fit gate can't ask mini 1 vs mini 2 and cancels the flash. |
+| `UsbPlugRequestModal` | The "plug in the cable" prompt never appears. |
+| `BleOfflineModal` | No A+B+Reset guidance when BLE can't be reached. |
+
+A host is free to render its own component off the same store instead — campus
+substitutes its own `ConnectionChoiceModal` so the card matches its other
+modals. What isn't optional is that *something* resolves each request.
+
+**Banner placement.** By default the banner is a fixed top-centre toast at
+`z-index: 8000`. If your app has a header above that, pass `container` — an
+element with `position: relative` — and the banner positions itself inside it
+instead.
+
+### Host-declared context
+
+Owner-gated setters: pass a stable owner id, clear with the same id on unmount.
+A clear from a stale owner is a no-op, so editor switches are race-free.
+
+```ts
+setConnectionUiActive(true)                    // a device is relevant here → banner may prompt
+setTransferProgram(owner, { run })             // renders the panel's "Programm übertragen"
+setSerialConsumer(owner, true)                 // this view reads serial → enables the mini 2 offer
+setBannerExtra({ id, tone, title, action })    // host-specific banner content
+setBannerContainer(el)                         // alternative to the `container` prop
+setDapOwner('blocks' | 'makecode' | null)      // arbitrates the shared CMSIS-DAP bus
+setBleFlashEnabled(false)                      // BLE stays comms-only; USB + download for flashing
+setUsbPickerAllDevices(true)                   // dev escape hatch: drop USB picker filters
+```
+
+### Gotchas
+
+- **`status === 'connected'` is not "serial works".** The rollup also reports
+  connected for a mini 2 linked flash-only (`jlinkUsbStatus` up, no CDC port).
+  Gate serial writes on `usbStatus` / `jlinkSerialStatus` / `bleStatus` — the
+  three transports `sendSerialLine` actually routes over.
+- **The UI is German-only below the label layer.** `ConnectLabels` /
+  `mergeLabels` cover `ConnectButton` and `ConnectionPanel`, via props. The
+  banner and all six modals hardcode German with no label hook, so a host with
+  its own i18n currently has to fork a component to translate it.
 
 ## Patches
 
@@ -168,6 +261,13 @@ patch):
    (`e95d0001…`) already exposes the flash log; the widget just needs a client.
    Protocol + plan written up in
    [`docs/ble-datalogger-readback.md`](./docs/ble-datalogger-readback.md).
+5. **Labels for the banner + modals.** `ConnectLabels` only reaches
+   `ConnectButton` / `ConnectionPanel`, and only through props — the
+   host-rendered singletons have no hook at all, which is why campus forked
+   `ConnectionChoiceModal` to translate it. A module-level `setConnectLabels()`
+   registry would cover every component including the singletons. ~60–80 new
+   keys across the banner and six modals; the consumer that needs it most is
+   Teachable (de/en/fr/es/it/el with a language picker, German connection UI).
 
 ## License
 

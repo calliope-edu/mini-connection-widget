@@ -103,6 +103,13 @@ export { getRunningProgramType } from './program-type';
 export type { CalliopeProgramType, CalliopeProgramInfo } from './program-type';
 export { inspectHex, detectHexRamClass } from './hex-inspect';
 export type { HexFlavor, HexInspection, HexRamClass } from './hex-inspect';
+// Save a hex to the user's downloads folder. The widget's own "Download .hex"
+// choice and the mini 2 flash fallback use it; exported because hosts need the
+// same download for MakeCode's "Als Datei herunterladen" action, which pxt
+// leaves to the host under controller=2. Don't hand-roll it — revoking the
+// object URL synchronously after click() races the browser and can cancel the
+// download.
+export { downloadHexFile } from './helpers';
 export {
   classifyBleSession,
   classifyBleSessionFromDevice,
