@@ -168,6 +168,14 @@ modals. What isn't optional is that *something* resolves each request.
 element with `position: relative` — and the banner positions itself inside it
 instead.
 
+**App mode.** Inside the iOS / Android shells (`calliopeState.nativeMode`, set
+once at load from the injected native bridge) the host app owns the connection,
+so the widget drops every affordance that would let the user steer it:
+`ConnectButton` renders nothing at all — no trigger, hence no panel and no
+floating window — and the banner's "Verbinde…" state offers only the X, no
+"Abbrechen". The banner is the whole UI surface in app mode. Hosts don't need
+to branch on this; keep mounting the same components.
+
 ### Host-declared context
 
 Owner-gated setters: pass a stable owner id, clear with the same id on unmount.

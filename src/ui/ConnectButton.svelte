@@ -20,6 +20,11 @@
    * drag floating window and the embedded comms log. With it off (the
    * default) the panel is a plain dropdown popover, which is what regular
    * users see; hosts opt in (e.g. from a dev-mode flag) to expose them.
+   *
+   * In native (app) mode the whole trigger renders nothing: the host app owns
+   * the connection, so there is nothing for the user to connect / disconnect /
+   * inspect here. The `<ConnectionBanner>` remains as the only surface, showing
+   * what the app is doing.
    */
   import { calliopeState } from '../state';
   import { calliopeUsbRecovery } from '../usb-recovery';
@@ -196,8 +201,14 @@
 
   const isIcon = $derived(appearance === 'icon');
   const isFlashing = $derived(s.status === 'flashing');
+
+  // Native (app) mode: the host app owns the connection, so the trigger — and
+  // with it the whole panel / floating window — has nothing to offer. Render
+  // nothing at all rather than an inert pill; the banner carries the status.
+  const appMode = $derived(s.nativeMode);
 </script>
 
+{#if !appMode}
 <div class="connect-wrap">
   {#if isIcon}
     <button
@@ -306,6 +317,7 @@
       </svg>
     </div>
   </div>
+{/if}
 {/if}
 
 <style>

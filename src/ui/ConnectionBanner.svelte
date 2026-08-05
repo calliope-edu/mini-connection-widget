@@ -372,10 +372,13 @@
         {:else if recovery === 'reload'}
           <button type="button" class="btn usb" onclick={reloadForUsbReconnect}>Seite neu laden</button>
         {/if}
-      {:else if kind === 'connecting'}
+      {:else if kind === 'connecting' && !view.nativeMode}
         <!-- Abort an in-flight BLE connect. Forgets the device so the NEXT
              "Verbinden" opens a fresh picker (switch minis) instead of silently
-             resuming the same one. -->
+             resuming the same one.
+             Native (app) mode has no such button: the host app owns the
+             connection, so there is nothing here to cancel — only the X to
+             hide the banner. -->
         <button type="button" class="btn ghost" onclick={cancelConnecting}>Abbrechen</button>
       {:else if kind === 'no-connection'}
         {#if view.usb.supported}
