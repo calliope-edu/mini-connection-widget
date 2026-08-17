@@ -203,6 +203,44 @@ setUsbPickerAllDevices(true)                   // dev escape hatch: drop USB pic
   banner and all six modals hardcode German with no label hook, so a host with
   its own i18n currently has to fork a component to translate it.
 
+## MakeCode host (`/makecode` subpath)
+
+Everything needed to embed `makecode.calliope.cc` as a `controller=2` iframe and
+wire it to the connected mini. It lives behind a subpath so the main entry stays
+free of the `@microbit/makecode-embed` peer dependency — apps that don't embed
+MakeCode never pull it in.
+
+```ts
+import {
+  createMakeCodeDriver,
+  makeCodeIframeUrl,
+  makeCodeEditorOrigin,
+  createSerialMonitorBridge,
+  JacdacHost,
+  MakeCodeToolbar,
+  MakeCodeShareModal,
+} from '@calliope-edu/mini-connection-widget/makecode';
+```
+
+| Module | What it covers |
+|---|---|
+| `driver` | `MakeCodeFrameDriver` lifecycle. Compiled hexes route to `flashCalliope` (Download) and `downloadHexFile` ("Download as file") unless the host overrides them. |
+| `iframe-url` | The editor URL, including the `parentOrigin` param that puts the host in pxt's `_allowedOrigins` — without it the editor silently drops every `messagepacket` the host posts. |
+| `project` | Pure pxt.json helpers: Calliope headers, extension list/remove, `v1`/`v2`/`v3` board revision, structural validation. |
+| `serial-bridge` | Device serial → the editor's serial monitor, as the same `{type:'serial'}` message pxt's own reader posts. Declares `setSerialConsumer` so a flash-only mini 2 gets the widget's serial offer, and pauses while the Blocks LIVE runtime owns the link. |
+| `jacdac-host` | Jacdac frames between the device and pxt's Jacdac message simulator. |
+| `ui/` | `MakeCodeToolbar` + `MakeCodeShareModal`, themed through `--mkc-*` custom properties and translated through `MakeCodeLabels`. |
+
+The host still owns program storage, workspace-sync policy and program
+switching — those differ per app and deliberately stay in the app.
+
+**Feeding the simulator.** `sendSerialLineToEditor` posts a line the editor's
+serial monitor always shows, but the running simulator only receives it on a pxt
+carrying the `simdriver` fix that forwards non-`sim` serial messages to the
+simulator frames (upstream drops them: `case 'serial': break`). The Calliope
+target additionally needs `SerialState.receiveData` to actually buffer the
+payload and raise `MICROBIT_SERIAL_EVT_DELIM_MATCH`.
+
 ## Patches
 
 A single `pnpm patch` on top of `@microbit/microbit-connection` carries four

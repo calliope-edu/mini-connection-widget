@@ -12,6 +12,10 @@
     ".": {
       "types": "./src/index.ts",
       "import": "./src/index.ts"
+    },
+    "./makecode": {
+      "types": "./src/makecode/index.ts",
+      "import": "./src/makecode/index.ts"
     }
   },
   "files": [
@@ -22,11 +26,13 @@
     "test": "node --experimental-strip-types --test test/*.test.ts"
   },
   "peerDependencies": {
+    "@microbit/makecode-embed": "*",
     "@microbit/microbit-connection": "1.0.0-beta.1",
     "svelte": "^5.0.0"
   },
   "peerDependenciesMeta": {
-    "svelte": { "optional": true }
+    "svelte": { "optional": true },
+    "@microbit/makecode-embed": { "optional": true }
   },
   "devDependencies": {
     "@capacitor-community/bluetooth-le": "^7.3.0",
