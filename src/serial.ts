@@ -28,6 +28,34 @@ function latin1Bytes(str: string): Uint8Array {
   return Uint8Array.from(str, (c) => c.charCodeAt(0) & 0xff);
 }
 
+/**
+ * What to hand DAPLink's `serialWrite` for an outgoing payload.
+ *
+ * Only the widget's patch of `@microbit/microbit-connection` lets that call take
+ * raw bytes; the stock library runs its argument through `TextEncoder`, which
+ * *stringifies* a Uint8Array: a line goes out as the text `"87,32,49,10"`, its
+ * newline turned into digits along with everything else, so no delimiter ever
+ * matches on the board. And the patch is a pnpm `patchedDependencies` entry —
+ * an npm install (the Cloudflare deploy), or one driven from a workspace root
+ * that doesn't re-declare it, silently ships the stock library.
+ *
+ * So a payload that is pure ASCII — the whole newline-delimited line protocol —
+ * goes as a string. UTF-8 and Latin-1 agree below 0x80, the bytes on the wire
+ * are identical either way, and the line protocol stops depending on the patch.
+ * Only a payload that really carries a byte ≥ 0x80 takes the Uint8Array path:
+ * that's the Blocks wire protocol with its 0xFF start-of-frame, which does still
+ * need the patch (see blocks-protocol.ts, which writes its frames directly).
+ */
+function usbPayload(str: string): string {
+  for (let i = 0; i < str.length; i++) {
+    if (str.charCodeAt(i) > 0x7f) {
+      // Cast: the stock type only admits a string, the patched one takes both.
+      return latin1Bytes(str) as unknown as string;
+    }
+  }
+  return str;
+}
+
 function isFlashGated(): boolean {
   return getState().flashInProgress;
 }
@@ -101,7 +129,7 @@ export async function sendSerialLine(line: string): Promise<void> {
     const usb = getUsbConn();
     let transport: 'usb' | 'ble' | null = null;
     if (usb?.status === ConnectionStatus.Connected) {
-      await usb.serialWrite(latin1Bytes(out));
+      await usb.serialWrite(usbPayload(out));
       transport = 'usb';
     } else if (isJlinkSerialConnected()) {
       // Calliope mini 2 over Web Serial — same transport tag as USB for the
@@ -138,7 +166,7 @@ export async function sendSerialData(data: string): Promise<void> {
   try {
     const usb = getUsbConn();
     if (usb?.status === ConnectionStatus.Connected) {
-      await usb.serialWrite(latin1Bytes(data));
+      await usb.serialWrite(usbPayload(data));
       pushTx('usb', data);
       return;
     }
