@@ -98,6 +98,14 @@ const POLL_IDLE_MS = 50;
 const MAX_OUTBOUND = 256;
 /** Min gap between RAM scans after a "not found", so repeated sends don't scan-storm. */
 const SCAN_COOLDOWN_MS = 2000;
+/**
+ * How long the bus stays quiet after a flash before the first scan.
+ *
+ * The device is rebooting for roughly the first second, and a scan that lands
+ * in that window does not merely fail — it fails inside `reinit()` with a
+ * "Transfer WAIT (target busy)", which takes the USB link down.
+ */
+const POST_FLASH_QUIET_MS = 2500;
 
 const subscribers = new Set<(line: string) => void>();
 let outbound: string[] = [];
@@ -231,7 +239,10 @@ export function startIotExchange(): void {
   if (scanConcluded) return;
   rescanBudget = RESCAN_BUDGET;
   if (getDapOwner() === 'blocks') return;
-  if (!loopActive && !paused && Date.now() >= scanCooldownUntil) void runLoop();
+  // `!rescanTimer`: a retry is already scheduled, and it knows better than this
+  // call does when the device will be ready. Scanning now would only be an
+  // extra attempt against the same not-yet-ready target.
+  if (!loopActive && !paused && !rescanTimer && Date.now() >= scanCooldownUntil) void runLoop();
 }
 
 /**
@@ -349,10 +360,23 @@ export function reinitIotAfterFlash(): void {
   needsReinit = true;
   available = false;
   outbound = [];
-  scanCooldownUntil = 0;
+  // A QUIET WINDOW, not an open door. This used to clear the cooldown, and the
+  // scheduled first look below was then routinely overtaken: a consumer that
+  // remounts right after a flash calls `startIotExchange()`, which scans at
+  // once if the cooldown allows it — and the relay's layout effect re-runs
+  // milliseconds after the flash finishes.
+  //
+  // That scan then hit a target still in its reboot, answered "Transfer WAIT
+  // (target busy)", and a WAIT inside `reinit()` takes the USB link down with
+  // it. The reconnect remounted the relay, which called in here again: a
+  // disconnect every few seconds for as long as the tab stayed open.
+  //
+  // An armed retry ignores this window on purpose (see `attemptRescan`) —
+  // waiting for the device to publish its struct is exactly its job.
+  scanCooldownUntil = Date.now() + POST_FLASH_QUIET_MS;
   stopRequested = true;
   refillRescanBudget();
-  scheduleRescan(2500);
+  scheduleRescan(POST_FLASH_QUIET_MS);
 }
 
 // The Blocks editor taking the bus means a codal Blocks hex is running — no IoT
