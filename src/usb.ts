@@ -26,7 +26,9 @@ import { classifyUsbError, isExpectedRebootWindow, markExpectedReboot, SEGGER_JL
 import { flashViaJLinkMsdImage, SEGGER_USB_FILTERS } from './segger-jlink';
 import { escalateUsbRecovery } from './usb-recovery';
 import { pauseJacdacExchange, resumeJacdacExchange, stopJacdacExchange } from './jacdac';
+import { forgetExchangeSightings } from './ram-scan';
 import { pauseBlocksDapExchange, resumeBlocksDapExchange, stopBlocksDapExchange, reinitBlocksDapAfterFlash } from './blocks-dap';
+import { pauseIotExchange, resumeIotExchange, stopIotExchange, reinitIotAfterFlash } from './iot-dap';
 
 let usbConn: MicrobitUSBConnection | null = null;
 let usbInitPromise: Promise<MicrobitUSBConnection> | null = null;
@@ -51,11 +53,17 @@ export function clearUsbConn(): void {
   // registerSerialDataListener() on the new instance.
   serialListeners.clear();
   serialPaused = false;
-  // The Jacdac + Blocks-DAP exchange loops were bound to that connection's
+  // The Jacdac + Blocks-DAP + IoT exchange loops were bound to that connection's
   // ArmDebug — stop them so a fresh connection re-scans rather than poking a
   // stale handle.
   stopJacdacExchange();
   stopBlocksDapExchange();
+  stopIotExchange();
+  // And forget what the sweeps saw. A sighting is an address in the RAM of the
+  // device that was on the other end of THIS connection; the next cable may
+  // hold a different mini running a different program. Keeping them would let
+  // `wasExchangeSighted` report the previous device's runtime as this one's.
+  forgetExchangeSightings();
 }
 
 // ---------------------------------------------------------------------------
@@ -131,6 +139,7 @@ export async function pauseSerialDataPolling(settleMs = 150): Promise<void> {
   // sleep below covers its (at most one) in-flight op draining.
   pauseJacdacExchange();
   pauseBlocksDapExchange();
+  pauseIotExchange();
   await new Promise((r) => setTimeout(r, settleMs));
 }
 
@@ -147,6 +156,7 @@ export function resumeSerialDataPolling(): void {
   // paused forever (their lazy loop restarts are hard-gated on `paused`).
   resumeJacdacExchange();
   resumeBlocksDapExchange();
+  resumeIotExchange();
   if (!serialPaused) return;
   serialPaused = false;
   if (!usbConn) return;
@@ -821,6 +831,9 @@ export async function flashCalliopeViaUsb(hex: string, name: string, opts: UsbFl
     // Blocks-DAP gate, and a queued frame could otherwise lazily restart the
     // exchange loop on the stale session just for this to kill it mid-scan.
     reinitBlocksDapAfterFlash();
+    // Same for the IoT channel: stale SWD cache, and the freshly flashed program
+    // may put its mailbox somewhere else (or not have one at all).
+    reinitIotAfterFlash();
     // Re-attach every subscriber. Upstream's eventActivated fires on the
     // first listener and starts polling again. Safe to call even when
     // the connection was wiped — `usbConn` may now be null and resume
@@ -1025,8 +1038,10 @@ async function attemptSilentDaplinkResume(c: MicrobitUSBConnection): Promise<voi
         await c.connect();
         await waitForUsbConnected(c);
         // The target reset invalidated ArmDebug's cached SWD state — force the
-        // Blocks-DAP loop to rebuild a fresh debug session, not resume stale.
+        // Blocks-DAP and IoT loops to rebuild a fresh debug session, not resume
+        // stale.
         reinitBlocksDapAfterFlash();
+        reinitIotAfterFlash();
         appendLog({ direction: 'info', text: 'USB serial link resumed after target reset' });
         return;
       } catch (e) {

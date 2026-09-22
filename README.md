@@ -126,6 +126,17 @@ disconnectAndForget(transport: 'usb' | 'ble'): Promise<void>
 flashCalliope(hex: string, name?: string, preferredTransport?: 'usb' | 'ble', opts?: FlashOptions): Promise<void>
 sendSerialLine(line: string): Promise<void>
 onSerialLine(cb: (line: string) => void): () => void
+// The same line pair carried over the CMSIS-DAP RAM mailbox instead of the
+// UART — for mini 3 programs whose serial belongs to a WLAN module (USB only;
+// BLE keeps using serial). Inert until startIotExchange(): subscribing alone
+// never touches the DAP bus. Lines are latin1; host→device is capped at 64
+// bytes and an over-long line is REFUSED (false), never truncated — check with
+// iotLineFits() before composing one.
+startIotExchange(): void
+sendIotLine(line: string): Promise<boolean>
+onIotLine(cb: (line: string) => void): () => void
+isIotAvailable(): boolean
+iotLineFits(line: string): boolean
 clearCalliopeLog(): void
 // Save a hex to the downloads folder — also what a host should use for
 // MakeCode's "Als Datei herunterladen" (see Host contract). Don't hand-roll

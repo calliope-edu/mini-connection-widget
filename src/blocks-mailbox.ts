@@ -30,20 +30,20 @@
  *   272  …    send body — one Blocks frame, up to SEND_MAX bytes
  */
 
-/** Mailbox struct signature words — DISTINCT from Jacdac's (0x786d444a/0xb0a6c0e9). */
+import { findExchangeByMagic, registerExchangeSignature } from './ram-scan';
+
+/** Mailbox struct signature words — DISTINCT from Jacdac's (0x786d444a/0xb0a6c0e9)
+ *  and IoT's (0x496f5443/0x4c696e65). */
 export const BLK_MAGIC0 = 0x426c6f63; // ascii "colB"
 export const BLK_MAGIC1 = 0x4d61696c; // ascii "liaM"
 
-// RAM scan window + stride. nRF52833 RAM is 0x20000000..0x20020000 (128K), but
-// the SoftDevice (s113) reserves the low ~0x2040 bytes and PROTECTS them: a
-// debug-port read of that region faults ("Bad status") and can trip a device
-// panic. So start the scan at the app-RAM boundary (0x20002400, the first 1 KB
-// block at/after s113's app-RAM start 0x20002040) and never read below it. The
-// device places its exchange struct 1 KB-aligned at/above this (see BlocksDap).
-const MEM_START = 0x20002400;
-const MEM_STOP = 0x20000000 + 128 * 1024;
-const CHECK_SIZE = 1024;
-const SCAN_ANCHOR = 0x20006000;
+/** Channel key under which the shared RAM sweep (`ram-scan.ts`) tracks us. The
+ *  scan window + stride live there now, shared by all mailbox channels — one
+ *  sweep matches every registered magic pair, so a second channel costs no
+ *  extra USB transfer. Registered at import time so a sweep started by ANOTHER
+ *  channel already looks for ours too. */
+export const BLOCKS_SIGNATURE = { key: 'blocks', magic0: BLK_MAGIC0, magic1: BLK_MAGIC1 };
+registerExchangeSignature(BLOCKS_SIGNATURE);
 
 /** NVIC ISPR base — writing here pends the runtime's mailbox IRQ (if it enables one). */
 const NVIC_ISPR_BASE = 0xe000e200;
@@ -86,39 +86,12 @@ function triggerIRQ(_io: BlocksMemIO, _irqn: number): Promise<void> {
 /**
  * Scan device RAM for the exchange mailbox. Returns the mailbox base address, or
  * null if no Blocks-DAP runtime is exposing one. Mirrors `findExchange` in
- * jacdac-mailbox.ts (same window/stride, different magic).
+ * jacdac-mailbox.ts (same window/stride, different magic) — both now run the
+ * shared sweep in `ram-scan.ts`, which behaves identically for one caller and
+ * additionally remembers the other channels' magics it passes on the way.
  */
-export async function findBlocksExchange(io: BlocksMemIO): Promise<number | null> {
-  let p0 = SCAN_ANCHOR;
-  let p1 = SCAN_ANCHOR + CHECK_SIZE;
-
-  const check = async (addr: number): Promise<number | null> => {
-    if (addr < MEM_START) return null;
-    if (addr + CHECK_SIZE > MEM_STOP) return null;
-    let buf: Uint32Array;
-    try {
-      buf = await io.readWords(addr, CHECK_SIZE >> 2);
-    } catch {
-      // A block that faults (e.g. a protected region) isn't where our struct is;
-      // skip it and keep scanning rather than aborting the whole search.
-      return 0;
-    }
-    for (let i = 0; i < buf.length; i++) {
-      if (buf[i] === BLK_MAGIC0 && buf[i + 1] === BLK_MAGIC1) return addr + (i << 2);
-    }
-    return 0;
-  };
-
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    const a0 = await check(p0);
-    if (a0) return a0;
-    const a1 = await check(p1);
-    if (a1) return a1;
-    if (a0 === null && a1 === null) return null;
-    p0 -= CHECK_SIZE;
-    p1 += CHECK_SIZE;
-  }
+export function findBlocksExchange(io: BlocksMemIO): Promise<number | null> {
+  return findExchangeByMagic(io, BLOCKS_SIGNATURE);
 }
 
 /**

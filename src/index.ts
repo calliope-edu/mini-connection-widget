@@ -170,6 +170,51 @@ export {
 } from './blocks-mailbox';
 export type { BlocksMemIO } from './blocks-mailbox';
 
+// IoT line transport over CMSIS-DAP (codal/mini-3): the device↔campus data
+// channel that replaces the SERIAL link for programs whose UART belongs to a
+// WLAN module. Same RAM-mailbox mechanics as Jacdac/Blocks, distinct magic, and
+// one latin1 `IOT1:` text line per slot instead of a binary frame — so
+// sendIotLine/onIotLine are drop-in siblings of sendSerialLine/onSerialLine.
+// USB only; BLE keeps using serial. calliope-campus's iot/serialRelay consumes
+// these.
+export {
+  sendIotLine,
+  onIotLine,
+  isIotAvailable,
+  isIotProgramDetected,
+  startIotExchange,
+  stopIotExchange,
+  pauseIotExchange,
+  resumeIotExchange,
+  kickIotRescan,
+  reinitIotAfterFlash,
+} from './iot-dap';
+export {
+  IotMailbox,
+  findIotExchange,
+  detectIotScanFloor,
+  iotLineFits,
+  IOT_MAGIC0,
+  IOT_MAGIC1,
+  IOT_INBOUND_MAX,
+  IOT_SEND_MAX,
+  IOT_SCAN_FLOOR_SOFTDEVICE,
+  IOT_SCAN_FLOOR_BARE,
+} from './iot-mailbox';
+export type { IotMemIO } from './iot-mailbox';
+
+// The one RAM sweep every mailbox channel shares: each 1 KB block is read once
+// and matched against ALL registered magic pairs, so a third channel costs no
+// extra USB transfer (three pairs 1069 ms vs one pair 1062 ms) instead of
+// another second of blind time on connect.
+export {
+  findExchangeByMagic,
+  registerExchangeSignature,
+  forgetExchangeSightings,
+  DEFAULT_MEM_START,
+} from './ram-scan';
+export type { RamScanIO, ExchangeSignature } from './ram-scan';
+
 // Single-owner arbiter for the shared CMSIS-DAP bus. The host sets the owner to
 // the active editor so the Jacdac (MakeCode) and Blocks-DAP exchange loops never
 // run concurrently — concurrent ArmDebug block reads cross + corrupt each other.

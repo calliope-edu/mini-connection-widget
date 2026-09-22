@@ -22,20 +22,19 @@
  * through the widget's existing ArmDebug memory primitives.
  */
 
+import { findExchangeByMagic, registerExchangeSignature } from './ram-scan';
+
 /** Mailbox struct signature words (microbit.ts:465). */
 export const JD_MAGIC0 = 0x786d444a;
 export const JD_MAGIC1 = 0xb0a6c0e9;
 
-// RAM scan window + stride (microbit.ts:453-458). MEM_START is raised above the
-// SoftDevice-protected low RAM (s113 reserves up to ~0x20002040): a debug-port
-// read of that region faults and trips the device's APP_MEMACC panic (071). The
-// jacdac mailbox lives in app RAM well above this, so this is invisible when a
-// jacdac program IS running — it only matters when none is (e.g. a Blocks
-// session), where the scan would otherwise sweep all the way down to 0x20000000.
-const MEM_START = 0x20002400;
-const MEM_STOP = 0x20000000 + 128 * 1024;
-const CHECK_SIZE = 1024;
-const SCAN_ANCHOR = 0x20006000;
+/** Channel key under which the shared RAM sweep (`ram-scan.ts`) tracks us. The
+ *  scan window + stride (microbit.ts:453-458) live there now, shared by all
+ *  mailbox channels — one sweep matches every registered magic pair, so a
+ *  second channel costs no extra USB transfer. Registered at import time so a
+ *  sweep started by ANOTHER channel already looks for ours too. */
+export const JACDAC_SIGNATURE = { key: 'jacdac', magic0: JD_MAGIC0, magic1: JD_MAGIC1 };
+registerExchangeSignature(JACDAC_SIGNATURE);
 
 /** NVIC ISPR base — writing here pends the runtime's Jacdac IRQ (microbit.ts:484). */
 const NVIC_ISPR_BASE = 0xe000e200;
@@ -96,39 +95,12 @@ function triggerIRQ(io: JacdacMemIO, irqn: number): Promise<void> {
 /**
  * Scan device RAM for the exchange mailbox (microbit.ts:452-481). Returns the
  * mailbox base address, or null if no Jacdac program is running (jacdac-ts's
- * ERROR_MICROBIT_JACDAC_MISSING condition).
+ * ERROR_MICROBIT_JACDAC_MISSING condition). The sweep itself is the shared one
+ * in `ram-scan.ts` — same window, anchor, spiral and early exit as the loop
+ * ported from jacdac-ts, plus sideband bookkeeping for the other channels.
  */
-export async function findExchange(io: JacdacMemIO): Promise<number | null> {
-  let p0 = SCAN_ANCHOR;
-  let p1 = SCAN_ANCHOR + CHECK_SIZE;
-
-  const check = async (addr: number): Promise<number | null> => {
-    if (addr < MEM_START) return null;
-    if (addr + CHECK_SIZE > MEM_STOP) return null;
-    let buf: Uint32Array;
-    try {
-      buf = await io.readWords(addr, CHECK_SIZE >> 2);
-    } catch {
-      // A block that faults (e.g. a protected region) isn't the mailbox; skip it
-      // and keep scanning rather than aborting the whole search.
-      return 0;
-    }
-    for (let i = 0; i < buf.length; i++) {
-      if (buf[i] === JD_MAGIC0 && buf[i + 1] === JD_MAGIC1) return addr + (i << 2);
-    }
-    return 0;
-  };
-
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    const a0 = await check(p0);
-    if (a0) return a0;
-    const a1 = await check(p1);
-    if (a1) return a1;
-    if (a0 === null && a1 === null) return null;
-    p0 -= CHECK_SIZE;
-    p1 += CHECK_SIZE;
-  }
+export function findExchange(io: JacdacMemIO): Promise<number | null> {
+  return findExchangeByMagic(io, JACDAC_SIGNATURE);
 }
 
 /**

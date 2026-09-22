@@ -156,8 +156,8 @@ function formatJacdacFrame(frame: Uint8Array): string {
 const POLL_IDLE_MS = 4;
 /** Bounded outbound FIFO; drop-oldest past this so a stuck device can't leak. */
 const MAX_OUTBOUND = 256;
-/** Min gap between RAM scans after a "not found", so repeated sends from a
- *  non-Jacdac session don't trigger a scan storm. */
+/** Min gap between RAM scans after a scan we could not complete (bus error).
+ *  A scan that COMPLETED and found nothing is handled by `scannedEmpty`. */
 const SCAN_COOLDOWN_MS = 2000;
 
 const subscribers = new Set<(frame: Uint8Array) => void>();
@@ -168,6 +168,29 @@ let paused = false;
 let available = false;
 let scanCooldownUntil = 0;
 let droppedFrames = 0;
+
+/**
+ * A completed sweep on THIS connection found no Jacdac mailbox.
+ *
+ * The cooldown alone was not enough, and the difference is the whole bug: a
+ * cooldown says "not so soon again", it never says "not again". Anything that
+ * kept asking — an editor effect re-running, a program sending into a bridge
+ * that has no device behind it — got a fresh 128 KB sweep every SCAN_COOLDOWN_MS
+ * for as long as it kept asking. A sweep is ~1 s of the DAP bus at full tilt
+ * (ram-scan.ts), and it shares USB endpoints with the DAPLink serial reader, so
+ * the steady state was a dying connection: `transferOut` transfer error →
+ * NoAuthorizedDevice → disconnect → reconnect → sweep again.
+ *
+ * The answer is a latch rather than a longer cooldown, because the question has
+ * a stable answer: a device that is not running a Jacdac program does not become
+ * one while it keeps running. The three things that CAN change it all reset the
+ * latch — a new connection (`stopJacdacExchange` from `clearUsbConn`), a flash
+ * (`resumeJacdacExchange`), and a handover of the DAP bus.
+ *
+ * Set only when the sweep RAN TO THE END. A sweep that threw taught us nothing
+ * about the device, only about the bus, and that keeps the old cooldown.
+ */
+let scannedEmpty = false;
 
 /** True once the exchange mailbox has been located on the connected device. */
 export function isJacdacAvailable(): boolean {
@@ -198,7 +221,19 @@ export async function sendJacdacFrame(frame: Uint8Array): Promise<void> {
   // While paused (flash in progress) only queue — a lazy restart here would
   // run adi.connect + a RAM scan (and possibly a target soft-reset!) on the
   // same DAP bus the flash is using, silently corrupting written pages.
-  if (!loopActive && !paused && Date.now() >= scanCooldownUntil) void runLoop();
+  if (mayScan()) void runLoop();
+}
+
+/**
+ * May we start the loop — i.e. may we sweep RAM right now?
+ *
+ * One predicate for all three entry points, so a caller cannot be the one that
+ * forgets the latch. That is how the scan storm got in: `startJacdacExchange`
+ * checked the cooldown, nothing checked "we already looked".
+ */
+function mayScan(): boolean {
+  if (loopActive || paused || scannedEmpty) return false;
+  return Date.now() >= scanCooldownUntil;
 }
 
 /**
@@ -211,7 +246,7 @@ export async function sendJacdacFrame(frame: Uint8Array): Promise<void> {
  */
 export function startJacdacExchange(): void {
   if (getDapOwner() === 'blocks') return;
-  if (!loopActive && !paused && Date.now() >= scanCooldownUntil) void runLoop();
+  if (mayScan()) void runLoop();
 }
 
 /**
@@ -233,6 +268,9 @@ export function stopJacdacExchange(): void {
   stopRequested = true;
   available = false;
   outbound = [];
+  // The latch was a statement about the device on the other end of THIS
+  // connection. A new connection (or a new bus owner) is a new question.
+  scannedEmpty = false;
 }
 
 /** Pause the loop for the duration of a flash (quiet bus). Mirrors the serial
@@ -243,8 +281,11 @@ export function pauseJacdacExchange(): void {
 
 export function resumeJacdacExchange(): void {
   paused = false;
+  // A flash just ended: whatever we concluded about the previous program is
+  // about a program that is no longer there.
+  scannedEmpty = false;
   // Drain anything queued while the gate was closed.
-  if (!loopActive && outbound.length > 0 && Date.now() >= scanCooldownUntil) void runLoop();
+  if (outbound.length > 0 && mayScan()) void runLoop();
 }
 
 // Lose the bus → tear down immediately. The Blocks editor (or "no editor")
@@ -283,6 +324,9 @@ async function runLoop(): Promise<void> {
     }
     mailbox = new JacdacMailbox(memIO(adi));
     let found = false;
+    // Did the sweep reach its own verdict? Only then does "not found" mean
+    // anything about the device — see `scannedEmpty`.
+    let scanCompleted = false;
     let failCooldown = SCAN_COOLDOWN_MS;
     try {
       // Bring up the SWD debug port before any memory access. The widget keeps
@@ -294,6 +338,7 @@ async function runLoop(): Promise<void> {
       await adi.connect();
       try {
         found = await mailbox.scan();
+        scanCompleted = true;
       } catch (err) {
         if (err instanceof JacdacInvalidMemoryError) {
           // The mailbox magic is present but the exchange buffer isn't in its
@@ -307,6 +352,7 @@ async function runLoop(): Promise<void> {
           await mailbox.resetTarget();
           await delay(1200); // firmware re-init: jacdac-ts notes ~700ms min
           found = await mailbox.scan();
+          scanCompleted = true;
         } else {
           throw err;
         }
@@ -320,7 +366,18 @@ async function runLoop(): Promise<void> {
     if (!found) {
       available = false;
       scanCooldownUntil = Date.now() + failCooldown;
-      appendLog({ direction: 'info', text: 'Jacdac: exchange not ready (no Jacdac program, or still re-initialising)' });
+      // A sweep that finished and found nothing is an ANSWER, not a miss: this
+      // device is not running a Jacdac program. Latch it, so nothing sweeps
+      // again until the device or the bus owner changes. Without this the log
+      // line below repeated every couple of seconds for the whole session, and
+      // each repetition cost the connection a second of blind time.
+      if (scanCompleted) scannedEmpty = true;
+      appendLog({
+        direction: 'info',
+        text: scanCompleted
+          ? 'Jacdac: no exchange on this device (no Jacdac program) — not scanning again for this connection'
+          : 'Jacdac: exchange not ready (scan could not complete — retrying later)',
+      });
       return;
     }
     available = true;

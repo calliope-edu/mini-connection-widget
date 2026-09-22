@@ -47,6 +47,7 @@ import { getUsbConn } from './usb';
 import { appendLog } from './log';
 import { pushProxy } from './comms';
 import { IotMailbox, IOT_SEND_MAX, iotLineFits } from './iot-mailbox';
+import { wasExchangeSighted } from './ram-scan';
 import { getDapOwner, onDapOwnerChange, withDapBus } from './dap-arbiter';
 
 /** The slice of @microbit/microbit-connection's ArmDebug we use (same as blocks-dap.ts). */
@@ -222,6 +223,35 @@ async function ensureSwd(adi: ArmDebugLike): Promise<void> {
 /** True once the exchange mailbox has been located on the connected device. */
 export function isIotAvailable(): boolean {
   return available;
+}
+
+/**
+ * Is an IoT program running on the connected mini? — the MARKER, not the pipe.
+ *
+ * `isIotAvailable()` answers a transport question: is this channel carrying
+ * lines right now. It is false in every case where the mailbox is switched off
+ * (which is the default — see campus `USB_MAILBOX_ENABLED`), over BLE, and on a
+ * mini 2. So it cannot be used to recognise an IoT device.
+ *
+ * This can, and it costs nothing. Every RAM sweep matches ALL registered
+ * signatures over each block it has already fetched (`ram-scan.ts`), so the
+ * Blocks program-type probe that runs on connect flies straight past the IoT
+ * mailbox's magic and records having seen it. We only have to ask.
+ *
+ * What it buys: the host can tell "this mini is running a program with the IoT
+ * extension" from the connection alone — before any `IOT1:` line has been
+ * heard, with no editor open, and without starting a single poll loop. The host
+ * then knows that it is worth asking the device who it is instead of concluding
+ * from one unanswered probe that nobody is there.
+ *
+ * ASYMMETRIC, and that is the whole contract: true is proof, false is only
+ * "nothing has swept yet, or the sweep hasn't reached that block". A mini 3
+ * whose connect probe was skipped, a mini 2 (no CMSIS-DAP memory port) and
+ * every BLE link answer false while running the very program this asks about.
+ * So: treat true as a reason to try harder, never false as a reason to stop.
+ */
+export function isIotProgramDetected(): boolean {
+  return wasExchangeSighted('iot');
 }
 
 /**
