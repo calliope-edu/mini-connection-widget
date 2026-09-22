@@ -78,10 +78,22 @@ function memIO(adi: ArmDebugLike) {
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-// 0ms while lines are flowing; a small idle gap otherwise so an idle session
-// doesn't saturate the DAP bus or starve other DAP users. (Mirror jacdac.ts /
-// blocks-dap.ts — same number on purpose, it is the shared bus's cadence.)
-const POLL_IDLE_MS = 4;
+// 0ms while lines are flowing; an idle gap otherwise so an idle session doesn't
+// saturate the DAP bus or starve the other users of it.
+//
+// NOT the 4ms that jacdac.ts and blocks-dap.ts use, and the difference is not
+// an oversight. Those two are the only user of the bus while they run. This
+// mailbox shares it with the CDC serial reader — every `withDapBus` slot the
+// poll takes is one the serial read waits for — and 4ms meant ~250 slots a
+// second against a reader that needs them to keep up with a talking device.
+// The symptoms were a truncated uplink (`IOT1:h:akah…` arriving as `ypc`),
+// "Transfer WAIT (target busy)" on the next scan, and a USB link that dropped
+// every few seconds.
+//
+// 50ms costs nothing in latency, because the DEVICE only looks into the
+// mailbox every 100ms itself (`basic.pause(100)` in the extension's background
+// fiber). Polling faster than the other end answers buys no speed at all.
+const POLL_IDLE_MS = 50;
 /** Bounded outbound FIFO; drop-oldest past this so a stuck device can't leak. */
 const MAX_OUTBOUND = 256;
 /** Min gap between RAM scans after a "not found", so repeated sends don't scan-storm. */
