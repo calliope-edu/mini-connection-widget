@@ -13,6 +13,12 @@ importers:
 
   .:
     dependencies:
+      '@types/w3c-web-usb':
+        specifier: ^1.0.14
+        version: 1.0.14
+      '@types/web-bluetooth':
+        specifier: ^0.0.21
+        version: 0.0.21
       nrf-intel-hex:
         specifier: ^1.4.0
         version: 1.4.0
@@ -35,12 +41,6 @@ importers:
       '@microbit/microbit-connection':
         specifier: 1.0.0-beta.1
         version: 1.0.0-beta.1(patch_hash=93b1318c660131471ae96f5a74877b6216f54995c9d843f26aeb5ed231bb5da9)(@capacitor-community/bluetooth-le@7.3.2(@capacitor/core@7.6.2))(@capacitor/core@7.6.2)(@capacitor/filesystem@7.1.8(@capacitor/core@7.6.2))(@microbit/capacitor-community-nordic-dfu@7.0.0-microbit.4(@capacitor/core@7.6.2))(tslib@2.8.1)
-      '@types/w3c-web-usb':
-        specifier: ^1.0.14
-        version: 1.0.14
-      '@types/web-bluetooth':
-        specifier: ^0.0.21
-        version: 0.0.21
       typescript:
         specifier: ^5.6.0
         version: 5.9.3
