@@ -69,55 +69,46 @@
       <h2 id="ble-offline-title">Bluetooth ist auf deinem Calliope gerade aus</h2>
       <p class="lead">
         Wahrscheinlich läuft ein Programm ohne Bluetooth.
-        {native ? 'So geht es weiter:' : isMac ? 'Drei mögliche Ursachen:' : 'Zwei Wege zurück:'}
+        {native ? 'So geht es weiter:' : 'Zwei Wege zurück:'}
       </p>
 
-      <ol class="steps">
-        <li>
-          <span class="num">1</span>
-          <div class="step-body">
-            <div class="step-title">A + B halten und Reset drücken</div>
-            <div class="step-hint">
-              {#if native}
-                Der Calliope startet in den Bluetooth-Modus. Wir verbinden uns
-                dann automatisch neu und übertragen dein Programm.
-              {:else}
-                Der Calliope startet in den DFU-Modus
-                (Display zeigt z.&nbsp;B. ein Plus „+"). Dann unten auf
-                <em>„Erneut verbinden"</em> klicken — wir übertragen ein
-                BLE-fähiges Programm.
-              {/if}
-            </div>
+      <!-- The ways back are alternatives, not a sequence: no numbers, an
+           "oder" divider between them. The macOS stale-bond tip belongs to
+           the Bluetooth way (it only matters when reconnecting over BLE). -->
+      <div class="ways">
+        <div class="way">
+          <div class="way-title">A + B halten und Reset drücken</div>
+          <div class="way-hint">
+            {#if native}
+              Der Calliope startet in den Bluetooth-Modus. Wir verbinden uns
+              dann automatisch neu und übertragen dein Programm.
+            {:else}
+              Der Calliope startet in den DFU-Modus
+              (Display zeigt z.&nbsp;B. ein Plus „+"). Dann unten auf
+              <em>„Erneut verbinden"</em> klicken — wir übertragen ein
+              BLE-fähiges Programm.
+            {/if}
           </div>
-        </li>
+          {#if isMac && !native}
+            <div class="way-extra">
+              <strong>Klappt es auf dem Mac trotzdem nicht?</strong>
+              macOS speichert manchmal eine veraltete Bluetooth-Verbindung.
+              Öffne <em>Systemeinstellungen → Bluetooth</em>, klicke bei
+              „Calliope mini" auf das „×" und verbinde dann erneut.
+            </div>
+          {/if}
+        </div>
         {#if !native}
-        <li>
-          <span class="num">2</span>
-          <div class="step-body">
-            <div class="step-title">USB-Kabel anschließen</div>
-            <div class="step-hint">
+          <div class="or"><span>oder</span></div>
+          <div class="way">
+            <div class="way-title">USB-Kabel anschließen</div>
+            <div class="way-hint">
               Funktioniert immer, auch ohne Bluetooth auf dem Calliope —
               und ist deutlich schneller als BLE.
             </div>
           </div>
-        </li>
         {/if}
-        {#if isMac && !native}
-        <li>
-          <span class="num">3</span>
-          <div class="step-body">
-            <div class="step-title">Calliope aus macOS-Bluetooth entfernen</div>
-            <div class="step-hint">
-              macOS speichert manchmal eine veraltete Bluetooth-Verbindung, die
-              den Aufbau blockiert. Öffne
-              <em>Systemeinstellungen → Bluetooth</em>, suche „Calliope mini"
-              in der Geräteliste, klicke auf das „×" daneben und verbinde dann
-              erneut über diese Seite.
-            </div>
-          </div>
-        </li>
-        {/if}
-      </ol>
+      </div>
 
       {#if !native}
       <div class="actions">
@@ -181,51 +172,53 @@
     color: #4b5563;
     margin: 0 0 16px;
   }
-  .steps {
-    list-style: none;
+  .ways {
     text-align: left;
     margin: 0 0 14px;
-    padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 10px;
   }
-  .steps li {
-    display: flex;
-    gap: 12px;
-    align-items: flex-start;
+  .way {
     background: #f8fafc;
     border-radius: 10px;
     padding: 10px 12px;
-  }
-  .num {
-    flex: 0 0 28px;
-    height: 28px;
-    border-radius: 50%;
-    background: #0ea5b7;
-    color: #fff;
-    font-weight: 700;
-    font-size: 14px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  .step-body {
-    flex: 1;
     display: flex;
     flex-direction: column;
     gap: 4px;
   }
-  .step-title {
+  .way-title {
     font-weight: 600;
     font-size: 14px;
     color: #1b1c1d;
   }
-  .step-hint {
+  .way-hint,
+  .way-extra {
     font-size: 12.5px;
     color: #4b5563;
     line-height: 1.45;
     em { font-style: normal; font-weight: 600; color: #111; }
+  }
+  .way-extra {
+    margin-top: 4px;
+    padding-top: 8px;
+    border-top: 1px solid #e2e8f0;
+    strong { font-weight: 600; color: #1b1c1d; }
+  }
+  .or {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 8px 0;
+    color: #6b7280;
+    font-size: 12.5px;
+    font-weight: 600;
+    &::before,
+    &::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: #cbd5e1;
+    }
   }
   .actions {
     display: flex;

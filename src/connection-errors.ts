@@ -124,8 +124,9 @@ export function classifyUsbError(err: unknown): ClassifiedUsbError {
     };
   }
   // Chrome refuses `requestDevice()` without a user gesture. Happens when an
-  // OS-level USB disconnect wiped `usbDevice` and the daemon fell through to
-  // the picker outside of a click handler.
+  // OS-level USB disconnect wiped `usbDevice` and a connect outside of a click
+  // handler fell through to the picker — and always in that case for the
+  // DAPLink connection, whose own chooser is disabled (chooser-gate.ts).
   if (/Must be handling a user gesture/i.test(msg)) {
     return {
       kind: 'device-disconnected',
