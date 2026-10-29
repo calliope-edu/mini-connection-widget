@@ -28,14 +28,17 @@ import {
   BluetoothDfuFailedError,
   BluetoothDfuServiceMissingError,
   type BluetoothDfuPhase,
+  type BluetoothDfuSessionKind,
 } from './ble-dfu-web';
+import { flashOverLegacyDfuWeb } from './ble-legacy-dfu-web';
 import { extractFriendlyName, friendlyNameFromDeviceId } from './friendly-name';
-import { showBlePairingInfo } from './pairing-info';
 import {
   classifyBleError,
   isExpectedRebootWindow,
 } from './connection-errors';
-import { classifyBleSessionFromDevice } from './ble-state';
+import { classifyBleSessionFromDevice, boardVersionFromServices } from './ble-state';
+import type { CalliopeVersion } from './helpers';
+import { isChooserBlocked, chooserBlockedError, withChooserBlocked } from './chooser-gate';
 
 // Standard Bluetooth SIG Device Information Service — every micro:bit /
 // Calliope firmware exposes it. The Serial Number string characteristic
@@ -148,6 +151,16 @@ const EXTRA_OPTIONAL_SERVICES: BluetoothServiceUUID[] = [
   // them, so omitting these would make the classifier blind.
   'e97dd91d-251d-470a-a062-fa1922dfa9a8', // CODAL partial-flashing service
   '6e400001-b5a3-f393-e0a9-e50e24dcca9e', // Nordic UART service (CODAL UART)
+  // micro:bit DFU Control service (running app) — used to trigger the reboot
+  // into the bootloader on mini v1/v2 (write 0x01 to e95d93b1).
+  'e95d93b0-251d-470a-a062-fa1922dfa9a8',
+  // Calliope mini v1/v2 bootloader legacy-DFU service. NOTE: the stock Nordic
+  // legacy DFU UUID 00001530-1212-efde-1523-785feabcd123 is on the Web
+  // Bluetooth GATT blocklist (Chrome hides/blocks it), which is why web V1 DFU
+  // never worked. The Calliope `v1.0-calliope-webdfu` bootloader re-bases the
+  // DFU service to the (non-blocklisted) micro:bit base e95d1530, which we list
+  // here so getPrimaryService() can reach it after the reboot.
+  'e95d1530-251d-470a-a062-fa1922dfa9a8',
 ];
 
 function augmentRequestDeviceOptions(opts: unknown): unknown {
@@ -175,6 +188,11 @@ function installRequestDeviceIntercept(): void {
   };
   const orig = bt.requestDevice.bind(navigator.bluetooth);
   bt.requestDevice = async (opts: unknown) => {
+    // Refuse to open the native chooser during a silent/background reconnect
+    // (see chooser-gate.ts). Without this, a daemon backoff tick that lands
+    // inside a recent click's transient-activation window pops the OS pairing
+    // dialog on an unrelated page (observed on /create after leaving a room).
+    if (isChooserBlocked()) throw chooserBlockedError();
     const augmented = augmentRequestDeviceOptions(opts);
     const d = await orig(augmented);
     if (d && d.id) trackedDevices.set(d.id, d);
@@ -305,35 +323,33 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
       if (mapped === 'connected') {
         startHeartbeat();
         appendLog({ direction: 'info', text: 'Connected (BLE)' });
-        // Successful connect means upstream already read the model number
-        // (an authenticated characteristic), so OS bonding is fine. Mark
-        // capabilities optimistically; the real verdict comes from any
-        // actual write/flash that fails, where the error code tells us
-        // which mode is broken.
+        // With open-mode firmware, a successful `gatt.connect()` means we
+        // can immediately use every characteristic — there's no SMP gate
+        // to wait on. Mark capabilities optimistically; the classifier
+        // below will downgrade if the device turns out to be in DfuTarg.
         const name = getBleDeviceName(c);
-        let boardVersion: 'V1' | 'V2' | undefined;
-        try { boardVersion = c.getBoardVersion(); } catch { /* not ready yet */ }
-        // BLE name only carries the friendly suffix when whitelist is off
-        // OR the device was discovered while in pairing mode, in which
-        // case the OS cached "Calliope mini [tipov]". Often it's just
-        // "Calliope mini" — in that case the regex returns undefined and
-        // we keep whatever friendlyName USB (or a prior connect) supplied.
+        // Hardware version is derived authoritatively from the GATT service
+        // fingerprint by the classifier below (boardVersionFromServices) — the
+        // same signal the native apps use. We deliberately do NOT seed it from
+        // the upstream name-based getBoardVersion(), which defaults any
+        // "Calliope mini" to V2 and so mislabels Mini 1/2 as a Mini 3. Keep
+        // whatever USB (or a prior session) captured until the fingerprint
+        // resolves a few hundred ms later.
+        //
+        // BLE name only carries the friendly suffix when the OS cached it
+        // during a prior pairing operation. Often it's just "Calliope mini" —
+        // the regex then returns undefined and we keep the existing friendlyName.
         const friendly = extractFriendlyName(name);
-        // Single atomic update — subscribers (notably flash.ts's auto-resume
-        // hook) never observe a `connected && !bleCanFlash` half-state, so
-        // the dispatcher can't mis-fire the "OS pairing missing" modal in
-        // the brief window between status flip and capability flip.
         updateState((s) => ({
           ...s,
           bleStatus: 'connected',
           bleErrorMessage: undefined,
           bleDeviceName: name ?? s.bleDeviceName,
-          boardVersion: boardVersion ?? s.boardVersion,
-          calliopeVersion: boardVersion === 'V2' ? 'V3' : (boardVersion === 'V1' ? 'V1' : s.calliopeVersion),
           friendlyName: friendly ?? s.friendlyName,
           bleCanCommunicate: true,
           bleCanFlash: true,
-          bleStaleBond: false,
+          bleHasPermission: true,
+          userDisconnectedBle: false,
           connectedAt: Date.now(),
         }));
         // Background: query the CODAL DeviceInfo characteristic for the
@@ -368,28 +384,54 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
               direction: 'info',
               text: `BLE state: ${result.kind} — ${result.reason}; services=[${summary}]`,
             });
+            // Authoritative hardware-version verdict from the service set
+            // (legacy DFU-Control ⇒ V1-class DAL, i.e. Mini 1 OR 2; Nordic
+            // Secure DFU or partial-flash ⇒ V2-class Mini 3). Mini 1 and Mini 2
+            // are indistinguishable over BLE — identical service set, confirmed
+            // against the shipping Android app which lumps them into one class
+            // too — so a DAL device on BLE is reported as 'V2' (the supported
+            // Mini 2). Mini 1 is only ever singled out as unsupported over USB
+            // (DAPLink). Leave the captured version untouched when the services
+            // don't fingerprint (UNIDENTIFIED) — never guess.
+            const bv = boardVersionFromServices(result.services);
+            const versionPatch = bv
+              ? {
+                  boardVersion: bv,
+                  // BoardVersion 'V2' = Mini 3 → CalliopeVersion 'V3'; 'V1' =
+                  // DAL (Mini 1/2 over BLE) → 'V2' (treated as the supported Mini 2).
+                  calliopeVersion: (bv === 'V2' ? 'V3' : 'V2') as CalliopeVersion,
+                  // The DAL verdict can't tell Mini 1 and 2 apart — flag the
+                  // guess so the UI can render "V1/V2". Mini 3 is definitive.
+                  versionAmbiguous: bv !== 'V2',
+                }
+              : {};
+            if (bv) {
+              appendLog({
+                direction: 'info',
+                text: `BLE hardware: ${bv === 'V2' ? 'Mini 3 (V2-class)' : 'Mini 2 (DAL/V1-class, BLE)'} (service fingerprint)`,
+              });
+            }
             updateState((s) => {
-              if (s.flashTransport === 'ble') return { ...s, bleSessionKind: result.kind };
-              // 'bond-ok' confirms what we already optimistically set;
-              // mostly worth recording bleHasPaired:true so downstream code
-              // (auto-reconnect after flash, stale-bond detection) trusts
-              // the existing permission.
-              if (result.kind === 'bond-ok') {
-                return {
-                  ...s,
-                  bleSessionKind: 'bond-ok',
-                  bleCanFlash: true,
-                  bleCanCommunicate: true,
-                  bleStaleBond: false,
-                  bleHasPaired: true,
-                };
-              }
-              // 'dfu-bootloader' is the one classification we trust enough
-              // to downgrade state on: name=DfuTarg + only DFU service is a
-              // hardware-level signal, not a permission-filter artefact.
+              // The BLE DAL verdict ('V2' for any Mini 1/2) is a GUESS — never
+              // let it overwrite an already-settled V1/V2: a USB-side detection
+              // (DAPLink productName, J-Link pick) or the user's answer to the
+              // RAM-fit modal (flash.ts confirmRamFitForBleFlash), both of which
+              // clear versionAmbiguous. E.g. a Mini 1 confirmed over DAPLink —
+              // or declared by the user — must not flip back to ambiguous 'V2'
+              // on a BLE (re)connect. The Mini-3 verdict (bv === 'V2' → V3) is
+              // itself definitive and always applies.
+              const alreadySettled =
+                !s.versionAmbiguous && (s.calliopeVersion === 'V1' || s.calliopeVersion === 'V2');
+              const patch = alreadySettled && bv === 'V1' ? { boardVersion: bv } : versionPatch;
+              if (s.flashTransport === 'ble') return { ...s, ...patch, bleSessionKind: result.kind };
+              // 'dfu-bootloader' is the one classification that downgrades
+              // capabilities: the bootloader doesn't host UART or
+              // partial-flash, so neither comms nor partial-flash work
+              // until the device reboots back into app mode.
               if (result.kind === 'dfu-bootloader') {
                 return {
                   ...s,
+                  ...patch,
                   bleSessionKind: 'dfu-bootloader',
                   bleCanFlash: false,
                   bleCanCommunicate: false,
@@ -397,16 +439,7 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
                     'Calliope ist im DFU-Bootloader. Reset drücken, um zurück in die Anwendung zu kommen.',
                 };
               }
-              // 'partial' / 'unknown' are diagnostically interesting but
-              // unreliable for decision-making — Chrome's `optionalServices`
-              // filter is captured at requestDevice time, so a permission
-              // granted before we declared a UUID will report the service
-              // as missing even when the device exposes it and the bond is
-              // fine. We log the classification (forensic trail) but keep
-              // the optimistic state: the first encrypted op is the only
-              // authoritative test, and our error classifier routes its
-              // failure to the pairing modal cleanly.
-              return { ...s, bleSessionKind: result.kind };
+              return { ...s, ...patch, bleSessionKind: result.kind };
             });
           } catch (err) {
             appendLog({
@@ -415,33 +448,12 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
             });
           }
         })();
-        // No automatic OS-pairing probe.
-        //
-        // All Calliope editor builds (MakeCode, Blocks, MicroPython) require
-        // a real OS-level bond — there is no just-works fallback. So Chrome's
-        // `gatt.connect()` against a device that's currently in pair mode
-        // (just AB+Reset, advertising as pairable) silently triggers Windows
-        // SMP and creates the bond as a side effect of the link-layer
-        // encryption upgrade. That's the "auto-pair" path: no JS work
-        // needed — it just happens during connect.
-        //
-        // If the device is NOT in pair mode at connect time (typical: user
-        // re-connecting to a previously-paired device whose OS bond was
-        // wiped, or first connect without AB+Reset), Chrome falls back to
-        // a just-works session. We can't differentiate without poking an
-        // encrypted characteristic — and poking by ourselves poisons the
-        // Windows bond window because PAIR mode has already closed by the
-        // time we'd probe. Instead, the first user-initiated encrypted op
-        // (flash, blocks write) trips the security error; classifier
-        // routes it to BlePairingInfoModal, which releases the Chrome
-        // link so Windows can do the OS pairing cleanly.
       } else {
         updateState((s) => ({
           ...s,
           bleStatus: mapped,
           bleCanCommunicate: false,
           bleCanFlash: false,
-          bleStaleBond: false,
           bleSessionKind: undefined,
         }));
         if (getState().usbStatus !== 'connected') stopHeartbeat();
@@ -450,23 +462,20 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
     });
     c.addEventListener('backgrounderror', (ev) => {
       const msg = ev.error.message;
-      // During an expected device reboot (post-flash, pairing-mode switch,
-      // DFU enter) the GATT drops as part of normal operation. Log it as
-      // info so power-users still see it in the comms panel, but don't
-      // promote it to a user-facing error toast.
+      // During an expected device reboot (post-flash, DFU enter) the GATT
+      // drops as part of normal operation. Log it as info so power-users
+      // still see it in the comms panel, but don't promote it to an error.
       if (isExpectedRebootWindow()) {
         appendLog({ direction: 'info', text: `BLE background (expected reboot): ${msg}` });
         return;
       }
-      const classified = classifyBleError(ev.error, getState().bleHasPaired);
+      const classified = classifyBleError(ev.error);
       if (classified.kind === 'aborted') return;
       updateState((s) => ({
         ...s,
         bleStatus: 'error',
-        bleStaleBond: classified.staleBond,
         bleErrorMessage: classified.userMessage,
       }));
-      if (classified.showPairingModal) showBlePairingInfo();
       appendLog({ direction: 'error', text: msg });
     });
     // UART data — upstream gives us a Uint8Array per notification. Buffer and
@@ -495,27 +504,22 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
 
 // ---- Capability probes ------------------------------------------------------
 
-/**
- * After connect, work out what we can actually do over BLE. Three failure
- * modes to distinguish:
- *
- *  - **Hex without UART** — service legitimately not advertised. We stay
- *    connected; just no data flows.
- *  - **OS-pairing missing** — a never-paired device hides authenticated
- *    services. UART unreachable; partial-flashing service unreachable.
- *    UI shows "OS-Pairing fehlt".
- *  - **OS-pairing stale** — OS still has a bond, but the Calliope has
- *    forgotten its whitelist (typical after USB full-flash). Same symptom
- *    as never-paired but the browser remembers the device. UI shows
- *    "OS-Pairing veraltet" with instructions to entkoppeln + neu pairen.
- *
- * Probe is conservative: try a no-op `uartWrite('')`. If it fails, we have
- * neither communication nor the right pairing state. Then we cross-reference
- * `bleHasPaired` to pick the right message. We optimistically assume
- * `bleCanFlash` is true when connected — the real answer comes when the
- * user actually flashes; if it fails with a relevant error we can flip.
- */
 // ---- Flash via BLE ----------------------------------------------------------
+//
+// BLE flash routing is driven by GATT SERVICE PRESENCE, not a stored chip
+// version — over BLE alone Mini 1/2 (nRF51/DAL) can't be told apart from each
+// other, and the version may not be known yet:
+//
+//   1. Partial flash first (CODAL partial-flashing service e97dd91d) — fast
+//      path for MakeCode/MicroPython app updates. Any failure falls through to:
+//   2. Full DFU, chosen by service:
+//        - legacy DFU-Control e95d93b0 present  → mini v1/v2 legacy Nordic DFU
+//          (flashOverLegacyDfuWeb, re-based service e95d1530)
+//        - else                                 → mini v3 Nordic Secure DFU
+//          (flashOverNordicDfuWeb, buttonless 8EC9…)
+//
+// The same e95d93b0-vs-absent signal also feeds boardVersionFromServices()
+// (ble-state.ts), which surfaces the version for the UI.
 
 function applyFlashProgress(stage: ProgressStage, progress: number | undefined): void {
   if (stage === ProgressStage.Initializing || stage === ProgressStage.FindingDevice) {
@@ -653,7 +657,14 @@ export async function flashCalliopeViaBle(hex: string, name: string): Promise<vo
       appendLog({ direction: 'info', text: `BLE partial flash impossible (${reason})` });
       throw err;
     }
+    // Transient BLE error (Chrome's GATT cache went stale after a few
+    // seconds idle, characteristic write rejected, link dropped, etc).
+    // Update UI/log state, then RE-THROW so flashOverBle's catch can try
+    // the DFU fallback. Without the throw, flashOverBle thinks partial
+    // flash succeeded and the dispatcher records ok=true for a flash
+    // that never wrote a byte.
     handleBleFlashError(err);
+    throw err;
   }
 }
 
@@ -673,7 +684,11 @@ export async function flashCalliopeViaBle(hex: string, name: string): Promise<vo
  * Nordic DFU service at all. Both are recoverable by the caller; the
  * dispatcher falls back to USB.
  */
-export async function flashCalliopeViaBleDfu(hex: string, name: string): Promise<void> {
+export async function flashCalliopeViaBleDfu(
+  hex: string,
+  name: string,
+  sessionKind?: BluetoothDfuSessionKind,
+): Promise<void> {
   if (!SUPPORT.ble) {
     throw new BluetoothDfuFailedError('Web Bluetooth not supported');
   }
@@ -682,14 +697,108 @@ export async function flashCalliopeViaBleDfu(hex: string, name: string): Promise
   if (!device) {
     throw new BluetoothDfuFailedError('BLE device not accessible — please reconnect first.');
   }
-  let boardVersion: 'V2' | undefined;
-  try {
-    const v = c.getBoardVersion();
-    if (v === 'V2') boardVersion = 'V2';
-  } catch { /* not ready yet */ }
-  if (boardVersion !== 'V2') {
-    throw new BluetoothDfuFailedError('Full BLE flash is only supported on Calliope mini 3.');
+  // Pick the DFU path by BLE service presence, not the boardVersion that
+  // chip-detection returns — over BLE alone there's no way to distinguish
+  // mini v1 (nRF51) from mini v2 (nRF52833 with legacy stack) from mini
+  // v3 (nRF52833 with modern codal v2). Both v1 and v2 expose the legacy
+  // micro:bit DFU Control Service `e95d93b0`; mini v3 doesn't. So:
+  //
+  //   - legacy `e95d93b0` present → delegate to upstream's V1 flash path:
+  //     write 0x01 to e95d93b1, wait for the device to reboot into the
+  //     SDK-8 Nordic DFU bootloader, stream firmware over the older DFU
+  //     wire format.
+  //
+  //   - legacy absent → modern codal v2 stack (mini v3): use our custom
+  //     open-link Nordic Secure DFU path which handles the buttonless
+  //     `8EC9…` trigger + unbonded SDK 17 protocol.
+  //
+  // mini v1/v2 BLE-DFU runs our own Web Bluetooth legacy Nordic DFU client
+  // (`ble-legacy-dfu-web.ts`). The upstream `connection.flash()` V1 path uses
+  // the native Capacitor Nordic DFU plugin, which doesn't run in a browser, and
+  // its service check targets `00001530` — which is on the Web Bluetooth GATT
+  // blocklist. Our client + the `v1.0-calliope-webdfu` bootloader (DFU service
+  // re-based to the non-blocklisted `e95d1530`) make web V1/V2 DFU work; the
+  // post-reboot reconnect is to the same device handle (the bootloader keeps the
+  // app's BD_ADDR). Requires a Calliope mini flashed with that bootloader.
+  const LEGACY_MICROBIT_DFU_CONTROL = 'e95d93b0-251d-470a-a062-fa1922dfa9a8';
+  const hasLegacyDfu = device.gatt?.connected
+    ? await deviceHasService(device, LEGACY_MICROBIT_DFU_CONTROL)
+    : false;
+  if (hasLegacyDfu) {
+    appendLog({
+      direction: 'info',
+      text: 'Detected micro:bit DFU Control service — using mini v1/v2 legacy BLE-DFU (e95d1530)',
+    });
+    const cleanHexV1 = stripMakeCodeMetadata(hex);
+    updateState((s) => ({
+      ...s,
+      flashTransport: 'ble',
+      flashProgress: undefined,
+      flashPhase: 'reboot',
+      flashPartial: false,
+      bleErrorMessage: undefined,
+      lastFlashName: name,
+    }));
+    try {
+      await flashOverLegacyDfuWeb({
+        device,
+        hex: cleanHexV1,
+        onPhase: (p) => {
+          const uiPhase = p === 'flashing' ? 'flashing'
+            : p === 'finalising' ? 'finalising'
+            : p === 'sending-init' ? 'check'
+            : 'reboot';
+          updateState((s) => ({
+            ...s,
+            flashPhase: uiPhase,
+            flashProgress: p === 'finalising' ? 100 : undefined,
+          }));
+        },
+        onProgress: (progress) => {
+          const intPct = Math.round(progress * 100);
+          updateState((s) => ({ ...s, flashPhase: 'flashing', flashProgress: intPct, flashPartial: false }));
+          appendLog({ direction: 'info', text: `Flash: ${intPct}%`, kind: 'flash-progress' });
+        },
+      });
+      updateState((s) => ({
+        ...s,
+        flashTransport: undefined,
+        flashProgress: undefined,
+        flashPhase: undefined,
+        flashPartial: undefined,
+        lastFlashAt: Date.now(),
+      }));
+      appendLog({ direction: 'info', text: `BLE-DFU flash finished: ${name}` });
+    } catch (err) {
+      updateState((s) => ({
+        ...s,
+        flashTransport: undefined,
+        flashProgress: undefined,
+        flashPhase: undefined,
+        flashPartial: undefined,
+      }));
+      appendLog({ direction: 'info', text: `BLE-DFU flash failed: ${(err as Error)?.message ?? err}` });
+      throw err;
+    }
+    return;
   }
+
+  // Decide the Nordic Secure-DFU (nRF52) path by an ACTUAL DFU service, NOT
+  // c.getBoardVersion(): the name-based heuristic returns 'V2' for EVERY
+  // Calliope mini, so an nRF51 (mini 1/2) that reached here — i.e. the legacy
+  // e95d93b0 V1 path above already returned, so it's NOT in legacy DFU — would
+  // be misrouted into Secure-DFU, which physically cannot work on nRF51. Gate
+  // on the Nordic Secure DFU service (0xfe59) being present; if it isn't, fail
+  // fast with an actionable message so flash.ts can fall back to USB instead of
+  // attempting an impossible flash.
+  const hasSecureDfu = await deviceHasService(device, 0xfe59);
+  if (!hasSecureDfu) {
+    throw new BluetoothDfuFailedError(
+      'Kein BLE-DFU-Dienst gefunden. Halte A + B und drücke Reset (DFU-Modus) ' +
+      'und verbinde erneut — oder übertrage per USB.',
+    );
+  }
+  const boardVersion: 'V2' = 'V2';
   const cleanHex = stripMakeCodeMetadata(hex);
   appendLog({
     direction: 'info',
@@ -709,6 +818,11 @@ export async function flashCalliopeViaBleDfu(hex: string, name: string): Promise
       device,
       hex: cleanHex,
       boardVersion,
+      // When the caller knows the device is already parked in the bootloader
+      // (e.g. a mid-DFU disconnect-retry — the device stays in DfuTarg), pass
+      // it through so flashOverNordicDfuWeb skips the buttonless-enter dance
+      // and resumes on the existing/reconnected bootloader link.
+      sessionKind,
       onPhase: (p: BluetoothDfuPhase) => {
         // Setup phases (everything before firmware streaming) keep
         // `flashProgress: undefined` so the UI shows an indeterminate
@@ -763,50 +877,55 @@ export async function flashCalliopeViaBleDfu(hex: string, name: string): Promise
   }
 }
 
+/**
+ * Cheap probe: does the device expose a given primary service?
+ *
+ * Returns `false` on any failure — caller can fall through to whatever
+ * default-path it had. Service discovery on an already-connected GATT is
+ * cached by Chrome, so this is effectively a memo lookup after the first
+ * call.
+ */
+async function deviceHasService(device: BluetoothDevice, uuid: BluetoothServiceUUID): Promise<boolean> {
+  if (!device.gatt?.connected) return false;
+  try {
+    await device.gatt.getPrimaryService(uuid);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function handleBleFlashError(err: unknown): void {
   // Local flash-specific error types come first — these carry domain
   // semantics ("DAL mismatch", "service missing") that the generic
   // classifier doesn't see. Everything else routes through the classifier
   // so we get one consistent BLE-error story.
   let userMsg: string;
-  let updateStaleBond = false;
-  let showModal = false;
   if (err instanceof BluetoothPartialFlashDalMismatchError) {
-    userMsg = 'Runtime auf dem Calliope passt nicht zum Programm — bitte einmal per USB voll flashen.';
+    userMsg = 'Runtime auf dem Calliope passt nicht zum Programm — bitte einmal per USB vollständig übertragen.';
     updateState((s) => ({ ...s, bleCanFlash: false }));
   } else if (err instanceof BluetoothPartialFlashServiceMissingError) {
-    userMsg = 'Calliope läuft gerade ohne Partial-Flashing-Service — einmal per USB ein MakeCode-Programm aufspielen.';
+    userMsg = 'Calliope läuft gerade ohne Partial-Flashing-Service — einmal per USB ein MakeCode-Programm übertragen.';
     updateState((s) => ({ ...s, bleCanFlash: false }));
   } else if (err instanceof BluetoothPartialFlashInvalidHexError) {
-    userMsg = 'Dieses Programm kann nicht über BLE geflasht werden (kein MakeCode-Marker).';
+    userMsg = 'Dieses Programm kann nicht über BLE übertragen werden (kein MakeCode-Marker).';
   } else if (err instanceof DOMException && err.name === 'AbortError') {
-    userMsg = 'Flash abgebrochen.';
+    userMsg = 'Übertragung abgebrochen.';
   } else if (err instanceof DeviceError && err.code === 'firmware-update-required') {
-    userMsg = 'Runtime auf dem Calliope passt nicht zum Programm — bitte einmal per USB voll flashen.';
+    userMsg = 'Runtime auf dem Calliope passt nicht zum Programm — bitte einmal per USB vollständig übertragen.';
     updateState((s) => ({ ...s, bleCanFlash: false }));
   } else {
-    const classified = classifyBleError(err, getState().bleHasPaired);
-    if (classified.kind === 'aborted') {
-      userMsg = 'Flash abgebrochen.';
-    } else {
-      userMsg = classified.userMessage;
-      updateStaleBond = classified.staleBond;
-      showModal = classified.showPairingModal;
-      if (classified.kind === 'stale-bond' || classified.kind === 'pairing-missing') {
-        updateState((s) => ({ ...s, bleCanFlash: false }));
-      }
-    }
+    const classified = classifyBleError(err);
+    userMsg = classified.kind === 'aborted' ? 'Übertragung abgebrochen.' : classified.userMessage;
   }
   updateState((s) => ({
     ...s,
     flashTransport: undefined,
     bleStatus: 'error',
-    bleStaleBond: updateStaleBond || s.bleStaleBond,
     bleErrorMessage: userMsg,
     flashProgress: undefined,
     flashPhase: undefined,
   }));
-  if (showModal) showBlePairingInfo();
   appendLog({ direction: 'error', text: `BLE flash failed: ${userMsg}` });
 }
 
@@ -847,10 +966,70 @@ export async function forgetAllBleDevices(): Promise<void> {
   clearBleConn();
 }
 
+/** Outcome of a gesture-free reconnect attempt. */
+export type QuietReconnectResult = 'connected' | 'no-device' | 'error';
+
+/**
+ * Reconnect to an already-permitted BLE device WITHOUT triggering a
+ * `requestDevice()` chooser (which needs a user gesture and throws
+ * "Must be handling a user gesture" from a background timer/daemon).
+ *
+ * We first confirm the device is still permitted via
+ * `navigator.bluetooth.getDevices()`. Only then do we call the lib's
+ * `connect()`, which reuses the cached handle. If `getDevices()` is empty —
+ * which happens transiently right after a flash reboot while the device is
+ * still coming back up — we return `'no-device'` so the caller can RETRY
+ * rather than treat it as a permanent "permission gone" stop.
+ */
+export async function reconnectBleIfPermitted(): Promise<QuietReconnectResult> {
+  if (!SUPPORT.ble) return 'error';
+  if (typeof navigator === 'undefined' || !('bluetooth' in navigator)) return 'error';
+  const bt = (navigator as unknown as {
+    bluetooth: { getDevices?: () => Promise<BluetoothDevice[]> };
+  }).bluetooth;
+  // Decide whether a previously-permitted device is available to reconnect to
+  // WITHOUT a chooser. `getDevices()` is the documented way — BUT on some
+  // Chrome/Windows builds it returns an EMPTY list even for a device that is
+  // permitted AND actively advertising (HW-observed 2026-06-08: post-flash
+  // auto-reconnect got 'no-device' for 13 straight attempts, then a manual
+  // Connect succeeded immediately). So getDevices() alone is not a reliable
+  // gate. Our durable `trackedDevices` cache (populated by the requestDevice
+  // intercept, module-level, survives disconnects/flash reboots) is the
+  // reliable fallback signal that we hold a reconnectable BluetoothDevice.
+  let permitted = false;
+  if (bt.getDevices) {
+    try {
+      const devices = await bt.getDevices();
+      if (devices && devices.length > 0) permitted = true;
+    } catch { /* fall through to the cache check */ }
+  }
+  if (!permitted && trackedDevices.size > 0) permitted = true;
+  if (!permitted) return 'no-device';
+  try {
+    const c = await getBleConnection();
+    // Block the chooser for the duration of this silent reconnect: if the lib
+    // has no retained device it falls back to requestDevice(), which must NOT
+    // open a pairing dialog from a background timer (see chooser-gate.ts). The
+    // intercept then throws a "user gesture" error, caught below as no-device.
+    await withChooserBlocked(() => c.connect());
+    updateState((s) => ({ ...s, bleHasPermission: true }));
+    return 'connected';
+  } catch (err) {
+    // A "must be handling a user gesture" rejection means the lib fell back to
+    // requestDevice() (it had no retained device) — not silently reconnectable.
+    // Report no-device so the daemon keeps waiting for an explicit Connect
+    // instead of surfacing a hard error.
+    const msg = (err as Error)?.message ?? '';
+    if (/user gesture/i.test(msg)) return 'no-device';
+    return 'error';
+  }
+}
+
 /**
  * Refresh whether the browser remembers a previously-permitted BLE device
  * for this origin. Called on init so the UI can show a remembered name even
- * before the first connect.
+ * before the first connect, and so the reconnect daemon knows whether
+ * there's anything to reconnect to.
  */
 export async function refreshPairedBleStatus(): Promise<void> {
   if (typeof navigator === 'undefined' || !('bluetooth' in navigator)) return;
@@ -863,7 +1042,7 @@ export async function refreshPairedBleStatus(): Promise<void> {
     const first = known[0] as unknown as { name?: string; id?: string } | undefined;
     updateState((s) => ({
       ...s,
-      bleHasPaired: known.length > 0,
+      bleHasPermission: known.length > 0,
       bleDeviceName: s.bleDeviceName ?? first?.name ?? first?.id,
     }));
   } catch {

@@ -28,8 +28,6 @@ export interface ConnectLabels {
   usbConnected: string;
   bleConnectedFull: string;
   bleConnectedCommOnly: string;
-  bleConnectedStaleBond: string;
-  bleConnectedNeedsPairing: string;
   notSupportedUsb: string;
   notSupportedBle: string;
   unsupportedHint: string;
@@ -38,9 +36,8 @@ export interface ConnectLabels {
   connect: string;
   disconnect: string;
   forget: string;
-  howToPair: string;
-  pairingHint: string;
-  staleBondHint: string;
+  /** Stop an in-flight / retrying connection attempt and free the picker. */
+  cancel: string;
 
   // Flash block
   flashVia: (transport: 'usb' | 'ble') => string;
@@ -53,6 +50,20 @@ export interface ConnectLabels {
   connectedSince: string;
   program: string;
   programBlocks: string;
+  runtimeVersion: string;
+  outdated: string;
+
+  // Native-proxy mode (iOS/Android app hosting the campus). Empty/undefined
+  // overrides leave the chip out entirely.
+  appModeChip: string;
+  /** Status string while waiting for the native host to connect a device.
+   *  Replaces the standard "Nicht verbunden" so the user knows the radio
+   *  is being driven through the app rather than the browser. */
+  appModeWaiting: string;
+  /** Status string while the native host's BLE connect is in flight. */
+  appModeConnecting: string;
+  /** Status string when the native host's BLE session is connected. */
+  appModeConnected: string;
 }
 
 export const DEFAULT_LABELS: ConnectLabels = {
@@ -60,7 +71,7 @@ export const DEFAULT_LABELS: ConnectLabels = {
   notConnected: 'Nicht verbunden',
   connecting: 'Verbinde…',
   connected: 'Verbunden',
-  flashing: 'Flashen',
+  flashing: 'Übertrage',
   error: 'Fehler',
   unsupported: 'Nicht unterstuetzt',
   phaseCheck: 'Pruefen…',
@@ -72,36 +83,36 @@ export const DEFAULT_LABELS: ConnectLabels = {
 
   usb: 'USB',
   ble: 'Bluetooth',
-  usbConnected: 'Flashen & Kommunikation',
-  bleConnectedFull: 'Flashen & Kommunikation',
+  usbConnected: 'Übertragen & Kommunikation',
+  bleConnectedFull: 'Übertragen & Kommunikation',
   bleConnectedCommOnly: 'Nur Kommunikation',
-  bleConnectedStaleBond: 'Verbunden — OS-Pairing veraltet',
-  bleConnectedNeedsPairing: 'Verbunden — OS-Pairing fehlt',
-  notSupportedUsb: 'WebUSB nicht verfuegbar',
-  notSupportedBle: 'Web Bluetooth nicht verfuegbar',
+  notSupportedUsb: 'USB nicht verfügbar',
+  notSupportedBle: 'Bluetooth nicht verfügbar',
   unsupportedHint:
-    'In diesem Browser ist weder WebUSB noch Web Bluetooth verfuegbar. ' +
-    'Bitte Chrome, Edge oder Opera benutzen.',
+    'In diesem Browser ist weder USB noch Bluetooth verfügbar. ' +
+    'Bitte einen Chromium-Browser (Chrome, Edge, Opera, Brave) verwenden.',
 
   connect: 'Verbinden',
   disconnect: 'Trennen',
   forget: 'Trennen & vergessen',
-  howToPair: 'Wie pairen?',
-  pairingHint:
-    'Calliope einmal in den OS-Bluetooth-Einstellungen koppeln.',
-  staleBondHint:
-    'Calliope in den OS-Bluetooth-Einstellungen entkoppeln und neu pairen ' +
-    '(das Pairing wurde nach einem USB-Flash auf dem Calliope verworfen).',
+  cancel: 'Abbrechen',
 
-  flashVia: (t) => `Flashen via ${t === 'ble' ? 'Bluetooth' : 'USB'}`,
-  partialFlash: 'Schnelles Flashen',
-  fullFlash: 'Vollstaendiges Flashen',
-  lastFlash: 'Zuletzt geflasht',
+  flashVia: (t) => `Übertragung via ${t === 'ble' ? 'Bluetooth' : 'USB'}`,
+  partialFlash: 'Schnelle Übertragung',
+  fullFlash: 'Vollständige Übertragung',
+  lastFlash: 'Zuletzt übertragen',
 
   version: 'Version',
   connectedSince: 'Verbunden seit',
   program: 'Programm',
   programBlocks: 'Blocks-Runtime',
+  runtimeVersion: 'Blocks-Version',
+  outdated: 'veraltet',
+
+  appModeChip: 'über App',
+  appModeWaiting: 'über App – warte auf Calliope',
+  appModeConnecting: 'über App – verbinde…',
+  appModeConnected: 'über App – verbunden',
 };
 
 export function mergeLabels(overrides?: Partial<ConnectLabels>): ConnectLabels {

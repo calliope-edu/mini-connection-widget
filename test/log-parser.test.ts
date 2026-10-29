@@ -144,10 +144,44 @@ test('whitespace around tokens is trimmed', () => {
   assert.deepEqual((h as { columns: string[] }).columns, ['Time', 'Temp']);
 });
 
-test('key with whitespace inside is rejected (would be ambiguous)', () => {
+test('single labelled value with a spaced label (MakeCode writeValue)', () => {
   const p = new LogParser();
-  // "my key=1" splits on whitespace into ["my", "key=1"] — "my" has no `=`, so
-  // the whole line is rejected as not-quite-key=value.
-  const [r] = feed(p, 'my key=1');
-  assert.equal(r, null);
+  // `serial.writeValue("Licht Serial", 235)` emits `Licht Serial:235`. The space
+  // defeats the multi-pair key=value path, but it is a valid single labelled
+  // value: one label (spaces allowed) + a numeric value.
+  const [r] = feed(p, 'Licht Serial:235');
+  assert.deepEqual(r, {
+    type: 'row',
+    columns: ['Licht Serial'],
+    values: [235],
+    labelled: true,
+  });
+});
+
+test('single labelled value: = separator, trailing spaces, negative/float', () => {
+  const p = new LogParser();
+  assert.deepEqual((feed(p, 'my key=1')[0] as { values: unknown[] }).values, [1]);
+  // Trailing padding (MakeCode pads the serial line) is tolerated.
+  assert.deepEqual((feed(p, 'Licht BLE:235   ')[0] as { columns: string[] }).columns, ['Licht BLE']);
+  assert.deepEqual((feed(p, 'Temp C:-3.5')[0] as { values: unknown[] }).values, [-3.5]);
+});
+
+test('single labelled value requires a numeric value (prose is not swallowed)', () => {
+  const p = new LogParser();
+  // Non-numeric RHS → not a data row, treated as prose.
+  assert.equal(p.feed('Note: see the manual'), null);
+  assert.equal(p.feed('Traceback (most recent call last):'), null);
+});
+
+test('multi-pair key=value rows are flagged labelled', () => {
+  const p = new LogParser();
+  const [r] = feed(p, 'temp=22 light=57');
+  assert.equal((r as { labelled?: boolean }).labelled, true);
+});
+
+test('CSV header/rows are NOT flagged labelled', () => {
+  const p = new LogParser();
+  const [h, r] = feed(p, 'Time,Light', '0.5,57');
+  assert.equal((h as { labelled?: boolean }).labelled, undefined);
+  assert.equal((r as { labelled?: boolean }).labelled, undefined);
 });

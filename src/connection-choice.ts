@@ -19,6 +19,12 @@ export type ConnectionChoice = 'ble' | 'usb' | 'download';
 
 export interface ConnectionChoiceRequest {
   fileName: string;
+  /**
+   * Whether the Bluetooth choice should be offered. When false (BLE flashing
+   * disabled — the default for normal users) the modal shows only USB and
+   * hex-download. See `ble-flash-policy.ts`.
+   */
+  bleEnabled: boolean;
   choose: (choice: ConnectionChoice) => void;
   cancel: () => void;
 }
@@ -28,10 +34,14 @@ export const calliopeConnectionChoiceRequest: Readable<ConnectionChoiceRequest |
   subscribe: _req.subscribe,
 };
 
-export function awaitConnectionChoice(fileName: string): Promise<ConnectionChoice> {
+export function awaitConnectionChoice(
+  fileName: string,
+  bleEnabled: boolean,
+): Promise<ConnectionChoice> {
   return new Promise((resolve, reject) => {
     _req.set({
       fileName,
+      bleEnabled,
       choose: (choice) => { _req.set(null); resolve(choice); },
       cancel: () => { _req.set(null); reject(new Error('user-cancelled')); },
     });

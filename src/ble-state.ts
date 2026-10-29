@@ -1,33 +1,22 @@
 /**
  * Post-connect classifier for a Calliope BLE session.
  *
- * Web Bluetooth's `gatt.connect()` returns `connected = true` as soon as the
- * LL link is up — *before* any encryption upgrade or SMP exchange. So that
- * flag alone isn't enough to know whether we can actually flash. We have to
- * look at the GATT database to infer the device's mode (application / pair /
- * bootloader) and whether the link is encrypted.
+ * With rc07-open firmware (`MICROBIT_BLE_OPEN=1`) the device has no SMP
+ * gate — every characteristic is SEC_OPEN — so the only useful distinction
+ * the classifier needs to make is "regular app mode" vs "device is sitting
+ * in the Nordic DFU bootloader as `DfuTarg`". The bootloader case lets the
+ * dispatcher skip the partial-flash attempt (there's no app running to host
+ * the partial-flashing service) and go straight to BLE-DFU.
  *
- * `getPrimaryServices()` is read-only — it queries Chrome's cached service
- * discovery and does **not** trigger encryption. It's the safest probe we
- * have. The classifier is split from the GATT call so the decision logic is
- * unit-testable without a real device.
- *
- * Caveat: on some CODAL builds, auth-required services are hidden from the
- * unencrypted GATT view. If true, `pair-mode` (in-pairing, unencrypted) and
- * `unencrypted-app-mode` (no/stale bond) produce the same fingerprint —
- * `partial`. In that case we can't tell them apart from service enumeration
- * alone; the next user action (flash → encrypted op) is the signal that
- * separates them, and our existing error classifier routes accordingly.
+ * `getPrimaryServices()` is read-only and doesn't trigger any encryption,
+ * so this probe is safe to run on every connect.
  */
 
 export type BleSessionKind =
-  /** Full CODAL service set visible — bond is good, link is encrypted, flash will work. */
-  | 'bond-ok'
-  /** Device is in Nordic DFU bootloader. Name is `DfuTarg`, only `0xFE59` is exposed. */
+  /** Regular CODAL application mode — partial-flash / UART are reachable. */
+  | 'app-mode'
+  /** Device is advertising as `DfuTarg`; only the Nordic DFU service is up. */
   | 'dfu-bootloader'
-  /** Partial service set: either pair-mode-pre-bond or app-mode-without-bond.
-   *  The user's next encrypted op tells us which. */
-  | 'partial'
   /** GATT not connected, services unreadable, or empty service set. */
   | 'unknown';
 
@@ -49,7 +38,35 @@ export const SERVICE_UUIDS = {
   uart: '6e400001-b5a3-f393-e0a9-e50e24dcca9e',
   deviceInfo: '0000180a-0000-1000-8000-00805f9b34fb',
   blocks: '0b50f3e4-607f-4151-9091-7d008d6ffc5c',
+  // Legacy micro:bit DFU-Control service — present on V1-class silicon
+  // (Mini 1 and Mini 2, nRF51/DAL), absent on V2-class (Mini 3, nRF52/CODAL).
+  // The shipping Android/iOS apps fingerprint the chip class on this exact
+  // presence test. See `boardVersionFromServices`.
+  legacyDfuControl: 'e95d93b0-251d-470a-a062-fa1922dfa9a8',
 } as const;
+
+/**
+ * Derive the chip class from the GATT service set — the same fingerprint the
+ * shipping Android/iOS Calliope apps use (they read no Device Information
+ * Service and never use the advertised name for version). Returns micro:bit
+ * `BoardVersion` semantics:
+ *
+ *   - legacy DFU-Control `e95d93b0` present → 'V1' (V1-class: Mini 1 **and** 2, nRF51/DAL)
+ *   - else Nordic Secure DFU `fe59` present → 'V2' (V2-class: Mini 3, nRF52/CODAL = micro:bit v2)
+ *   - else partial-flash present, no DFU    → 'V2' (Mini 3 in application mode)
+ *   - else                                  → undefined (UNIDENTIFIED — do not guess)
+ *
+ * Mini 1 vs Mini 2 is not distinguishable over BLE (both are V1-class) and is
+ * not required. The DFU-Control check is first so a Mini 1/2 app that also
+ * exposes partial-flash is still correctly V1-class.
+ */
+export function boardVersionFromServices(services: string[]): 'V1' | 'V2' | undefined {
+  const has = (u: string): boolean => services.some((s) => s.toLowerCase() === u.toLowerCase());
+  if (has(SERVICE_UUIDS.legacyDfuControl)) return 'V1';
+  if (has(SERVICE_UUIDS.nordicDfu)) return 'V2';
+  if (has(SERVICE_UUIDS.partialFlash)) return 'V2';
+  return undefined;
+}
 
 /** Pure classification — feed in what we observe, get back a verdict. */
 export function classifyBleSession(args: {
@@ -68,9 +85,9 @@ export function classifyBleSession(args: {
   const hasUart = has(SERVICE_UUIDS.uart);
   const isDfuTarg = /DfuTarg/i.test(args.deviceName ?? '');
 
-  // Bootloader fingerprint: name flips to "DfuTarg" AND the application's
-  // CODAL services (partial-flash, UART) are gone. The device-info service
-  // is optional in the bootloader so we don't require it.
+  // Bootloader: advertised name flipped to "DfuTarg" AND the application's
+  // CODAL services (partial-flash, UART) are absent. Device-info is optional
+  // in the bootloader.
   if (isDfuTarg && !hasPartialFlash && !hasUart) {
     return {
       kind: 'dfu-bootloader',
@@ -80,8 +97,7 @@ export function classifyBleSession(args: {
     };
   }
   // Stricter bootloader fingerprint when name isn't visible (some Chrome
-  // versions hide the name post-rename): DFU service present, application
-  // services absent.
+  // versions hide the name post-rename): only Nordic DFU service is up.
   if (hasDfu && !hasPartialFlash && !hasUart && uuids.length <= 2) {
     return {
       kind: 'dfu-bootloader',
@@ -91,27 +107,21 @@ export function classifyBleSession(args: {
     };
   }
 
-  // Healthy app-mode bond: the canonical CODAL services come through. UART
-  // alone isn't enough (some firmware exposes UART pre-bond); partial-flash
-  // is the strongest "bond is encrypted" signal because it's authenticated
-  // on all CODAL builds.
-  if (hasPartialFlash && hasUart) {
-    return {
-      kind: 'bond-ok',
-      services: uuids,
-      deviceName: args.deviceName,
-      reason: 'partial-flash + UART visible',
-    };
-  }
-
+  // Anything else with services visible is application mode. Open-mode
+  // firmware never hides services behind a bond, so seeing UART or
+  // partial-flash is the canonical "we're talking to a running app" signal.
   if (uuids.length > 0) {
     return {
-      kind: 'partial',
+      kind: 'app-mode',
       services: uuids,
       deviceName: args.deviceName,
-      reason: hasPartialFlash
-        ? 'partial-flash visible but UART missing — likely pre-encryption'
-        : 'auth-required CODAL services hidden — likely pre-bond or pair-mode',
+      reason: hasPartialFlash && hasUart
+        ? 'partial-flash + UART visible'
+        : hasPartialFlash
+        ? 'partial-flash visible'
+        : hasUart
+        ? 'UART visible'
+        : 'services enumerated, app-mode assumed',
     };
   }
 
@@ -131,16 +141,9 @@ export function classifyBleSession(args: {
  *  services that were in `optionalServices` AT THE TIME `requestDevice`
  *  WAS ORIGINALLY CALLED. If the user's per-origin permission was granted
  *  before we added a UUID to `EXTRA_OPTIONAL_SERVICES`, the bulk list
- *  silently omits it — making the classifier wrongly conclude "auth
- *  services hidden" on perfectly-bonded devices.
- *
- *  Workaround: pair the bulk call with per-UUID `getPrimaryService(uuid)`
- *  probes for the services we care about. Per-UUID calls suffer the same
- *  optionalServices filter, but the negative result is much more
- *  meaningful — an `NotFoundError` from `getPrimaryService(partialFlash)`
- *  on a device that exposes it means the permission filter is the
- *  problem, not the bond. We can then up-vote to `bond-ok` based on the
- *  union of bulk + individual probes.
+ *  silently omits it. Per-UUID probes catch those — Chrome still filters
+ *  them through `optionalServices`, but at least each one is attempted
+ *  individually so a positive result is meaningful.
  */
 export async function classifyBleSessionFromDevice(
   device: BluetoothDevice,
@@ -164,14 +167,15 @@ export async function classifyBleSessionFromDevice(
     // even when individual lookups succeed.
   }
   // Per-UUID confirmation for the services the classifier actually checks.
-  // Chrome's optionalServices filter applies here too, but at least we
-  // attempt each one — if any one of them slips through we add it to the
-  // seen set, and a single positive can up-vote 'partial' → 'bond-ok'.
   const probeUuids = [
     SERVICE_UUIDS.partialFlash,
     SERVICE_UUIDS.uart,
     SERVICE_UUIDS.nordicDfu,
     SERVICE_UUIDS.deviceInfo,
+    // Needed for the V1-class fingerprint (boardVersionFromServices) — a Mini
+    // 1/2 app exposes this; getPrimaryServices() can omit it if the per-origin
+    // permission predates its addition to optionalServices.
+    SERVICE_UUIDS.legacyDfuControl,
   ];
   await Promise.all(probeUuids.map(async (uuid) => {
     if (seen.has(uuid)) return;

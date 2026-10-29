@@ -22,39 +22,82 @@
 
 import { getConnectedBleDevice } from './ble';
 import { getUsbConn, registerSerialDataListener } from './usb';
-import { calliopeState, updateState } from './state';
-import { buildBlocksFrame, BLOCKS_REQ } from './blocks-protocol';
+import { addJlinkRawSubscriber, jlinkSerialWrite } from './web-serial';
+import { appendLog } from './log';
+import { calliopeState, updateState, getState } from './state';
+import {
+  buildBlocksFrame,
+  BLOCKS_REQ,
+  BLOCKS_RES,
+  BLOCKS_USB_CONFIRM_HITS,
+  BlocksFrameParser,
+} from './blocks-frame';
+import { detectBlocksDap } from './blocks-dap';
+import { getBlocksLiveness, isBlocksAlive, noteBlocksVersion, resetBlocksLiveness } from './blocks-liveness';
+import { isNativeMode } from './native-bridge';
+import { nativeGattRead, nativeGattWrite } from './native-mode';
 
 export type CalliopeProgramType = 'blocks' | 'unknown' | 'disconnected';
 
 export interface CalliopeProgramInfo {
   type: CalliopeProgramType;
+  /** Only set with type 'unknown'. 'comms-unavailable' = the transport reports
+   *  connected but we could not complete the GATT handshake (link still coming
+   *  up), so this is NOT a confirmed "not Blocks" — consumers should keep trying
+   *  rather than concluding the device has no Blocks hex. (Absence of a reason
+   *  on 'unknown' means we reached the device but did not confirm Blocks.) */
+  reason?: 'comms-unavailable';
   /** Which transport confirmed the match. */
   via?: 'usb' | 'ble';
-  /** Blocks protocol version reported by STATE characteristic (BLE only). */
+  /** Blocks protocol version — COMMAND payload byte[1] (BLE read, or the
+   *  RES_READ 0x0100 reply over the mini 2's CDC serial). */
   protocolVersion?: number;
-  /** Blocks hardware version byte (BLE only). */
+  /** Blocks hardware version byte — COMMAND payload byte[0]. */
   hardwareVersion?: number;
+  /** Blocks runtime (hex) version — COMMAND payload byte[3]. Lets hosts run
+   *  their outdated-check without a live editor connection. */
+  runtimeVersion?: number;
 }
 
 // ---- BLE constants --------------------------------------------------------
 
 const BLOCKS_BLE_SERVICE_UUID = '0b50f3e4-607f-4151-9091-7d008d6ffc5c';
 const BLOCKS_BLE_STATE_CHAR_UUID = '0b500101-607f-4151-9091-7d008d6ffc5c';
+const BLOCKS_BLE_COMMAND_CHAR_UUID = '0b500100-607f-4151-9091-7d008d6ffc5c';
 
-// ---- USB constants --------------------------------------------------------
+// COMMAND byte[1] = blocks protocol version. The real runtime stamps this on
+// connect (updateVersionData); the CODAL stub that registers the service for
+// partial-flash hash alignment leaves it 0. So a single COMMAND read identifies
+// the runtime instantly — no waiting for the STATE broadcaster to fill.
+const EXPECTED_BLOCKS_PROTOCOL = 2;
 
-const BLOCKS_USB_SFD = 0xff;
-// Blocks response types: 0x01 (read), 0x11 (write ack), 0x21 (notify).
-// Seeing SFD followed by one of these is a strong signal.
-const VALID_RES = new Set([0x01, 0x11, 0x21]);
-// Confirm after this many valid frame headers in a row.
-const USB_CONFIRM_HITS = 2;
+/** Interval between STATE samples while waiting for the broadcaster to fill it. */
+const BLE_STATE_POLL_MS = 200;
 
-function readState(): { usbOn: boolean; bleOn: boolean } {
-  let snap = { usbOn: false, bleOn: false };
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** True when any non-zero byte is present — the broadcaster filled STATE. */
+function hasNonZero(bytes: ArrayLike<number>): boolean {
+  for (let i = 0; i < bytes.length; i++) {
+    if (bytes[i] !== 0) return true;
+  }
+  return false;
+}
+
+// The USB Blocks-frame parsing (`BlocksFrameParser`) lives in `blocks-frame.ts`
+// so it can be unit-tested without a serial port.
+
+function readState(): { usbOn: boolean; bleOn: boolean; jlinkSerialOn: boolean; jlinkUsbOn: boolean } {
+  let snap = { usbOn: false, bleOn: false, jlinkSerialOn: false, jlinkUsbOn: false };
   const unsub = calliopeState.subscribe((s) => {
-    snap = { usbOn: s.usbStatus === 'connected', bleOn: s.bleStatus === 'connected' };
+    snap = {
+      usbOn: s.usbStatus === 'connected',
+      bleOn: s.bleStatus === 'connected',
+      // Mini 2: CDC serial (probe-able) vs J-Link flash-only (connected, but
+      // nothing to probe over).
+      jlinkSerialOn: s.jlinkSerialStatus === 'connected',
+      jlinkUsbOn: s.jlinkUsbStatus === 'connected',
+    };
   });
   unsub();
   return snap;
@@ -62,49 +105,117 @@ function readState(): { usbOn: boolean; bleOn: boolean } {
 
 // ---- Probes ---------------------------------------------------------------
 
-async function probeBle(): Promise<CalliopeProgramInfo | null> {
+async function probeBle(timeoutMs: number): Promise<CalliopeProgramInfo | null> {
+  // Don't read GATT while a flash is active — the post-flash window has the
+  // device rebooting through the bootloader and the native/DAP queue busy
+  // with flash control. See `flashInProgress` in state.ts.
+  if (getState().flashInProgress) return null;
+
+  const deadline = Date.now() + timeoutMs;
+
+  if (isNativeMode()) {
+    // Native host owns GATT. Same proof-of-life heuristic as web: STATE
+    // returns non-zero only when the real Blocks runtime is filling it with
+    // sensor data; the CODAL stub leaves it all-zero. Kick the broadcaster
+    // (the runtime only fills STATE once it sees a read/notify request),
+    // then sample a few times across the probe window. A read error is
+    // retryable within the window — only after the deadline is it "no Blocks".
+    try {
+      await nativeGattWrite(
+        BLOCKS_BLE_SERVICE_UUID,
+        BLOCKS_BLE_COMMAND_CHAR_UUID,
+        buildBlocksFrame(BLOCKS_REQ.READ, 0x0100),
+      );
+    } catch { /* wake is best-effort */ }
+    do {
+      try {
+        const bytes = await nativeGattRead(BLOCKS_BLE_SERVICE_UUID, BLOCKS_BLE_STATE_CHAR_UUID);
+        if (hasNonZero(bytes)) return { type: 'blocks', via: 'ble' };
+      } catch { /* retryable within the window */ }
+      if (Date.now() + BLE_STATE_POLL_MS >= deadline) break;
+      await sleep(BLE_STATE_POLL_MS);
+    } while (Date.now() < deadline);
+    return null;
+  }
+
   const device = await getConnectedBleDevice();
-  if (!device?.gatt) return null;
+  if (!device?.gatt) return { type: 'unknown', reason: 'comms-unavailable' };
   let server: BluetoothRemoteGATTServer;
   try {
     server = device.gatt.connected ? device.gatt : await device.gatt.connect();
   } catch {
-    return null;
+    // The transport reports connected but the GATT link isn't up yet. This is
+    // NOT "not Blocks" — signal comms-unavailable so the banner keeps trying
+    // instead of latching a wrong "no Blocks hex" (see getRunningProgramType).
+    return { type: 'unknown', reason: 'comms-unavailable' };
   }
-  try {
-    const service = await server.getPrimaryService(BLOCKS_BLE_SERVICE_UUID);
-    // Service presence is no longer enough — the CODAL stub registers it
-    // unconditionally so partial-flash DAL hashes line up. Discriminate by
-    // reading STATE: real runtime continuously fills it with sensor data
-    // (byte 5 = temperature + 128, byte 4 = light level, …); the stub's
-    // buffer stays all-zero. Any non-zero byte → real runtime.
-    let isReal = false;
+  // Read COMMAND and check the protocol byte — instant, no waiting for the STATE
+  // broadcaster to fill (that polling loop is what made detection slow). The
+  // real runtime stamps byte[1] = EXPECTED_BLOCKS_PROTOCOL on connect
+  // (updateVersionData); the CODAL stub (registers the service for partial-flash
+  // hash alignment) leaves it 0.
+  //
+  // Resolve the service+characteristic INSIDE the retry loop. On slower (Windows)
+  // BT stacks, Web Bluetooth service discovery can still be running right after
+  // gatt.connect() resolves, so getPrimaryService throws NotFoundError for the
+  // first ~250ms. Resolving once outside the loop turned that transient race into
+  // an instant "not blocks" — the "connected but no comms → no hex" bug — because
+  // a discovery-race throw is indistinguishable from a genuinely absent service.
+  // Retrying resolution within the window lets the race self-heal; a truly
+  // non-Blocks device keeps throwing for the whole window and falls through to
+  // null (correctly "not blocks", so the flash-Blocks offer still appears).
+  let ch: BluetoothRemoteGATTCharacteristic | null = null;
+  do {
     try {
-      const ch = await service.getCharacteristic(BLOCKS_BLE_STATE_CHAR_UUID);
+      if (!ch) {
+        const service = await server.getPrimaryService(BLOCKS_BLE_SERVICE_UUID);
+        ch = await service.getCharacteristic(BLOCKS_BLE_COMMAND_CHAR_UUID);
+      }
       const v = await ch.readValue();
-      for (let i = 0; i < v.byteLength; i++) {
-        if (v.getUint8(i) !== 0) { isReal = true; break; }
+      const b = new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+      if (b.byteLength >= 2 && b[1] === EXPECTED_BLOCKS_PROTOCOL) {
+        noteBlocksVersion({
+          hardwareVersion: b[0],
+          protocolVersion: b[1],
+          runtimeVersion: b.byteLength >= 4 ? b[3] : undefined,
+        });
+        return {
+          type: 'blocks',
+          via: 'ble',
+          hardwareVersion: b[0],
+          protocolVersion: b[1],
+          runtimeVersion: b.byteLength >= 4 ? b[3] : undefined
+        };
       }
     } catch {
-      // STATE read failed — without proof of life, treat as unknown.
-      return null;
+      // Service not discovered yet (retryable race) or read failed — drop the
+      // cached characteristic so the next iteration re-resolves, and retry.
+      ch = null;
     }
-    if (!isReal) return null;
-    return { type: 'blocks', via: 'ble' };
-  } catch {
-    return null;
-  }
+    if (Date.now() + BLE_STATE_POLL_MS >= deadline) break;
+    await sleep(BLE_STATE_POLL_MS);
+  } while (Date.now() < deadline);
+  return null;
 }
 
 function probeUsb(timeoutMs: number): Promise<CalliopeProgramInfo | null> {
   return new Promise((resolve) => {
+    // Don't write serial while a flash is active — the probe would share the
+    // DAP `sendQueue` with the flash control commands. See `flashInProgress`
+    // in state.ts.
+    if (getState().flashInProgress) { resolve(null); return; }
     // Use the already-initialised connection only — never trigger a
     // requestDevice prompt from a passive program-type probe.
     const conn = getUsbConn();
     if (!conn) { resolve(null); return; }
 
-    let hits = 0;
-    let prevByte = -1;
+    // Mirror `probeJlinkSerial`: count checksum-valid frames AND capture the
+    // RES_READ 0x0100 reply — its payload mirrors the BLE COMMAND
+    // characteristic (hardware / protocol / runtime version bytes), so the
+    // DAPLink CDC path reports the runtime version just like the mini 2
+    // path (used by the campus banner's outdated-firmware offer).
+    const parser = new BlocksFrameParser();
+    let validFrames = 0;
     let settled = false;
     let unsubscribe: (() => void) | null = null;
     const finish = (val: CalliopeProgramInfo | null) => {
@@ -117,16 +228,35 @@ function probeUsb(timeoutMs: number): Promise<CalliopeProgramInfo | null> {
     unsubscribe = registerSerialDataListener((ev) => {
       const s = ev?.data;
       if (!s) return;
-      for (let i = 0; i < s.length; i++) {
-        const b = s.charCodeAt(i) & 0xff;
-        if (prevByte === BLOCKS_USB_SFD && VALID_RES.has(b)) {
-          hits++;
-          if (hits >= USB_CONFIRM_HITS) {
-            finish({ type: 'blocks', via: 'usb' });
-            return;
-          }
+      const bytes = new Uint8Array(s.length);
+      for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i) & 0xff;
+      for (const f of parser.push(bytes)) {
+        validFrames++;
+        if (f.type === BLOCKS_RES.READ && f.channel === 0x0100 && f.data.length >= 2) {
+          // The direct, checksum-valid reply to our REQ_READ handshake is
+          // definitive ON ITS OWN: the detection-only BlocksProbe firmware
+          // answers exactly ONE frame per request (no STATE/MOTION
+          // broadcaster), so waiting for a second valid frame would never
+          // confirm against a probe-only runtime.
+          noteBlocksVersion({
+            hardwareVersion: f.data[0],
+            protocolVersion: f.data[1],
+            runtimeVersion: f.data.length >= 4 ? f.data[3] : undefined,
+          });
+          finish({
+            type: 'blocks',
+            via: 'usb',
+            hardwareVersion: f.data[0],
+            protocolVersion: f.data[1],
+            runtimeVersion: f.data.length >= 4 ? f.data[3] : undefined,
+          });
+          return;
         }
-        prevByte = b;
+      }
+      // Fallback for older runtimes whose broadcaster streams frames but whose
+      // handshake reply may be missed: N generic checksum-valid frames.
+      if (validFrames >= BLOCKS_USB_CONFIRM_HITS) {
+        finish({ type: 'blocks', via: 'usb' });
       }
     });
     // Wake the firmware's serial broadcaster by sending a real Blocks
@@ -147,7 +277,96 @@ function probeUsb(timeoutMs: number): Promise<CalliopeProgramInfo | null> {
         await conn.serialWrite(buildBlocksFrame(BLOCKS_REQ.READ, 0x0100));
       } catch { /* ignore */ }
     })();
+    // The codal/mini-3 runtime speaks the CMSIS-DAP RAM mailbox, not the UART —
+    // so the serial probe above sees nothing. Scan RAM for the mailbox in
+    // parallel; finding it confirms a Blocks runtime over USB. Whichever probe
+    // (serial frames or DAP scan) confirms first wins.
+    void (async () => {
+      try {
+        const dap = await detectBlocksDap();
+        if (dap) {
+          finish({
+            type: 'blocks',
+            via: 'usb',
+            hardwareVersion: dap.hardwareVersion,
+            protocolVersion: dap.protocolVersion,
+            runtimeVersion: dap.runtimeVersion,
+          });
+        }
+      } catch { /* ignore */ }
+    })();
     const timer = setTimeout(() => finish(null), timeoutMs);
+  });
+}
+
+/**
+ * Probe the Blocks serial handshake over the mini 2's CDC port (Web Serial).
+ * Same REQ_READ wake as `probeUsb`, but routed through the J-Link serial
+ * transport — the DAL Blocks runtime speaks the identical framed protocol
+ * over its UART, which the J-Link OB bridges to CDC.
+ *
+ * Confirms IMMEDIATELY on the checksum-valid RES_READ 0x0100 reply — the
+ * direct answer to our handshake, whose payload mirrors the BLE COMMAND
+ * characteristic (hardware / protocol / runtime version bytes). The
+ * detection-only BlocksProbe firmware answers exactly ONE frame per request,
+ * so requiring a second frame would never confirm on a probe-only runtime.
+ * Falls back to `BLOCKS_USB_CONFIRM_HITS` generic checksum-valid frames for
+ * older broadcaster runtimes.
+ */
+function probeJlinkSerial(timeoutMs: number): Promise<CalliopeProgramInfo | null> {
+  return new Promise((resolve) => {
+    if (getState().flashInProgress) { resolve(null); return; }
+    const parser = new BlocksFrameParser();
+    let validFrames = 0;
+    let settled = false;
+    let unsubscribe: (() => void) | null = null;
+    const finish = (val: CalliopeProgramInfo | null) => {
+      if (settled) return;
+      settled = true;
+      try { unsubscribe?.(); } catch { /* ignore */ }
+      clearTimeout(timer);
+      resolve(val);
+    };
+    unsubscribe = addJlinkRawSubscriber((chunk) => {
+      if (!chunk) return;
+      const bytes = new Uint8Array(chunk.length);
+      for (let i = 0; i < chunk.length; i++) bytes[i] = chunk.charCodeAt(i) & 0xff;
+      for (const f of parser.push(bytes)) {
+        validFrames++;
+        // The direct answer to our REQ_READ — definitive on its own.
+        if (f.type === BLOCKS_RES.READ && f.channel === 0x0100 && f.data.length >= 2) {
+          appendLog({
+            direction: 'info',
+            text: `Blocks probe (mini 2 serial): confirmed — hw=${f.data[0]} protocol=${f.data[1]} runtime=v${f.data.length >= 4 ? f.data[3] : '?'}`,
+          });
+          noteBlocksVersion({
+            hardwareVersion: f.data[0],
+            protocolVersion: f.data[1],
+            runtimeVersion: f.data.length >= 4 ? f.data[3] : undefined,
+          });
+          finish({
+            type: 'blocks',
+            via: 'usb',
+            hardwareVersion: f.data[0],
+            protocolVersion: f.data[1],
+            runtimeVersion: f.data.length >= 4 ? f.data[3] : undefined,
+          });
+          return;
+        }
+      }
+      if (validFrames >= BLOCKS_USB_CONFIRM_HITS) {
+        finish({ type: 'blocks', via: 'usb' });
+      }
+    });
+    appendLog({ direction: 'info', text: 'Blocks probe (mini 2 serial): sending REQ_READ 0x0100 handshake' });
+    void jlinkSerialWrite(buildBlocksFrame(BLOCKS_REQ.READ, 0x0100)).catch(() => { /* ignore */ });
+    const timer = setTimeout(() => {
+      appendLog({
+        direction: 'info',
+        text: `Blocks probe (mini 2 serial): no handshake reply within ${timeoutMs}ms (${validFrames} valid frame(s) seen)`,
+      });
+      finish(null);
+    }, timeoutMs);
   });
 }
 
@@ -161,30 +380,67 @@ function probeUsb(timeoutMs: number): Promise<CalliopeProgramInfo | null> {
 export async function getRunningProgramType(
   timeoutMs = 1500,
 ): Promise<CalliopeProgramInfo> {
-  const { usbOn, bleOn } = readState();
-  if (!usbOn && !bleOn) return { type: 'disconnected' };
+  const { usbOn, bleOn, jlinkSerialOn, jlinkUsbOn } = readState();
+  if (!usbOn && !bleOn && !jlinkSerialOn && !jlinkUsbOn) return { type: 'disconnected' };
+
+  // Never probe during a flash: the post-flash window has serial / GATT busy
+  // and the device mid-reboot. The auto-refresh subscription re-probes once
+  // `flashInProgress` clears. Report 'unknown' so a stale result isn't latched.
+  if (getState().flashInProgress) return { type: 'unknown' };
+
+  // Passive fast-path: live Blocks traffic (the DAP exchange loop, a recent
+  // probe or COMMAND read) is definitive on its own — answer instantly
+  // instead of racing a fresh probe against the busy transport. Previously
+  // the banner could sit on "wird überprüft…" while STATE/MOTION broadcasts
+  // and button events were streaming through this very widget.
+  if (isBlocksAlive()) {
+    const live = getBlocksLiveness();
+    return {
+      type: 'blocks',
+      hardwareVersion: live.hardwareVersion,
+      protocolVersion: live.protocolVersion,
+      runtimeVersion: live.runtimeVersion,
+    };
+  }
 
   // Kick off whichever probes are available. Skip a probe if its transport
-  // isn't connected — saves opening a stray serial subscription.
+  // isn't connected — saves opening a stray serial subscription. A flash-only
+  // mini 2 (`jlinkUsbOn` without CDC serial) has nothing to probe over and
+  // falls through to 'unknown' — connected, program unconfirmed.
   const probes: Promise<CalliopeProgramInfo | null>[] = [];
-  if (bleOn) probes.push(probeBle());
+  if (bleOn) probes.push(probeBle(timeoutMs));
   if (usbOn) probes.push(probeUsb(timeoutMs));
+  if (jlinkSerialOn) probes.push(probeJlinkSerial(timeoutMs));
 
-  // Resolve on first positive hit, else wait for all and report 'unknown'.
-  const firstHit = await new Promise<CalliopeProgramInfo | null>((resolve) => {
+  // Resolve on first positive 'blocks' hit; otherwise collect ALL results and
+  // decide. If every attempted probe reported comms-unavailable (transport up
+  // but GATT handshake never completed), the honest answer is "can't reach it
+  // yet", NOT "not blocks" — so a consumer keeps trying instead of latching a
+  // wrong "no Blocks hex". Any probe that actually reached the device (returned
+  // null / a non-comms 'unknown') means we did talk to it and it isn't Blocks.
+  const results = await new Promise<(CalliopeProgramInfo | null)[]>((resolve) => {
+    const collected: (CalliopeProgramInfo | null)[] = [];
     let remaining = probes.length;
-    if (remaining === 0) { resolve(null); return; }
+    let settled = false;
+    if (remaining === 0) { resolve(collected); return; }
     for (const p of probes) {
       p.then((res) => {
-        if (res?.type === 'blocks') resolve(res);
-        else if (--remaining === 0) resolve(null);
+        collected.push(res);
+        if (res?.type === 'blocks' && !settled) { settled = true; resolve([res]); return; }
+        if (--remaining === 0 && !settled) { settled = true; resolve(collected); }
       }).catch(() => {
-        if (--remaining === 0) resolve(null);
+        collected.push(null);
+        if (--remaining === 0 && !settled) { settled = true; resolve(collected); }
       });
     }
   });
 
-  return firstHit ?? { type: 'unknown' };
+  const hit = results.find((r) => r?.type === 'blocks');
+  if (hit) return hit;
+  if (results.length > 0 && results.every((r) => r?.reason === 'comms-unavailable')) {
+    return { type: 'unknown', reason: 'comms-unavailable' };
+  }
+  return { type: 'unknown' };
 }
 
 // ---- Auto-refresh -------------------------------------------------------
@@ -197,17 +453,36 @@ export async function getRunningProgramType(
 let probeTimer: ReturnType<typeof setTimeout> | null = null;
 let lastConnectedKey = '<init>';
 let lastFlashAtSeen = 0;
+let flashWasInProgress = false;
 
 if (typeof window !== 'undefined') {
   calliopeState.subscribe((s) => {
-    const key = `${s.usbStatus === 'connected' ? 'u' : ''}${s.bleStatus === 'connected' ? 'b' : ''}`;
-    // Re-probe whenever transports change OR a flash just completed
-    // (`lastFlashAt` advances). Post-flash the device runs a different
-    // program — the previous probe result is stale.
-    const flashEdge = s.lastFlashAt && s.lastFlashAt !== lastFlashAtSeen;
+    const key =
+      `${s.usbStatus === 'connected' ? 'u' : ''}${s.bleStatus === 'connected' ? 'b' : ''}` +
+      `${s.jlinkSerialStatus === 'connected' ? 'j' : ''}${s.jlinkUsbStatus === 'connected' ? 'J' : ''}`;
+    // Re-probe whenever transports change OR a flash just completed. We detect
+    // "flash completed" two ways and take whichever the backend gives us:
+    //   - `lastFlashAt` advances (set by the web/native flash dispatchers), or
+    //   - `flashInProgress` falls true→false (native `flashDone`, web `finally`).
+    // Native flashing in particular drives `programType` updates ONLY through
+    // these edges — there's no serial reply to piggyback on — so the falling
+    // edge of `flashInProgress` is what re-arms the probe there.
+    // Post-flash the device runs a different program → the previous result is
+    // stale.
+    const flashAtEdge = s.lastFlashAt && s.lastFlashAt !== lastFlashAtSeen;
+    const flashDoneEdge = flashWasInProgress && !s.flashInProgress;
+    const flashEdge = flashAtEdge || flashDoneEdge;
+    flashWasInProgress = s.flashInProgress;
     if (key === lastConnectedKey && !flashEdge) return;
+    const connectKeyChanged = key !== lastConnectedKey;
     lastConnectedKey = key;
     if (s.lastFlashAt) lastFlashAtSeen = s.lastFlashAt;
+    // The connected-transport set changed — this may be a DIFFERENT device
+    // (e.g. one drag&dropped to a new hex, or a device swap). Drop the passive
+    // liveness latch so a stale "blocks vX" from the previous device can't be
+    // reported for the new one before a fresh probe runs. (A drag&drop MSD
+    // flash never hits the widget flash path that also resets it.)
+    if (connectKeyChanged) resetBlocksLiveness();
 
     if (probeTimer) {
       clearTimeout(probeTimer);
@@ -215,10 +490,18 @@ if (typeof window !== 'undefined') {
     }
 
     if (!key) {
-      // Neither transport connected — clear the latch.
+      // Neither transport connected — clear the latch (and the passive
+      // liveness: the next device may run something else entirely).
+      resetBlocksLiveness();
       updateState((st) => (st.programType === 'disconnected' ? st : { ...st, programType: 'disconnected' }));
       return;
     }
+
+    // Defer the probe while a flash is still running. `getRunningProgramType`
+    // bails out during `flashInProgress`, and probing the device mid-reboot is
+    // pointless — the falling edge of `flashInProgress` re-enters here and
+    // schedules the real re-probe once the flash window closes.
+    if (s.flashInProgress) return;
 
     // Give GATT/service discovery (or the post-flash reboot) a moment to
     // settle, then probe. Post-flash needs longer because the device is

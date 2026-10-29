@@ -29,41 +29,64 @@ export interface CalliopeState {
   usbDeviceName?: string;
   usbErrorMessage?: string;
 
+  /**
+   * Calliope mini 2 comms over Web Serial (the J-Link OB's CDC port). Tracked
+   * SEPARATELY from `usbStatus` on purpose: `usbStatus` means a CMSIS-DAP/DAPLink
+   * connection (mini 1/3), which the flash path keys on. A mini 2 serial link is
+   * comms-only (flashing still goes through the SEGGER MSD path), so it must not
+   * masquerade as a DAPLink USB connection. It DOES roll up into the overall
+   * `status` so the UI shows "connected". See web-serial.ts.
+   */
+  jlinkSerialStatus: CalliopeStatus;
+
+  /**
+   * Calliope mini 2 J-Link WebUSB flash link. 'connected' once the combined USB
+   * picker granted a J-Link device (or one is already authorized + present via
+   * getDevices()) — flashing over the SEGGER MSD path works from that moment,
+   * with or without the CDC serial port. Kept separate from `jlinkSerialStatus`
+   * so a cancelled Web Serial picker still leaves the mini 2 usable: flash-only
+   * (`jlinkUsbStatus` connected) vs flash+comms (both connected). Rolls up into
+   * the overall `status`. See usb.ts `setJlinkUsbConnected`/`initJlinkUsbWatch`.
+   */
+  jlinkUsbStatus: CalliopeStatus;
+
   bleStatus: CalliopeStatus;
   bleDeviceName?: string;
   bleErrorMessage?: string;
-  /** Browser remembers a previously-permitted BLE device for this origin. */
-  bleHasPaired: boolean;
+  /** Browser remembers a previously-permitted BLE device for this origin —
+   *  i.e. `navigator.bluetooth.getDevices()` would return at least one
+   *  Calliope. Refreshed on init and after every successful `connect()`.
+   *
+   *  Used by the auto-reconnect daemon to decide whether to attempt silent
+   *  reconnects on page load / post-disconnect.
+   */
+  bleHasPermission: boolean;
   /** Partial-flashing service exposed by the running hex (BLE flash possible). */
   bleCanFlash: boolean;
   /** UART service exposed (BLE serial communication possible). */
   bleCanCommunicate: boolean;
-  /** Connected over BLE to a previously-paired device but authenticated
-   *  services are inaccessible — i.e. OS still holds a bond, but the
-   *  Calliope has forgotten its whitelist (typical after USB full-flash).
-   *  The fix is OS-side: forget + re-pair. */
-  bleStaleBond: boolean;
-  /** Post-connect GATT-database fingerprint — what the device looks like
-   *  from Web Bluetooth's perspective after the LL link is up.
-   *
-   *  - `bond-ok`: full CODAL service set visible → encrypted link, ready
-   *    to flash.
-   *  - `partial`: auth-required services hidden → we're either in pair
-   *    mode (waiting on SMP) or unencrypted app mode (no/stale bond).
-   *    UI surfaces "Pairing-Modus erkannt" rather than the error toast.
-   *  - `dfu-bootloader`: the device rebooted into Nordic DFU and is
-   *    advertising as `DfuTarg`. Useful for diagnostic; the DFU flow
-   *    handles the actual write.
-   *  - `unknown` / undefined: classifier hasn't run yet, or no services
-   *    enumerated.
-   *
-   *  Refreshed asynchronously after every `connected` transition by the
-   *  classifier in `ble-state.ts`. */
+  /** Post-connect GATT-database fingerprint — `app-mode` if the device
+   *  exposes the regular CODAL service set, `dfu-bootloader` if it's
+   *  advertising as DfuTarg with only the Nordic DFU service, `unknown`
+   *  otherwise. Drives the dispatcher's "skip partial flash, go straight
+   *  to DFU" decision when the device is already in the bootloader. */
   bleSessionKind?: BleSessionKind;
+  /** True when the user explicitly clicked "Trennen & vergessen" on BLE.
+   *  Set by `disconnectAndForget('ble')`, cleared by `connectCalliope('ble')`.
+   *  The reconnect daemon respects this — when the user deliberately
+   *  disconnected, we don't fight them by reconnecting. */
+  userDisconnectedBle: boolean;
+  /** True when the user explicitly clicked "Trennen & vergessen" on USB.
+   *  Mirror of `userDisconnectedBle` for the USB reconnect daemon. */
+  userDisconnectedUsb: boolean;
 
   /** Browser support flags. */
   usbSupported: boolean;
   bleSupported: boolean;
+  /** True when a native iOS/Android host owns the radio — the widget is
+   *  acting as a thin UI on top of a JS bridge instead of WebBluetooth.
+   *  Drives UX hints like the "über App" chip. */
+  nativeMode: boolean;
 
   // ---- Flash state (single op at a time across both transports). ----
   flashTransport?: CalliopeTransport;
@@ -72,9 +95,28 @@ export interface CalliopeState {
   flashPartial?: boolean;
   lastFlashName?: string;
   lastFlashAt?: number;
+  /**
+   * True from the moment a flash call enters the flashing dispatcher until
+   * the `finally` clears it. Differs from `flashTransport` which marks the
+   * data-transfer window only — `flashInProgress` covers the broader window
+   * including post-flash reboot + reconnect.
+   *
+   * Used by USB-writing code paths (heartbeats, blocks-runtime probes,
+   * serial-write helpers) to back off so they don't share the DAP `sendQueue`
+   * with the flash control commands. See `usb.ts#pauseSerialDataPolling` for
+   * the inner mechanism — this flag is the outer guarantee.
+   */
+  flashInProgress: boolean;
 
   boardVersion?: BoardVersion;
   calliopeVersion?: CalliopeVersion;
+  /**
+   * True when `calliopeVersion` is a best guess that can't tell Mini 1 and
+   * Mini 2 apart — the BLE service fingerprint case, where any DAL device
+   * reports 'V2'. USB detection (DAPLink productName / J-Link pick) is
+   * definitive and clears this. UI may render "V1/V2" while set.
+   */
+  versionAmbiguous?: boolean;
   connectedAt?: number;
 
   /**
@@ -87,12 +129,32 @@ export interface CalliopeState {
   programType?: CalliopeProgramType;
 
   /**
+   * Blocks runtime (hex) version the running pxt-blocks firmware reports on
+   * connect (COMMAND 0x0100 byte [3]). Surfaced by the blocks editor iframe and
+   * pushed in via campus (`setBlocksRuntimeVersion`) — the widget's own probe
+   * does not read the COMMAND characteristic. Only meaningful while
+   * `programType === 'blocks'`; `runtimeOutdated` is true when the device hex is
+   * older than the version the editor ships (and the editor shows a re-flash
+   * banner). `undefined` when unknown / no blocks program.
+   */
+  runtimeVersion?: number;
+  runtimeOutdated?: boolean;
+
+  /**
    * The 5-letter Calliope friendly name (e.g. `tipov`), derived from
    * `FICR.DEVICEID[1]` over USB and from the advertised BLE name when it
    * carries the `[xxxxx]` suffix. Stable per device; once captured by
    * either transport it stays set until the user disconnects-and-forgets.
    */
   friendlyName?: string;
+
+  /**
+   * Friendly name of the device we are ACTIVELY connecting to (from the drawn
+   * pairing pattern / nameFilter). Shown — with its LED pattern — in the
+   * connecting banner so the user sees which mini is being chosen. Cleared
+   * when the connect resolves (success / abort / error).
+   */
+  connectTargetName?: string;
 
   /**
    * A flash request the dispatcher couldn't fulfil yet — usually because
@@ -106,6 +168,14 @@ export interface CalliopeState {
     hex: string;
     name: string;
     createdAt: number;
+    /** Transport the user explicitly picked at the connection-choice modal.
+     *  When set, the dispatcher honors it instead of defaulting to USB-first
+     *  routing. */
+    preferredTransport?: CalliopeTransport;
+    /** Carried through so the auto-resume preserves it. Without this a
+     *  forced-full-DFU flash (e.g. the Blocks runtime) deferred until connect
+     *  resumes WITHOUT the flag and can be BLE-partial-flashed → corruption. */
+    forceFullDfu?: boolean;
   };
 
   /**
@@ -116,33 +186,86 @@ export interface CalliopeState {
   status: CalliopeStatus;
 }
 
+/**
+ * True when a native host (iOS WKScriptMessageHandler / Android
+ * addJavascriptInterface) has injected a Calliope bridge. Detected here
+ * locally rather than imported from `./native-bridge` to keep this module
+ * dependency-free (it sits at the bottom of the import graph).
+ */
+function hasNativeBridge(): boolean {
+  if (typeof window === 'undefined') return false;
+  const w = window as unknown as {
+    CalliopeNative?: { postMessage?: unknown };
+    webkit?: { messageHandlers?: { calliope?: { postMessage?: unknown } } };
+  };
+  if (typeof w.CalliopeNative?.postMessage === 'function') return true;
+  if (typeof w.webkit?.messageHandlers?.calliope?.postMessage === 'function') return true;
+  return false;
+}
+
+export const NATIVE_MODE = hasNativeBridge();
+
+// In native mode the host owns the radio. iOS WKWebView has no WebUSB and
+// no Web Bluetooth at all; Android WebView has WebUSB only — but the proxy
+// is the supported path on both, so present it as "BLE supported" and let
+// USB lie dormant. The connection panel uses these to pick which transport
+// rows to render.
 const usbSupported =
-  typeof navigator !== 'undefined' && 'usb' in navigator;
+  !NATIVE_MODE && typeof navigator !== 'undefined' && 'usb' in navigator;
 const bleSupported =
-  typeof navigator !== 'undefined' && 'bluetooth' in navigator;
+  NATIVE_MODE || (typeof navigator !== 'undefined' && 'bluetooth' in navigator);
 
 export const SUPPORT = { usb: usbSupported, ble: bleSupported };
 
 function recomputeOverall(s: CalliopeState): CalliopeState {
   let status: CalliopeStatus;
   if (s.flashTransport) status = 'flashing';
-  else if (s.usbStatus === 'connected' || s.bleStatus === 'connected') status = 'connected';
-  else if (s.usbStatus === 'connecting' || s.bleStatus === 'connecting') status = 'connecting';
-  else if (s.usbStatus === 'error' || s.bleStatus === 'error') status = 'error';
+  else if (s.usbStatus === 'connected' || s.bleStatus === 'connected' || s.jlinkSerialStatus === 'connected' || s.jlinkUsbStatus === 'connected') status = 'connected';
+  else if (s.usbStatus === 'connecting' || s.bleStatus === 'connecting' || s.jlinkSerialStatus === 'connecting' || s.jlinkUsbStatus === 'connecting') status = 'connecting';
+  else if (s.usbStatus === 'error' || s.bleStatus === 'error' || s.jlinkSerialStatus === 'error' || s.jlinkUsbStatus === 'error') status = 'error';
   else if (!s.usbSupported && !s.bleSupported) status = 'unsupported';
   else status = 'disconnected';
+
+  // When the device is usably connected (or flashing) on one transport, a
+  // lingering error on the *other*, non-connected transport is a background
+  // failure — typically a silent auto-reconnect attempt that lost the race.
+  // Surfacing it as a scary red box alarms a user who is happily connected /
+  // flashing on the working transport, so suppress it. Genuine errors on a
+  // transport the user is actively on are kept: those transports never sit at
+  // `'connected'`, so we only ever clear the idle one's message here.
+  if (status === 'connected' || status === 'flashing') {
+    // `usbErrorMessage` is shared by the whole USB family (DAPLink, mini 2
+    // J-Link flash, mini 2 CDC serial) — only treat it as an idle-transport
+    // background error when NONE of them is connected. Without this, a mini 2
+    // flash failure would be silently cleared because `usbStatus` (DAPLink)
+    // sits at 'disconnected' while the J-Link links are up.
+    const usbFamilyConnected =
+      s.usbStatus === 'connected' || s.jlinkSerialStatus === 'connected' || s.jlinkUsbStatus === 'connected';
+    if (!usbFamilyConnected && s.usbErrorMessage !== undefined) {
+      s = { ...s, usbErrorMessage: undefined };
+    }
+    if (s.bleStatus !== 'connected' && s.bleErrorMessage !== undefined) {
+      s = { ...s, bleErrorMessage: undefined };
+    }
+  }
+
   return { ...s, status };
 }
 
 const initial: CalliopeState = recomputeOverall({
   usbStatus: usbSupported ? 'disconnected' : 'unsupported',
+  jlinkSerialStatus: 'disconnected',
+  jlinkUsbStatus: 'disconnected',
   bleStatus: bleSupported ? 'disconnected' : 'unsupported',
-  bleHasPaired: false,
+  bleHasPermission: false,
   bleCanFlash: false,
   bleCanCommunicate: false,
-  bleStaleBond: false,
+  userDisconnectedBle: false,
+  userDisconnectedUsb: false,
+  flashInProgress: false,
   usbSupported,
   bleSupported,
+  nativeMode: NATIVE_MODE,
   status: 'disconnected',
 });
 
@@ -157,6 +280,19 @@ export const calliopeState: Readable<CalliopeState> = { subscribe: _state.subscr
  */
 export function updateState(fn: (s: CalliopeState) => CalliopeState): void {
   _state.update((s) => recomputeOverall(fn(s)));
+}
+
+/**
+ * Set the Blocks runtime version reported by the editor iframe (relayed by
+ * campus). Pass `version === undefined` to clear (disconnect / non-blocks
+ * program); `outdated` is ignored when clearing.
+ */
+export function setBlocksRuntimeVersion(version: number | undefined, outdated: boolean): void {
+  updateState((s) => ({
+    ...s,
+    runtimeVersion: version,
+    runtimeOutdated: version === undefined ? undefined : outdated,
+  }));
 }
 
 /** One-shot read of the current state. */

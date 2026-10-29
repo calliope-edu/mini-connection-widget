@@ -22,6 +22,18 @@
 import MemoryMap from 'nrf-intel-hex';
 import { appendLog } from './log';
 
+/**
+ * Partial-flash trace. Goes to the widget log panel AND mirrors to the
+ * browser console (like `ble-dfu-web`'s dfu-ble trace) — the widget's panel
+ * isn't always visible (e.g. inside an iframe-embedded editor), but DevTools
+ * is, and the partial-flash timing/OutOfOrder diagnostics are most useful
+ * there during debugging.
+ */
+function pfLog(m: string): void {
+  // appendLog mirrors info/error to the console in dev (see log.ts).
+  appendLog({ direction: 'info', text: `pf-ble: ${m}` });
+}
+
 // ---- Service / characteristic UUIDs ----------------------------------------
 
 const PARTIAL_FLASH_SERVICE_UUID = 'e97dd91d-251d-470a-a062-fa1922dfa9a8';
@@ -129,7 +141,7 @@ export interface FlashOverBluetoothOptions {
 export async function flashOverBluetoothWeb(
   opts: FlashOverBluetoothOptions,
 ): Promise<void> {
-  const trace = (m: string) => appendLog({ direction: 'info', text: `pf-ble: ${m}` });
+  const trace = pfLog;
   const phase = (p: BluetoothFlashPhase) => {
     trace(`phase=${p}`);
     opts.onPhase?.(p);
@@ -254,6 +266,13 @@ async function refreshGatt(device: BluetoothDevice): Promise<void> {
 interface ParsedHex {
   /** Binary contents of the MakeCode region (and onwards). */
   bin: Uint8Array;
+  /**
+   * The parsed hex memory map, kept so the flash loop can slice
+   * region-clamped, 0xFF-padded blocks by absolute address (matching
+   * upstream's unprogrammed-tail-is-0xFF behaviour) rather than relying on
+   * `bin`'s zero-padded contiguous segment.
+   */
+  map: MemoryMap;
   /** Offset of the magic marker within `bin` — always 0 by construction. */
   magicOffset: number;
   /** First absolute address of the MakeCode region. */
@@ -280,6 +299,7 @@ export function parseMakeCodeHex(hex: string): ParsedHex {
       if (match) {
         return {
           bin: u8.slice(i),
+          map,
           magicOffset: 0,
           baseAddr: segStart + i,
           dalHash: u8.slice(i + MAGIC_MARKER.length, i + MAGIC_MARKER.length + 8),
@@ -289,6 +309,254 @@ export function parseMakeCodeHex(hex: string): ParsedHex {
     }
   }
   throw new BluetoothPartialFlashInvalidHexError();
+}
+
+// ---- MicroPython layout-table parsing -------------------------------------
+
+/**
+ * MicroPython hex layout-table magic numbers. Emitted by `addlayouttable.py`
+ * in the FIRMWARE/micropython-calliope-mini-v3 build. The codal partial
+ * flashing service on the device parses the same magic — see
+ * codal-microbit-v2 `MicroBitMemoryMap.cpp:152-165` (`processRecord`).
+ *
+ * The 16-byte trailer at the end of the layout table is:
+ *   [MAGIC1:4 | VERSION:2 | TABLE_LEN:2 | NUM_REG:2 | PSIZE_LOG2:2 | MAGIC2:4]
+ * (all little-endian). Region records precede the trailer in the same page:
+ *   [ID:1 | HT:1 | REG_PAGE:2 | REG_LEN:4 | HASH_DATA:8]
+ *
+ * MAGIC1 = 0x597F30FE, MAGIC2 = 0xC1B1D79D (from addlayouttable.py).
+ */
+const UPY_MAGIC1 = new Uint8Array([0xfe, 0x30, 0x7f, 0x59]); // LE 0x597F30FE
+const UPY_MAGIC2 = new Uint8Array([0x9d, 0xd7, 0xb1, 0xc1]); // LE 0xC1B1D79D
+
+/**
+ * Region IDs used by `addlayouttable.py`:
+ *   1 = SoftDevice
+ *   2 = MicroPython runtime (HASH_PTR — codal stores CRC32 of version string)
+ *   3 = Filesystem (HASH_NONE — codal stores 8 zero bytes)
+ *
+ * The codal partial flashing service maps these to `memoryMap[id - 1]` (see
+ * `MicroBitMemoryMap.cpp:212`). So the widget's `Region.Dal` query (slot 1
+ * = id 2) returns the MicroPython runtime hash, and the widget's
+ * `Region.MakeCode` query (slot 2 = id 3) returns the filesystem hash.
+ */
+const UPY_REGION_RUNTIME = 2;
+const UPY_REGION_FS = 3;
+
+/** Codal-MicroPython layout-table hash type codes (from addlayouttable.py). */
+const UPY_HASH_NONE = 0;
+const UPY_HASH_DATA = 1;
+const UPY_HASH_POINTER = 2;
+
+interface UpyLayoutRecord {
+  id: number;
+  ht: number;
+  startAddr: number;
+  endAddr: number;
+  /** Raw 8 bytes from the layout table — interpretation depends on ht. */
+  hashData: Uint8Array;
+}
+
+/**
+ * Standard CRC-32 (polynomial 0xEDB88320, initial 0xFFFFFFFF, final XOR).
+ * Bit-by-bit implementation matching codal's `crc32_compute` byte-for-byte
+ * — see `codal-microbit-nrf5sdk/.../crc32/crc32.c`. Used to resolve
+ * HASH_POINTER records that store a flash address whose content (the
+ * MicroPython version string) the device CRCs at boot.
+ */
+function crc32Compute(bytes: Uint8Array): number {
+  let crc = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) {
+    crc ^= bytes[i];
+    for (let j = 0; j < 8; j++) {
+      crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+    }
+  }
+  return (~crc) >>> 0;
+}
+
+/**
+ * Resolve a HASH_POINTER record to the device-side 8-byte hash codal will
+ * compute and expose via the partial-flashing REGION_INFO response.
+ *
+ * The hash_data bytes are interpreted as `[uint32_LE pointer, uint32_LE 0]`
+ * (see addlayouttable.py REGION_HASH_PTR path). At runtime codal does:
+ *   `hash[0] = crc32(*pointer); hash[1] = 0;`
+ * where `*pointer` is the null-terminated version string at that flash
+ * address. We read those bytes out of the hex's memory map, CRC them, and
+ * pack into the same 8-byte layout.
+ *
+ * Returns null if the pointer can't be resolved (e.g. address not present
+ * in the hex's binary — would indicate a malformed image).
+ */
+function resolvePointerHash(map: ReturnType<typeof MemoryMap.fromHex>, record: UpyLayoutRecord): Uint8Array | null {
+  const ptr =
+    record.hashData[0] | (record.hashData[1] << 8) |
+    (record.hashData[2] << 16) | (record.hashData[3] << 24);
+  // Match codal's MAX_STRING_LENGTH cap (currently 256 in
+  // MicroBitMemoryMap.cpp). Walk until null terminator or cap.
+  const MAX_STR = 256;
+  const probe = map.slicePad(ptr, MAX_STR, 0xff);
+  let n = 0;
+  while (n < MAX_STR && probe[n] !== 0x00) n++;
+  if (n === 0) return null;
+  const crc = crc32Compute(probe.subarray(0, n));
+  const out = new Uint8Array(8);
+  const dv = new DataView(out.buffer);
+  dv.setUint32(0, crc >>> 0, true);
+  // hash[1] (bytes 4-7) stays zero — matches codal.
+  return out;
+}
+
+/**
+ * Parse a MicroPython-format hex (one that bundles
+ * `addlayouttable.py` output) for partial flashing.
+ *
+ * Returns the FS region's bytes as `bin` so the widget's existing
+ * write loop streams the filesystem (24 KB for our build) to the device.
+ * The MicroPython runtime is not flashed by this path — it's covered by
+ * the DAL-hash compatibility check (any runtime version change forces a
+ * full Nordic DFU fallback via `BluetoothPartialFlashDalMismatchError`).
+ *
+ * Note: codal's layout-table records for SD and FS use `HASH_NONE` (8
+ * zero bytes). To prevent the widget's "identical hash → skip flash"
+ * shortcut from no-op'ing every MicroPython flash, we synthesise a
+ * deterministic non-zero `makeCodeHash` from the FS bytes' length + first
+ * 4 bytes — guaranteed to differ from the device's all-zero FS hash on
+ * any actually-flashable run. (Same-content re-flash will re-write the
+ * 24 KB FS, which is ~3 s at partial-flashing throughput.)
+ */
+export function parseMicroPythonHex(hex: string): ParsedHex {
+  const map = MemoryMap.fromHex(hex);
+
+  // Find the layout-table trailer: 16-byte window with MAGIC1 at offset 0
+  // and MAGIC2 at offset 12, validated against three additional invariants
+  // that the addlayouttable.py output guarantees but a coincidental bytes
+  // match inside the runtime binary will fail:
+  //
+  //   1. The trailer's last byte ends exactly on a 4-KB page boundary.
+  //      (addlayouttable.py aligns the table to end-of-page so codal can
+  //      "quickly and easily" search for it — codal scans page-aligned.)
+  //   2. TABLE_LEN ≤ 256 — that's ≤ 16 region records, more than enough for
+  //      any realistic firmware layout (we ship 3).
+  //   3. NUM_REG ≤ 16 — matches (2).
+  //
+  // Without these, the runtime binary's 305 KB of code regularly contains
+  // 4-byte byte sequences that happen to match MAGIC1 + MAGIC2 at the
+  // right separation, producing nonsense "trailers" with garbage
+  // TABLE_LEN / NUM_REG values.
+  for (const [segStart, bytes] of map) {
+    const u8: Uint8Array = bytes;
+    for (let i = 0; i + 16 <= u8.length; i += 16) {
+      if (
+        u8[i] === UPY_MAGIC1[0] && u8[i + 1] === UPY_MAGIC1[1] &&
+        u8[i + 2] === UPY_MAGIC1[2] && u8[i + 3] === UPY_MAGIC1[3] &&
+        u8[i + 12] === UPY_MAGIC2[0] && u8[i + 13] === UPY_MAGIC2[1] &&
+        u8[i + 14] === UPY_MAGIC2[2] && u8[i + 15] === UPY_MAGIC2[3]
+      ) {
+        // Invariant 1: trailer ends on a 4-KB page boundary.
+        if (((segStart + i + 16) & 0xfff) !== 0) continue;
+        const tableLen = u8[i + 6] | (u8[i + 7] << 8);
+        const numReg = u8[i + 8] | (u8[i + 9] << 8);
+        // Invariants 2 + 3: reasonable size.
+        if (tableLen === 0 || tableLen > 256 || numReg === 0 || numReg > 16) continue;
+        if (tableLen !== numReg * 16) continue;
+        // Region records precede the trailer.
+        const recordsStart = i - tableLen;
+        if (recordsStart < 0) continue; // trailer too close to start; not real
+
+        const records: UpyLayoutRecord[] = [];
+        for (let r = recordsStart; r < i; r += 16) {
+          const id = u8[r];
+          const ht = u8[r + 1];
+          const regPage = u8[r + 2] | (u8[r + 3] << 8);
+          const regLen =
+            u8[r + 4] | (u8[r + 5] << 8) | (u8[r + 6] << 16) | (u8[r + 7] << 24);
+          const startAddr = regPage * 4096; // PSIZE_LOG2 = 12
+          records.push({
+            id,
+            ht,
+            startAddr,
+            endAddr: startAddr + regLen,
+            hashData: u8.slice(r + 8, r + 16),
+          });
+        }
+
+        const runtime = records.find((r) => r.id === UPY_REGION_RUNTIME);
+        const fs = records.find((r) => r.id === UPY_REGION_FS);
+        if (!runtime || !fs) continue;
+
+        // Resolve the runtime hash to the same 8 bytes codal exposes via
+        // REGION_INFO at runtime. Without this, the DAL-hash check below
+        // would always fail (hex stores a pointer; device returns a CRC).
+        let runtimeDeviceHash: Uint8Array;
+        if (runtime.ht === UPY_HASH_POINTER) {
+          const resolved = resolvePointerHash(map, runtime);
+          if (!resolved) continue; // pointer didn't dereference cleanly — skip
+          runtimeDeviceHash = resolved;
+        } else if (runtime.ht === UPY_HASH_DATA || runtime.ht === UPY_HASH_NONE) {
+          runtimeDeviceHash = runtime.hashData;
+        } else {
+          continue; // unknown hash type — surface as InvalidHex below
+        }
+
+        // Extract FS bytes from the hex's memory map.
+        // slicePad fills any unprogrammed gaps with 0xFF (flash-erased state)
+        // so the device's per-page erase-only-if-needed logic stays cheap.
+        const fsBytes = map.slicePad(fs.startAddr, fs.endAddr - fs.startAddr, 0xff);
+
+        // Synthesise a non-zero makeCodeHash so the widget's hash-compare
+        // shortcut never short-circuits. (FS HASH_NONE on device is 8
+        // zero bytes — see codal MicroBitMemoryMap processRecord.)
+        const synthetic = new Uint8Array(8);
+        const dv = new DataView(synthetic.buffer);
+        dv.setUint32(0, fsBytes.length >>> 0, true);
+        // first 4 bytes of FS as a content fingerprint
+        for (let k = 0; k < 4 && k < fsBytes.length; k++) {
+          synthetic[4 + k] = fsBytes[k];
+        }
+        // guarantee non-zero even if FS is empty/all-FF
+        if (synthetic.every((b) => b === 0)) synthetic[0] = 0x01;
+
+        return {
+          bin: fsBytes,
+          map,
+          magicOffset: 0,
+          baseAddr: fs.startAddr,
+          // Device's Region.Dal (slot 1, codal index 1) returns the
+          // MicroPython runtime hash. For ht=HASH_POINTER (the default in
+          // addlayouttable.py for the runtime region), codal CRCs the
+          // version string pointed to by hashData[0..4]. We mirror that
+          // computation above in resolvePointerHash() so the comparison
+          // matches when the device runs the same runtime build.
+          dalHash: runtimeDeviceHash,
+          makeCodeHash: synthetic,
+        };
+      }
+    }
+  }
+  throw new BluetoothPartialFlashInvalidHexError();
+}
+
+/**
+ * Try the MakeCode parser first; on `BluetoothPartialFlashInvalidHexError`,
+ * fall back to MicroPython. If both throw, surface a single
+ * `BluetoothPartialFlashInvalidHexError` mentioning both formats.
+ */
+function parseHexForPartialFlash(hex: string): ParsedHex {
+  try {
+    return parseMakeCodeHex(hex);
+  } catch (e) {
+    if (!(e instanceof BluetoothPartialFlashInvalidHexError)) throw e;
+  }
+  try {
+    return parseMicroPythonHex(hex);
+  } catch (e) {
+    if (e instanceof BluetoothPartialFlashInvalidHexError) {
+      throw new BluetoothPartialFlashInvalidHexError();
+    }
+    throw e;
+  }
 }
 
 // ---- Session ---------------------------------------------------------------
@@ -317,14 +585,14 @@ class BluetoothPartialFlashSession {
 
   async run(hex: string, opts: PartialFlashOptions = {}): Promise<void> {
     const onProgress = opts.onProgress ?? (() => {});
-    const log = (m: string) => appendLog({ direction: 'info', text: `pf-ble: ${m}` });
+    const log = pfLog;
 
     if (opts.signal) {
       if (opts.signal.aborted) throw new DOMException('Aborted', 'AbortError');
       opts.signal.addEventListener('abort', () => { this.aborted = true; });
     }
 
-    const parsed = parseMakeCodeHex(hex);
+    const parsed = parseHexForPartialFlash(hex);
     log(`parsed hex: bin=${parsed.bin.length} bytes, base=0x${parsed.baseAddr.toString(16)}`);
 
     await this.openCharacteristic();
@@ -334,13 +602,35 @@ class BluetoothPartialFlashSession {
 
     // DAL region — must match the hex's expected DAL hash.
     const dal = await this.requestRegion(Region.Dal);
-    log(`DAL hash on device: ${hexFmt(dal.hash)} / file: ${hexFmt(parsed.dalHash)}`);
+    log(`DAL on device: 0x${dal.start.toString(16)}-0x${dal.end.toString(16)} hash=${hexFmt(dal.hash)} / file hash=${hexFmt(parsed.dalHash)}`);
+
+    // Defensive check: the partial-flash GATT service can be present on a
+    // device whose firmware never wrote a memory-map layout table (e.g.
+    // blocks-runtime built without addlayouttable.py — verified 2026-05-21).
+    // In that case REGION_INFO returns start=0, end=0, hash=0..0 for both
+    // regions; the all-zero hash will fail arraysEqual against any real
+    // hex hash anyway, but we shortcut here with a clearer error so the
+    // dispatcher's DFU fallback fires unambiguously. Without this guard,
+    // edge cases where the hex's parsed.dalHash also happens to be
+    // all-zero (or a partial-flash session gets confused by the empty
+    // ranges later in the protocol) would silently no-op and leave the
+    // wrong app on the device.
+    if (dal.start === 0 && dal.end === 0) {
+      log('DAL region reports zero range — device has no partial-flash layout table');
+      throw new BluetoothPartialFlashServiceMissingError();
+    }
+
     if (!arraysEqual(dal.hash, parsed.dalHash)) {
       throw new BluetoothPartialFlashDalMismatchError();
     }
 
     const mc = await this.requestRegion(Region.MakeCode);
-    log(`MakeCode hash on device: ${hexFmt(mc.hash)} / file: ${hexFmt(parsed.makeCodeHash)}`);
+    log(`MC on device: 0x${mc.start.toString(16)}-0x${mc.end.toString(16)} hash=${hexFmt(mc.hash)} / file hash=${hexFmt(parsed.makeCodeHash)}`);
+
+    if (mc.start === 0 && mc.end === 0) {
+      log('MakeCode region reports zero range — partial-flash layout table malformed');
+      throw new BluetoothPartialFlashServiceMissingError();
+    }
 
     if (arraysEqual(mc.hash, parsed.makeCodeHash)) {
       // Identical code — just reset into application mode to mirror USB
@@ -364,32 +654,65 @@ class BluetoothPartialFlashSession {
     }
 
     // Write data: 4 BLE packets per 64-byte block, ack after each block.
+    //
+    // Clamp the streamed length to the device's MakeCode region
+    // (mc.end - mc.start) rather than streaming the whole contiguous hex
+    // segment captured in parsed.bin (which can run past the region and is
+    // zero-padded). Round the end UP to a 64-byte block boundary so the final
+    // partial block is sent whole, matching upstream's region-clamped,
+    // 64-aligned end. Each block is sliced 0xFF-padded by absolute address via
+    // map.slicePad so unprogrammed tail/gap bytes are 0xFF (flash-erased
+    // state) instead of zero — again matching upstream.
     const startAddr = mc.start;
-    const totalBytes = parsed.bin.length;
+    const regionBytes = Math.max(0, mc.end - mc.start);
+    const totalBytes = Math.ceil(regionBytes / 64) * 64;
+    const totalBlocks = Math.max(1, totalBytes / 64);
     let offset = 0;
     let packetNumber = 0;
     let chunkDelayMs = 0;
     let lastReport = 0;
     const updateMs = opts.progressUpdateMs ?? 100;
+    const streamStartedAt = Date.now();
+    let outOfOrderCount = 0;
+    let maxChunkDelayMs = 0;
+    log(`partial-flash stream: region=${regionBytes}B (${totalBlocks} blocks @ 64B, 4 packets/block)`);
 
+    // Serial one-ack-per-block. Reliable: writeWithoutResponse has no
+    // backpressure, and a write-ahead window overran the device RX during the
+    // per-block flash-burn, silently dropping packets → ack timeout → the
+    // whole flash failed mid-stream and the firmware's flashIncomplete flag
+    // (set on first FLASH_DATA, cleared only at END_OF_TRANSMISSION) left the
+    // mini booting into BLE mode instead of the program (HW Mini 3,
+    // 2026-06-07). Keep it strictly serial; optimise only with HW proof.
     while (offset < totalBytes) {
       if (this.aborted) throw new DOMException('Aborted', 'AbortError');
       const blockAddr = startAddr + offset;
-      const block = new Uint8Array(64);
-      block.set(parsed.bin.subarray(offset, Math.min(offset + 64, totalBytes)), 0);
+      // 0xFF-pad short/trailing blocks (flash-erased state).
+      const block = parsed.map.slicePad(blockAddr, 64, 0xff);
 
       const packets = buildFlashPackets(blockAddr, packetNumber, block);
-      for (let i = 0; i < 4; i++) {
+      // Write the first 3 packets, then ARM the block-ack resolver BEFORE the
+      // 4th (final) packet so a fast notification isn't dropped into a 5 s
+      // timeout.
+      for (let i = 0; i < 3; i++) {
         if (chunkDelayMs > 0) await delay(chunkDelayMs);
         await this.writeNoNotify(packets[i]);
       }
+      const ackPromise = this.waitForResponse(5000, 'flash-block-ack');
+      if (chunkDelayMs > 0) await delay(chunkDelayMs);
+      await this.writeNoNotify(packets[3]);
 
-      const ack = await this.waitForResponse(5000, 'flash-block-ack');
+      const ack = await ackPromise;
       if (ack[0] !== Cmd.FlashData) {
         throw new Error(`expected FLASH_DATA ack, got 0x${ack[0].toString(16)}`);
       }
       if (ack[1] === FlashAck.OutOfOrder) {
         chunkDelayMs = Math.min(chunkDelayMs + 10, 75);
+        outOfOrderCount++;
+        if (chunkDelayMs > maxChunkDelayMs) {
+          maxChunkDelayMs = chunkDelayMs;
+          log(`OutOfOrder ack at offset ${offset} — backing off, chunkDelay now ${chunkDelayMs}ms (×4/block)`);
+        }
         packetNumber += 4;
         continue;
       }
@@ -408,6 +731,11 @@ class BluetoothPartialFlashSession {
       }
     }
 
+    const elapsedMs = Date.now() - streamStartedAt;
+    const kbps = regionBytes > 0 ? (regionBytes / 1024) / (elapsedMs / 1000) : 0;
+    log(
+      `partial-flash stream done: ${regionBytes}B in ${(elapsedMs / 1000).toFixed(1)}s (${kbps.toFixed(1)} KB/s) — OutOfOrder=${outOfOrderCount}, maxChunkDelay=${maxChunkDelayMs}ms`,
+    );
     log('end of transmission');
     await this.writeNoNotify(new Uint8Array([Cmd.EndOfTransmission]));
     onProgress(1);
@@ -492,8 +820,11 @@ class BluetoothPartialFlashSession {
   }
 
   private async requestStatus(): Promise<PfStatus> {
+    // Arm the resolver before the write (see flash-block-ack note) so a fast
+    // status notification isn't dropped into a 3 s timeout.
+    const respPromise = this.waitForResponse(3000, 'status');
     await this.writeNoNotify(new Uint8Array([Cmd.Status]));
-    const data = await this.waitForResponse(3000, 'status');
+    const data = await respPromise;
     if (data[0] !== Cmd.Status) {
       throw new Error(`expected STATUS, got 0x${data[0].toString(16)}`);
     }
@@ -501,8 +832,10 @@ class BluetoothPartialFlashSession {
   }
 
   private async requestRegion(regionId: number): Promise<PfRegion> {
+    // Arm the resolver before the write (see flash-block-ack note).
+    const respPromise = this.waitForResponse(3000, `region-${regionId}`);
     await this.writeNoNotify(new Uint8Array([Cmd.RegionInfo, regionId]));
-    const data = await this.waitForResponse(3000, `region-${regionId}`);
+    const data = await respPromise;
     if (data[0] !== Cmd.RegionInfo) {
       throw new Error(`expected REGION_INFO, got 0x${data[0].toString(16)}`);
     }
@@ -521,7 +854,7 @@ class BluetoothPartialFlashSession {
       throw new Error('device in application mode — caller must supply reconnect()');
     }
     const device = this.server.device;
-    const log = (m: string) => appendLog({ direction: 'info', text: `pf-ble: ${m}` });
+    const log = pfLog;
 
     // Up to three attempts: write the RESET-into-pairing command and wait
     // for the device to drop the GATT link. Chrome's

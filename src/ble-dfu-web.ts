@@ -126,26 +126,28 @@ const Res = {
 // ---- Tunables --------------------------------------------------------------
 
 /**
- * Per-packet payload sizes we'll try when the bootloader doesn't expose
- * MTU via `MTU_GET (0x07)` — the Calliope v2-bootloader rejects that
- * opcode the same way it rejects Abort. We start at the largest and step
- * down on chunk-1 failure (see `sendDataObjectStream`'s first-chunk
- * retry):
+ * Per-packet payload sizes we'll try, largest first.
  *
- *   - 500: BLE spec allows up to 512 bytes per ATT write (MTU 515 − 3
- *     header bytes); Chrome on Android and some Linux configs negotiates
- *     ATT MTU 517 which is enough. ~30 % fewer writes per chunk vs 244.
- *   - 244: Standard BLE 5 MTU-247 payload — the value Chrome on Windows
- *     and macOS typically negotiates. ~10× faster than the safe legacy.
- *   - 20:  Legacy MTU-23 baseline. Works everywhere; ~2 KB/s.
+ * 244 == NRF_SDH_BLE_GATT_MAX_MTU_SIZE(247) − 3 (ATT header). On the
+ * v3-bootloader rebuild deployed 2026-05-21 the bootloader's sdk_config
+ * is set to MTU=247 and the on_write handler accepts the full 244-byte
+ * payload — verified by the rebuild target (sdk_config.h + nrf_dfu_ble.c
+ * exchange handler both present and wired). Each ladder step is a
+ * multiple of 4 (Nordic write-alignment requirement on the data path).
  *
- * On chunk-1 failure (`InvalidLengthError` or CRC/offset mismatch from
- * Chrome silently fragmenting an oversized write), the dispatcher
- * advances to the next index and retries the chunk. Worst-case overhead
- * is one failed chunk attempt per step (~2 s each) — three steps × ~2 s
- * = ~6 s lost on the fallback path; vs ~25 s saved if step 0 works.
+ * The older Calliope mini bootloader (prior to 2026-05-21) silently
+ * dropped writes >20 bytes — see commit history. The adaptive ladder
+ * exists so the widget still works against that bootloader: chunk 1
+ * fails with a PRN/CRC mismatch (the >20-byte writes never landed), and
+ * sendDataObjectStream steps down to the next entry on the next
+ * CreateObject. So devices that haven't been re-flashed with the new
+ * bootloader still complete DFU, just slowly.
+ *
+ * 244 → 64 → 20. The 64 step is a defensive intermediate in case the
+ * negotiated MTU lands between 23 and 247 (some Android stacks cap at
+ * 67 = 64+3); we'd rather know that than skip to 20 immediately.
  */
-const PACKET_PAYLOAD_STEPS: readonly number[] = [500, 244, 182, 20];
+const PACKET_PAYLOAD_STEPS: readonly number[] = [244, 64, 20];
 const PACKET_PAYLOAD_SAFE = PACKET_PAYLOAD_STEPS[PACKET_PAYLOAD_STEPS.length - 1];
 const PACKET_PAYLOAD_MAX = PACKET_PAYLOAD_STEPS[0];
 
@@ -154,18 +156,65 @@ const PACKET_PAYLOAD_MAX = PACKET_PAYLOAD_STEPS[0];
  * write to the Packet characteristic, the bootloader sends a checksum
  * notification on the Control Point with the running offset+CRC.
  *
- * Stays under Nordic SDK 17's default `NRF_DFU_BLE_BUFFERS=8` — the
- * bootloader can hold at most 8 unprocessed inbound packets in RAM, and it
- * stops processing during page-erase right after `CreateObject(Data)`
- * (each erase is ~85 ms on nRF52833). If we send more than 8 packets
- * during that window the BLE RX buffer overflows and the extras get
- * dropped silently — the bootloader keeps writing the bytes it did
- * receive (so the on-device display shows progress), but our local CRC
+ * Has to stay under the bootloader's `NRF_DFU_BLE_BUFFERS` because that's
+ * how many unprocessed inbound packets the bootloader can buffer while
+ * page-erase runs (~85 ms on nRF52833, kicked off by `CreateObject(Data)`).
+ * Send more than that during the erase window and the BLE RX queue
+ * overflows, packets are dropped silently — the device's display keeps
+ * showing progress (it wrote the bytes it did get), but our local CRC
  * drifts from the device's and the next PRN tells us the offset mismatched.
  *
- * 6 leaves headroom for the BLE link layer's own queueing.
+ * The v3-bootloader build deployed 2026-05-21 derives MAX_DFU_BUFFERS from
+ * `((CODE_PAGE_SIZE / MAX_DFU_PKT_LEN) + 1) == (4096 / 244) + 1 == 17` at
+ * compile time, so 6 leaves plenty of headroom. Older bootloaders shipped
+ * with the SDK default 8 → a value of 6 stays *under* that buffer too, so
+ * the RX queue can't overflow on either bootloader. (The previous default
+ * of 12 exceeded the old bootloader's 8-deep buffer and relied on the
+ * adaptive step-down to recover — but that recovery only fired on chunk 1,
+ * so an overflow on chunk 2+ failed the whole DFU. 6 removes the gamble.)
+ *
+ * This is the *initial* PRN interval; the adaptive step-down in
+ * sendDataObjectStream can lower it further (alongside the write payload)
+ * if a PRN/offset/CRC mismatch still surfaces.
  */
 const PRN_INTERVAL = 6;
+
+/**
+ * Per-host cache for the fast-DFU capability. Some hosts (notably Windows PCs
+ * whose Bluetooth adapter/driver won't raise the link Data Length — e.g. the
+ * documented Intel AX200/AX201 DLE bug) cannot deliver a 244-byte ATT write:
+ * it fragments and the link stalls/drops on the first big chunk. We still TRY
+ * 244 optimistically the first time, but once it has dropped the link we cache
+ * that here and start subsequent flashes straight at the safe 20-byte payload —
+ * skipping the ~6-10 s wasted 244 attempt + reconnect on every later flash.
+ * Cleared the instant 244 succeeds (so a host fixed by a driver rollback / a
+ * non-Intel BT dongle auto-recovers), and auto-expires after a week so a
+ * previously-bad host re-probes the fast path.
+ */
+const DFU_244_BAD_KEY = 'calliopeDfu244Unsupported';
+const DFU_244_REPROBE_MS = 7 * 24 * 60 * 60 * 1000;
+
+function dfu244KnownBad(): boolean {
+  try {
+    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(DFU_244_BAD_KEY) : null;
+    if (!raw) return false;
+    const ts = parseInt(raw, 10);
+    return Number.isFinite(ts) && Date.now() - ts < DFU_244_REPROBE_MS;
+  } catch { return false; }
+}
+function dfu244MarkBad(): void {
+  try { localStorage?.setItem(DFU_244_BAD_KEY, String(Date.now())); } catch { /* sandboxed iframe */ }
+}
+function dfu244MarkGood(): void {
+  try { localStorage?.removeItem(DFU_244_BAD_KEY); } catch { /* sandboxed iframe */ }
+}
+
+/**
+ * Floor the adaptive step-down won't drop PRN below — at PRN=1 the
+ * bootloader acks every single packet, which is the most conservative
+ * flow-control possible (and slowest). No point going lower.
+ */
+const PRN_INTERVAL_MIN = 1;
 
 /** Timeout for every CalcChecksum / PRN ack — chunk size × write rate worst case. */
 const CHECKSUM_TIMEOUT_MS = 15_000;
@@ -200,6 +249,20 @@ export class BluetoothDfuServiceMissingError extends BluetoothDfuFailedError {
   }
 }
 
+/**
+ * Is this error an offset/CRC divergence between our local state and the
+ * bootloader's? Those are the symptoms of an RX-buffer overflow (we sent
+ * packets faster than the bootloader could drain them during page-erase),
+ * which the data-stream loop recovers from by lowering the PRN interval.
+ * Matched on the failure messages thrown by `streamChunkWithPrn` and
+ * `sendDataObjectStream` ("PRN offset mismatch", "PRN CRC mismatch",
+ * "Data offset mismatch…", "Data CRC mismatch…"). Distinct from a generic
+ * GATT/protocol error, which we don't retry.
+ */
+function isDfuStateMismatch(err: unknown): boolean {
+  return err instanceof BluetoothDfuFailedError && /mismatch/i.test(err.message);
+}
+
 // ---- Public entry point ----------------------------------------------------
 
 export type BluetoothDfuPhase =
@@ -209,6 +272,19 @@ export type BluetoothDfuPhase =
   | 'sending-init'
   | 'flashing'
   | 'finalising';
+
+/**
+ * Which DFU role the device is currently in.
+ *   - `'app'`        — running the application; exposes the buttonless
+ *                      characteristic (8EC90004 / 8EC90003). Needs the
+ *                      buttonless-enter dance before we can flash.
+ *   - `'bootloader'` — already in the Nordic secure-DFU bootloader; exposes
+ *                      the control + packet characteristics (8EC90001 /
+ *                      8EC90002). Skip the enter dance, resume on the
+ *                      existing connection.
+ *   - `'auto'`       — probe the characteristics to decide (the default).
+ */
+export type BluetoothDfuSessionKind = 'app' | 'bootloader' | 'auto';
 
 export interface FlashOverNordicDfuOptions {
   /** The already-permitted Web Bluetooth device. Must currently be running the application. */
@@ -227,6 +303,20 @@ export interface FlashOverNordicDfuOptions {
   onProgress?: (progress: number) => void;
   onPhase?: (phase: BluetoothDfuPhase) => void;
   signal?: AbortSignal;
+  /**
+   * Whether the device is currently running the application or is already
+   * sitting in the bootloader (e.g. a previous BLE-DFU was interrupted
+   * mid-transfer, or the user entered DFU mode with A+B+Reset). Drives the
+   * resume path.
+   *
+   * Defaults to `'auto'`, which probes the GATT characteristics:
+   * `device.name` is NOT used — Web Bluetooth caches the name from the
+   * pre-reboot advertisement and does not refresh it to "DfuTarg" after the
+   * bootloader takes over, so a name check silently misclassifies a
+   * just-rebooted device as still-in-app. Pass an explicit kind from the
+   * caller (which knows how the device got here) to skip the probe.
+   */
+  sessionKind?: BluetoothDfuSessionKind;
 }
 
 /**
@@ -246,12 +336,9 @@ export async function flashOverNordicDfuWeb(opts: FlashOverNordicDfuOptions): Pr
   const trace = (m: string) => {
     const elapsed = Date.now() - startedAt;
     const line = `+${(elapsed / 1000).toFixed(2)}s ${m}`;
+    // appendLog mirrors info/error to the console in dev (see log.ts), so the
+    // dfu-ble timing trace is visible in DevTools without a separate mirror.
     appendLog({ direction: 'info', text: `dfu-ble: ${line}` });
-    // Also mirror to console — the widget's log panel isn't always
-    // visible (e.g. inside an iframe-embedded blocks editor), but
-    // DevTools is. Use console.info so it's visible at default level.
-    // eslint-disable-next-line no-console
-    console.info(`%c[dfu-ble]%c ${line}`, 'color: #06b6d4; font-weight: bold;', 'color: inherit;');
   };
   const phase = (p: BluetoothDfuPhase) => {
     trace(`phase=${p}`);
@@ -265,27 +352,65 @@ export async function flashOverNordicDfuWeb(opts: FlashOverNordicDfuOptions): Pr
   const appBin = extractAppBin(opts.hex);
   trace(`app bin extracted: ${appBin.length} bytes`);
 
-  // Phase 1 — buttonless DFU enter. Causes the device to reboot into the
-  // bootloader and disconnect.
-  phase('entering-bootloader');
-  await enterBootloader(opts.device, trace, opts.signal);
-
-  // Phase 2 — wait for the bootloader to actually be ready, then reconnect
-  // to the same BluetoothDevice (the bootloader keeps the application's
-  // BD_ADDR by inheriting the SoftDevice peer data).
+  // Detect: is the device already in the bootloader? Happens when a
+  // previous BLE-DFU was interrupted mid-transfer (the bootloader stays in
+  // its DFU-in-progress state, showing "+" on the LED matrix from the
+  // progress histogram and keeping the Nordic DFU service advertised), or
+  // when the user forced DFU mode with A+B+Reset.
   //
-  // Wait time matters: Nordic SDK 17's bootloader needs ~1.5–3 s after
-  // reboot to finish SoftDevice init → bootloader init → advertising
-  // start. Chrome's `gatt.connect()` will happily complete against a
-  // device that has the LL-layer up but isn't a full GATT peer yet —
-  // the bootloader then drops the connection a few hundred ms later
-  // once it's actually ready, mid-service-discovery on our end. Two
-  // seconds is the minimum that reliably catches the bootloader after
-  // it has registered its DFU service.
-  phase('awaiting-bootloader');
-  await delay(2000);
-  phase('reconnecting');
-  const dfuServer = await reconnectToBootloader(opts.device, trace, opts.signal);
+  // In that case we skip the buttonless-enter dance entirely — there's no
+  // app running to host the buttonless characteristic, and trying to write
+  // 0x01 to it throws and drops the link. A fresh Select/Create on the
+  // existing bootloader connection resets the in-progress object's
+  // offset/CRC, so we can resume from a clean state without an Abort (the
+  // v2-bootloader disconnects on Abort).
+  //
+  // We do NOT classify by `device.name === 'DfuTarg'`: Web Bluetooth caches
+  // the name from the device's pre-reboot advertisement and does not refresh
+  // it after the bootloader takes over, so a name check silently
+  // misclassifies a just-rebooted bootloader as still-in-app. Instead we
+  // honour an explicit `sessionKind` from the caller (which knows how the
+  // device got here) and otherwise probe the GATT characteristics directly:
+  // the control char (8EC90001) exists only in the bootloader, the
+  // buttonless char (8EC90004/3) only in the app.
+  const alreadyInBootloader = await resolveSessionKind(opts.device, opts.sessionKind, trace);
+  let dfuServer: BluetoothRemoteGATTServer;
+  if (alreadyInBootloader) {
+    trace('device is already in the bootloader — skipping buttonless enter, reusing the existing bootloader connection');
+    phase('reconnecting');
+    // The device might still be advertising or we might still have a live
+    // GATT — either way, ensure we have a server handle. If the link
+    // dropped between the classifier verdict and our flash call, the
+    // reconnect helper handles it with the same retry/backoff used post-
+    // enter-bootloader.
+    if (opts.device.gatt && opts.device.gatt.connected) {
+      dfuServer = opts.device.gatt;
+    } else {
+      dfuServer = await reconnectToBootloader(opts.device, trace, opts.signal);
+    }
+  } else {
+    // Phase 1 — buttonless DFU enter. Causes the device to reboot into the
+    // bootloader and disconnect.
+    phase('entering-bootloader');
+    await enterBootloader(opts.device, trace, opts.signal);
+
+    // Phase 2 — wait for the bootloader to actually be ready, then reconnect
+    // to the same BluetoothDevice (the bootloader keeps the application's
+    // BD_ADDR by inheriting the SoftDevice peer data).
+    //
+    // Wait time matters: Nordic SDK 17's bootloader needs ~1.5–3 s after
+    // reboot to finish SoftDevice init → bootloader init → advertising
+    // start. Chrome's `gatt.connect()` will happily complete against a
+    // device that has the LL-layer up but isn't a full GATT peer yet —
+    // the bootloader then drops the connection a few hundred ms later
+    // once it's actually ready, mid-service-discovery on our end. Two
+    // seconds is the minimum that reliably catches the bootloader after
+    // it has registered its DFU service.
+    phase('awaiting-bootloader');
+    await delay(2000);
+    phase('reconnecting');
+    dfuServer = await reconnectToBootloader(opts.device, trace, opts.signal);
+  }
 
   // No settle here. `gatt.connect()` resolves the moment Chrome has an
   // ATT session, and Nordic SDK 17's secure-DFU bootloader runs an
@@ -295,81 +420,252 @@ export async function flashOverNordicDfuWeb(opts: FlashOverNordicDfuOptions): Pr
   // we go straight to active GATT work — service discovery, characteristic
   // lookup, and notification enable — all of which keep the link alive
   // and also happen to be exactly what the bootloader expects next.
-  const ctx = await openSecureDfuChannel(dfuServer, trace);
+  // Pick the starting per-packet payload. We query the bootloader's MTU_GET
+  // first; but on this Calliope bootloader build the MTU_GET *DFU opcode* is
+  // compiled out (it's behind `#if !NRF_DFU_PROTOCOL_REDUCED`), so MTU_GET
+  // returns null even though the bootloader's ATT layer DOES support MTU 247.
+  // The catch: a 247-byte ATT MTU only takes effect if the *central* (Chrome)
+  // initiated the MTU exchange — and on Windows it doesn't reliably do that
+  // for the bootloader link. So when MTU_GET is unknown we can't tell whether
+  // 244-byte writes will land or silently overflow the default-23 link and
+  // make the SoftDevice drop the connection (observed 2026-06-06: chunk 1 at
+  // payload=244 → GATT disconnected, unrecoverable because the link is gone).
+  //
+  // Strategy: still TRY the fast 244 path optimistically, but if a large
+  // payload kills the link, RECONNECT to the bootloader and retry the whole
+  // init+stream one ladder step smaller (244 → 64 → 20). The bootloader keeps
+  // no app state between our attempts (CreateObject resets per-object CRC), so
+  // a clean re-init from offset 0 is safe. This recovers the dropped-link case
+  // that sendDataObjectStream's in-loop step-down cannot (it needs a live link
+  // to step down on). When MTU_GET *is* available we trust it and skip the
+  // ladder entirely.
+  // The reconnect ladder. We start optimistically at 244 and, only if a large
+  // write DROPS THE LINK, reconnect and retry the whole init+stream at a
+  // smaller payload. We go 244 → 20 (NOT 244 → 64 → 20): a link drop means the
+  // SoftDevice rejected an oversized write, i.e. the negotiated ATT MTU is the
+  // tiny default 23 (HW-confirmed 2026-06-07 on Windows: mwwr reports 244 but
+  // 24-byte writes already drop the link; MTU is binary 23-or-247 here, never
+  // an intermediate). 64 would just drop too and waste a ~6 s reconnect, so we
+  // skip straight to the safe 20. (A truncating stack that keeps the link
+  // alive — some Android caps ~67 — is handled separately by the in-loop
+  // chunk-1 step-down in sendDataObjectStream, which still walks 244→64→20.)
+  // MTU is queried on the SAME channel we stream on (a throwaway probe channel
+  // destabilised the bootloader GATT and killed the init packet with
+  // "GATT Error Unknown"). When MTU_GET answers we trust it (single payload).
+  // Diagnostic override: set localStorage.calliopeDfuLadder = "244,128,64,40,24,20"
+  // to make the reconnect ladder fine-grained — one DFU then prints exactly which
+  // payload size the link tolerates (= negotiated ATT MTU − 3). Used to measure,
+  // in real Chrome, whether the link caps at 20 (MTU 23) or accepts a larger size.
+  // Unset → normal [244, 20] behaviour.
+  const diagLadder = (() => {
+    try {
+      const raw = typeof localStorage !== 'undefined' ? localStorage.getItem('calliopeDfuLadder') : null;
+      if (raw) {
+        const arr = raw.split(',').map((s) => parseInt(s.trim(), 10)).filter((n) => n >= 4 && n <= PACKET_PAYLOAD_MAX);
+        if (arr.length) return arr;
+      }
+    } catch { /* localStorage may throw in sandboxed iframes */ }
+    return null;
+  })();
+  // HW-measured 2026-06-08 (Chrome 148/Win11, this host): a fine-grained sweep
+  // (244→128→64→40→24→20) showed ONLY 20 lands — every size ≥24 drops the link,
+  // i.e. the negotiated ATT MTU is the default 23 (the central never raised it;
+  // bleak/WinRT saw the same). So on a host that won't negotiate MTU, only 20
+  // works; on a host that does, 244 lands on the first try. Keep the optimistic
+  // 244-then-20 reconnect ladder: fast where the host negotiates 247, one
+  // reconnect to the safe 20 where it doesn't. (Diagnostic override:
+  // localStorage.calliopeDfuLadder = "244,128,64,40,24,20".)
+  // Cache-aware default ladder: optimistic [244, 20] normally, but if THIS host
+  // has already proven it can't do 244 (cached), skip straight to [20] and save
+  // the ~6-10 s of a doomed 244 attempt + reconnect. (Diagnostic override always
+  // wins.) Cleared automatically when 244 later succeeds; re-probes after a week.
+  const skip244 = !diagLadder && dfu244KnownBad();
+  if (skip244) {
+    trace('this host previously failed 244-byte DFU (cached) — starting at 20-byte writes');
+  }
+  const ladder = diagLadder
+    ?? (skip244 ? [PACKET_PAYLOAD_SAFE] : [PACKET_PAYLOAD_MAX, PACKET_PAYLOAD_SAFE]); // [244, 20]
 
-  // Watch for mid-DFU disconnect from this point on. If the bootloader's
-  // GATT drops while we think we're streaming, every subsequent write
-  // would silently queue or throw a generic GATT error — surface the
-  // disconnect immediately so the dispatcher can fall back.
-  const onDisconnect = () => {
-    ctx.disconnected = true;
-    trace('!!! GATT disconnected during DFU — bootloader may have aborted (inactivity, link loss, or rejection)');
-    // Unblock any in-flight awaitResponse so we error out fast instead
-    // of sitting on a 15–30 s timeout after the link is already gone.
-    ctx.rejectPending?.(new BluetoothDfuFailedError('GATT disconnected mid-DFU'));
-  };
-  opts.device.addEventListener('gattserverdisconnected', onDisconnect);
+  let lastErr: unknown;
+  let mtuResolved = false;
+  for (let li = 0; li < ladder.length; li++) {
+    let payload = ladder[li];
+    const isLastStep = li === ladder.length - 1;
 
-  // Note: no Abort here. The standard Nordic SDK 17 secure-DFU bootloader
-  // supports `NRF_DFU_OP_ABORT (0x0C)` and it just resets the in-progress
-  // object — but the v2-bootloader Calliope ships disconnects the GATT
-  // link when it receives 0x0C (observed at +0.07 s post-write on a
-  // fresh reconnect; see commit history for traces). `CreateObject`
-  // already resets the per-type offset/CRC counter on its own, so the
-  // only thing Abort would have given us — clearing stale state from
-  // a previously-interrupted DFU — happens implicitly when we start
-  // sending the new init packet anyway.
+    // (Re)connect for retries — the previous attempt dropped the link.
+    if (li > 0) {
+      phase('reconnecting');
+      trace(`payload=${ladder[li - 1]} dropped the link — reconnecting to retry DFU at ${payload}-byte writes`);
+      await delay(1500);
+      dfuServer = await reconnectToBootloader(opts.device, trace, opts.signal);
+    }
 
-  // Query the bootloader's view of the negotiated ATT MTU so we can
-  // size every write to fill it. The legacy MTU of 23 caps us at
-  // 20-byte payloads — fine for correctness, but ~1.8 KB/s in practice,
-  // i.e. ~100 s for a 180 KB firmware. With MTU 247 (Chrome's normal
-  // negotiated value on modern desktops/phones) we can write 244 bytes
-  // per BLE transaction instead, cutting the wire-time by ~10×.
-  const mtu = await mtuGet(ctx);
-  if (mtu !== null && mtu > 23) {
-    ctx.payloadSize = Math.min(PACKET_PAYLOAD_MAX, Math.max(PACKET_PAYLOAD_SAFE, mtu - 3));
-    trace(`bootloader MTU=${mtu}, using ${ctx.payloadSize}-byte packet writes`);
-  } else {
-    // Bootloader doesn't support MTU_GET (Calliope's v2-bootloader rejects
-    // opcode 0x07 the same way it rejects Abort). Try the optimistic max
-    // payload anyway — if Chrome's negotiated MTU permits 244-byte writes
-    // we get ~10× faster data transfer, and if it doesn't the first chunk
-    // fails fast (InvalidLengthError or CRC/offset mismatch) and the
-    // sendDataObjectStream first-chunk retry below falls back to the
-    // safe `PACKET_PAYLOAD_SAFE` size. Cost on the failure path: one
-    // wasted chunk attempt (~2 s).
-    ctx.payloadSize = PACKET_PAYLOAD_MAX;
-    trace(`bootloader MTU unknown — trying optimistic ${ctx.payloadSize}-byte writes (will fall back to ${PACKET_PAYLOAD_SAFE} if chunk 1 fails)`);
+    const ctx = await openSecureDfuChannel(dfuServer, trace);
+
+    // Watch for mid-DFU disconnect. Register BEFORE any control writes so a
+    // drop during MTU_GET / init unblocks the in-flight awaitResponse.
+    const onDisconnect = () => {
+      ctx.disconnected = true;
+      trace('!!! GATT disconnected during DFU — bootloader may have aborted (inactivity, link loss, or rejection)');
+      ctx.rejectPending?.(new BluetoothDfuFailedError('GATT disconnected mid-DFU'));
+    };
+    opts.device.addEventListener('gattserverdisconnected', onDisconnect);
+
+    try {
+      // On the first channel, ask the bootloader for its MTU on this very
+      // channel. If it answers, jump the ladder straight to the right payload
+      // and disable further step-down (a known MTU never overflows).
+      if (!mtuResolved) {
+        mtuResolved = true;
+        const mtu = await mtuGet(ctx).catch(() => null);
+        if (mtu && mtu > 0) {
+          payload = PACKET_PAYLOAD_STEPS.find((p) => p <= mtu - 3) ?? PACKET_PAYLOAD_SAFE;
+          ladder.length = li + 1; // pin to this payload — no reconnect ladder
+          trace(`bootloader reports MTU=${mtu}; using ${payload}-byte writes`);
+        } else {
+          trace(`bootloader MTU_GET unsupported; trying ${payload}-byte writes${isLastStep ? '' : ' (will reconnect+step down on link drop)'}`);
+        }
+      }
+      ctx.payloadSize = payload;
+
+      // Phase 4 — init packet. Small enough (~56 bytes = 3 packets) that PRN
+      // doesn't help; send it without PRN to keep the protocol exchange simple.
+      phase('sending-init');
+      const initPacket = await createInitPacketV2(appBin);
+      trace(`init packet: ${initPacket.length} bytes`);
+      await setPRN(ctx, 0, trace);
+      await sendCommandObject(ctx, initPacket, trace, opts.signal);
+
+      // Phase 5 — firmware data.
+      phase('flashing');
+      ctx.prnInterval = PRN_INTERVAL;
+      await setPRN(ctx, ctx.prnInterval, trace);
+      await sendDataObjectStream(
+        ctx,
+        appBin,
+        (sent, total) => opts.onProgress?.(sent / total),
+        trace,
+        opts.signal,
+      );
+
+      phase('finalising');
+      // 244 worked on this host — clear any stale "can't do 244" cache so we
+      // keep using the fast path (and a previously-bad host that got fixed,
+      // e.g. via a BT-driver rollback / non-Intel dongle, auto-recovers).
+      if (payload >= PACKET_PAYLOAD_MAX) dfu244MarkGood();
+      trace('done — device will reboot into application');
+      return;
+    } catch (err) {
+      lastErr = err;
+      // A link-drop is recoverable by reconnecting and retrying smaller. Match
+      // both our own clean "disconnected mid-DFU" and Chrome's generic GATT
+      // errors ("GATT Error Unknown", "GATT operation failed/not permitted",
+      // "Device disconnected") that surface when the SoftDevice drops the link
+      // out from under an in-flight write.
+      const msg = (err as Error)?.message ?? '';
+      const linkDropped = ctx.disconnected
+        || /GATT disconnected mid-DFU/i.test(msg)
+        || /GATT (Error Unknown|operation|Server is disconnected)/i.test(msg)
+        || /disconnected|connection/i.test(msg);
+      if (linkDropped && !isLastStep) {
+        // The fast 244 path just dropped the link on this host — cache that so
+        // future flashes skip straight to 20-byte (no wasted 244 attempt).
+        if (payload >= PACKET_PAYLOAD_MAX) {
+          dfu244MarkBad();
+          trace('caching: this host can\'t do 244-byte DFU — future flashes will start at 20-byte');
+        }
+        trace(`DFU attempt at payload=${payload} failed (${msg}) — reconnecting to retry smaller`);
+        continue;
+      }
+      throw err;
+    } finally {
+      opts.device.removeEventListener('gattserverdisconnected', onDisconnect);
+      try { ctx.dispose(); } catch { /* ignore */ }
+    }
+  }
+  // Ladder exhausted without success.
+  throw lastErr ?? new BluetoothDfuFailedError('BLE-DFU failed at all payload sizes');
+}
+
+// ---- Session classification (app vs bootloader) ----------------------------
+
+/**
+ * Decide whether the device is already in the bootloader (`true`) or still
+ * running the application (`false`).
+ *
+ * An explicit `sessionKind` from the caller wins — `ble.ts` knows whether it
+ * just triggered a reboot or found the device already advertising the DFU
+ * service. When it's `'auto'` (or absent) we probe the GATT characteristics
+ * rather than trusting `device.name`, which Web Bluetooth never refreshes to
+ * "DfuTarg" after the bootloader takes over:
+ *
+ *   - The secure-DFU control characteristic (8EC90001) exists ONLY in the
+ *     bootloader — its presence is a definitive "in bootloader" signal.
+ *   - The buttonless characteristic (8EC90004 / 8EC90003) exists ONLY in the
+ *     application.
+ *
+ * If neither is reachable (no GATT, service missing, probe error) we fall
+ * back to the application path: `enterBootloader` then surfaces a precise
+ * `BluetoothDfuServiceMissingError` if the buttonless characteristic really
+ * is absent, which is a cleaner failure than guessing "bootloader" and
+ * blowing up later on a missing control point.
+ */
+async function resolveSessionKind(
+  device: BluetoothDevice,
+  sessionKind: BluetoothDfuSessionKind | undefined,
+  trace: (m: string) => void,
+): Promise<boolean> {
+  if (sessionKind === 'bootloader') {
+    trace('sessionKind=bootloader (from caller) — treating device as already in bootloader');
+    return true;
+  }
+  if (sessionKind === 'app') {
+    trace('sessionKind=app (from caller) — treating device as running the application');
+    return false;
   }
 
+  // sessionKind is 'auto' or undefined — probe the characteristics.
+  if (!device.gatt) {
+    trace('sessionKind=auto: device has no GATT to probe — assuming application');
+    return false;
+  }
   try {
-    // Phase 4 — init packet. Small enough (~56 bytes = 3 packets) that PRN
-    // doesn't help; send it without PRN to keep the protocol exchange simple.
-    phase('sending-init');
-    const initPacket = await createInitPacketV2(appBin);
-    trace(`init packet: ${initPacket.length} bytes`);
-    await setPRN(ctx, 0, trace);
-    await sendCommandObject(ctx, initPacket, trace, opts.signal);
-
-    // Phase 5 — firmware data. This is where we set up PRN throttling so the
-    // bootloader can keep up. `onProgress` only fires from here on, so the
-    // 0..1 the caller sees is firmware-streaming progress.
-    phase('flashing');
-    await setPRN(ctx, PRN_INTERVAL, trace);
-    await sendDataObjectStream(
-      ctx,
-      appBin,
-      (sent, total) => opts.onProgress?.(sent / total),
-      trace,
-      opts.signal,
+    const server = device.gatt.connected ? device.gatt : await device.gatt.connect();
+    const service = await withTimeout(
+      server.getPrimaryService(NORDIC_DFU_SERVICE),
+      5000,
+      'getPrimaryService(session-probe)',
     );
+    // Control point present → bootloader. Probe it first: it's the
+    // definitive bootloader-only characteristic.
+    try {
+      await withTimeout(
+        service.getCharacteristic(SECURE_DFU_CONTROL_POINT),
+        3000,
+        'getCharacteristic(control-point session-probe)',
+      );
+      trace('sessionKind=auto: control point (8EC90001) present — device is in the bootloader');
+      return true;
+    } catch { /* not the bootloader — fall through to the app probe */ }
 
-    phase('finalising');
-    trace('done — device will reboot into application');
-  } finally {
-    opts.device.removeEventListener('gattserverdisconnected', onDisconnect);
-    try { ctx.dispose(); } catch { /* ignore */ }
+    // Buttonless present → application.
+    for (const uuid of [BUTTONLESS_DFU_WITH_BONDS, BUTTONLESS_DFU_WITHOUT_BONDS]) {
+      try {
+        await withTimeout(
+          service.getCharacteristic(uuid),
+          3000,
+          `getCharacteristic(${uuid} session-probe)`,
+        );
+        trace(`sessionKind=auto: buttonless characteristic (${uuid}) present — device is running the application`);
+        return false;
+      } catch { /* try next */ }
+    }
+
+    trace('sessionKind=auto: neither control point nor buttonless characteristic found — defaulting to application path');
+    return false;
+  } catch (e) {
+    trace(`sessionKind=auto: probe failed (${(e as Error).message}) — defaulting to application path`);
+    return false;
   }
 }
 
@@ -416,7 +712,24 @@ async function enterBootloader(
   // The buttonless characteristic uses **indications** (not notifications) on
   // Nordic SDK 17 builds. Either way, Chrome's `startNotifications()` handles
   // both — the characteristic descriptor determines the flavour.
-  await withTimeout(buttonless.startNotifications(), 3000, 'buttonless startNotifications');
+  //
+  // This is the most common failure point on open-mode firmware: Nordic SDK's
+  // `ble_dfu_buttonless_init` registers the 8EC90004 CCCD with SEC_JUST_WORKS
+  // (encryption required) regardless of `MICROBIT_BLE_OPEN` — the security
+  // setting is baked in by the SDK config flag `NRF_DFU_BLE_REQUIRES_BONDS`,
+  // not by CODAL's global mode. So `startNotifications()` will fail here
+  // with a security error when there is no OS bond. To make BLE-DFU work
+  // without a bond you have to rebuild the firmware with
+  // `NRF_DFU_BLE_REQUIRES_BONDS=0` (which also flips the buttonless
+  // characteristic UUID to 8EC90003 — the widget already tries that as a
+  // fallback in the getCharacteristic loop above).
+  try {
+    await withTimeout(buttonless.startNotifications(), 3000, 'buttonless startNotifications');
+    trace('buttonless notifications enabled');
+  } catch (e) {
+    trace(`buttonless startNotifications failed: ${(e as Error).message} — likely SDK enforces encrypted CCCD even under MICROBIT_BLE_OPEN`);
+    throw e;
+  }
 
   // Subscribe to the buttonless response, then write 0x01 (Enter Bootloader).
   // We don't actually need the response to succeed — the device disconnects
@@ -442,6 +755,7 @@ async function enterBootloader(
   // and disconnects shortly after.
   const waitForDisconnect = oneShotEvent(device, 'gattserverdisconnected', 12000);
   try {
+    trace('writing 0x01 to buttonless characteristic (enter-bootloader)');
     try {
       await withTimeout(buttonless.writeValue(new Uint8Array([0x01])), 3000, 'enter-bootloader write');
       trace('enter-bootloader command written');
@@ -534,6 +848,14 @@ interface SecureDfuContext {
    * if the bootloader doesn't support MTU_GET or returns the legacy MTU.
    */
   payloadSize: number;
+  /**
+   * Packets per PRN currently in force for the data-streaming phase. Starts
+   * at `PRN_INTERVAL` and can be lowered by the adaptive step-down in
+   * `sendDataObjectStream` when a PRN/offset/CRC mismatch points at an RX
+   * buffer overflow. `streamChunkWithPrn` reads this each packet so a
+   * mid-stream change takes effect on the next PRN cycle.
+   */
+  prnInterval: number;
   /**
    * Set to true by the outer `gattserverdisconnected` handler when the
    * link drops mid-DFU. Hot-path code (packet writes, control writes,
@@ -643,6 +965,7 @@ async function openSecureDfuChannel(
     packet,
     awaitResponse,
     payloadSize: PACKET_PAYLOAD_SAFE,
+    prnInterval: PRN_INTERVAL,
     disconnected: false,
     // Reads through to whatever the in-flight `awaitResponse` registered.
     // The outer disconnect handler reaches in via this getter so it can
@@ -736,9 +1059,12 @@ async function sendDataObjectStream(
   let sent = 0;
   let cumulativeCrc = 0xffffffff;
   let chunkIndex = 0;
-  // Track which step in `PACKET_PAYLOAD_STEPS` we're on. We only fall
-  // back during chunk 1 — if anything past that fails it's a real
-  // protocol error, not an MTU mismatch.
+  // Track which step in `PACKET_PAYLOAD_STEPS` we're on. The payload
+  // step-down (MTU mismatch) is only meaningful on chunk 1 — if the
+  // negotiated ATT MTU were too small we'd have failed the very first
+  // chunk. The *PRN* step-down, by contrast, can fire on any chunk: an
+  // RX-buffer overflow only shows up once page-erase timing lines up
+  // unfavourably, which can be a later chunk. See the catch block.
   let payloadStepIdx = PACKET_PAYLOAD_STEPS.indexOf(ctx.payloadSize);
   if (payloadStepIdx < 0) payloadStepIdx = PACKET_PAYLOAD_STEPS.length - 1;
   const totalChunks = Math.ceil(data.length / maxChunk);
@@ -789,6 +1115,18 @@ async function sendDataObjectStream(
       trace(`chunk ${chunkIndex}/${totalChunks} done in ${elapsed}ms — ${sent}/${data.length} B (${pct}%)`);
       onProgress(sent, data.length);
     } catch (err) {
+      // Any step-down only helps if the GATT link survived the failed
+      // attempt. Some oversized writes (PACKET_PAYLOAD_STEPS[0] above the
+      // negotiated ATT MTU) cause the bootloader to drop the link as a
+      // side effect — every subsequent step then fails with "GATT
+      // disconnected mid-DFU" and we'd bury the real cause under noise.
+      // Bail early in that case and let the dispatcher surface a clean
+      // failure to the user.
+      if (ctx.disconnected) {
+        trace(`chunk ${chunkIndex} disconnected the GATT (payload=${ctx.payloadSize}); skipping step-down — link is gone`);
+        throw err;
+      }
+
       // First-chunk-only retry: step down through `PACKET_PAYLOAD_STEPS`.
       // Most likely cause when we started at a large payload is that
       // Chrome's negotiated ATT MTU is smaller than our optimistic
@@ -796,8 +1134,8 @@ async function sendDataObjectStream(
       // fragmented silently and our PRN offset diverged. Drop one step
       // and retry chunk 1 from scratch (CreateObject resets the
       // bootloader's per-chunk state, and `sent`/`cumulativeCrc` only
-      // advance on success). Failure past chunk 1, or after all steps
-      // exhausted, is a real protocol error and gets thrown.
+      // advance on success). The MTU can only mismatch on the first
+      // chunk, so this path stays chunk-1-only.
       if (chunkIndex === 1 && payloadStepIdx + 1 < PACKET_PAYLOAD_STEPS.length) {
         const oldPayload = ctx.payloadSize;
         payloadStepIdx++;
@@ -806,6 +1144,32 @@ async function sendDataObjectStream(
         chunkIndex--;
         continue;
       }
+
+      // Any-chunk PRN step-down: a PRN/offset/CRC mismatch points at an
+      // RX-buffer overflow (we outran the bootloader's NRF_DFU_BLE_BUFFERS
+      // during the page-erase window), which — unlike an MTU mismatch —
+      // can surface on a later chunk when erase timing lines up badly.
+      // Halve the PRN interval (more frequent acks → fewer in-flight
+      // packets during erase) and retry the same chunk. CreateObject
+      // resets the bootloader's per-chunk state, and `sent`/`cumulativeCrc`
+      // only advance on success, so retrying is safe. Bounded by
+      // PRN_INTERVAL_MIN: once PRN bottoms out (every packet acked) the
+      // guard below is false and a persisting mismatch is thrown as a real
+      // protocol error.
+      if (isDfuStateMismatch(err) && ctx.prnInterval > PRN_INTERVAL_MIN) {
+        const oldPrn = ctx.prnInterval;
+        ctx.prnInterval = Math.max(PRN_INTERVAL_MIN, Math.floor(ctx.prnInterval / 2));
+        trace(`chunk ${chunkIndex} mismatch with PRN=${oldPrn} (${(err as Error).message}) — lowering PRN to ${ctx.prnInterval} and retrying`);
+        try {
+          await setPRN(ctx, ctx.prnInterval, trace);
+        } catch (prnErr) {
+          trace(`could not re-set PRN after mismatch: ${(prnErr as Error).message}`);
+          throw err;
+        }
+        chunkIndex--;
+        continue;
+      }
+
       throw err;
     }
   }
@@ -813,7 +1177,7 @@ async function sendDataObjectStream(
 
 /**
  * Stream one chunk's bytes with Packet Receipt Notification throttling.
- * Every `PRN_INTERVAL` packets, we expect a notification on the Control
+ * Every `ctx.prnInterval` packets, we expect a notification on the Control
  * Point with the running offset+CRC; we set up the awaitResponse *before*
  * writing the Nth packet so the notification finds a resolver waiting.
  *
@@ -848,8 +1212,9 @@ async function streamChunkWithPrn(
     // a resolver in place (notifications without a pending resolver get
     // dropped). A PRN at end-of-chunk is fine — we just consume it; the
     // outer loop's explicit CalcChecksum gets its own response.
+    const prnInterval = ctx.prnInterval;
     const nextCount = packetsSincePrn + 1;
-    const isPrnPacket = PRN_INTERVAL > 0 && nextCount === PRN_INTERVAL;
+    const isPrnPacket = prnInterval > 0 && nextCount >= prnInterval;
     let prnPending: Promise<Uint8Array> | null = null;
     if (isPrnPacket) {
       prnPending = ctx.awaitResponse(Op.CalcChecksum, CHECKSUM_TIMEOUT_MS);

@@ -2,39 +2,27 @@
  * Classify low-level BLE/USB transport errors into actionable categories so
  * the UI shows a guided modal instead of a raw Chromium / WebUSB toast.
  *
- * The classifier is the single source of truth for mapping error strings to
- * a `BleErrorKind` / `UsbErrorKind`. Anywhere we catch a transport-level
- * error in widget code, route the message through here before storing it in
- * `bleErrorMessage` / `usbErrorMessage`.
+ * With rc07-open firmware (`MICROBIT_BLE_OPEN=1`) there is no SMP / OS bond
+ * to maintain — the classifier no longer needs to disambiguate "stale bond"
+ * from "never paired" from "pair mode". Every BLE connect failure that
+ * isn't an explicit user abort is now treated as transient: the reconnect
+ * daemon picks it up and keeps trying.
  *
- * Mapping rationale (matches the iOS / Android Calliope apps' behaviour):
- *
- *  - `pairing-information-lost` / Web Bluetooth "GATT Server is disconnected"
- *    when we already had a bond: the device's whitelist was wiped (typical
- *    after USB full-flash). User must remove the OS bond and re-pair.
- *
- *  - "Connection attempt failed" / generic GATT disconnect when we never had
- *    a bond: the OS pairing prompt was dismissed, or pairing failed at the
- *    OS layer. User must pair via OS Bluetooth settings first.
- *
- *  - "transferOut" / "transferIn" / "transfer error" on USB: a stale WebUSB
- *    endpoint, recoverable by bouncing the connection. Handled in
- *    `usb.ts#runFlashWithTransferRetry` — don't surface as a hard error
- *    unless the retry also fails.
- *
- *  - "Must be connected" on USB flash: upstream lib's contract violation
- *    when `flash()` runs before `connect()` resolved. We retry once with
- *    a status-event wait in `usb.ts`; only surface as a hard error if the
- *    wait times out.
+ * USB errors stay structured because they drive concrete recovery actions:
+ *  - `device-in-use` (another tab holding the DAPLink) needs the user to
+ *    close the other tab / replug — the banner's recovery ladder (`usb-recovery`)
+ *    starts at the `replug` rung for it.
+ *  - `device-disconnected` (USBDevice handle stale) needs a fresh
+ *    `requestDevice()` from a user gesture — the ladder's `click` rung.
+ *  - `transfer-transient` is recoverable by bouncing the connection and is
+ *    handled by `usb.ts#runFlashWithTransferRetry` before bubbling up here.
  */
 
 import { DeviceError } from '@microbit/microbit-connection';
 
 export type BleErrorKind =
-  | 'stale-bond'         // had a bond, GATT now refuses — entkoppeln + neu pairen
-  | 'pairing-missing'    // never paired — OS-Bluetooth-Einstellungen koppeln
-  | 'gatt-transient'     // device just rebooted; reconnect in flight
   | 'aborted'            // user cancelled the picker
+  | 'transient'          // connect failed; daemon will retry
   | 'unsupported'        // no Web Bluetooth in this browser
   | 'unknown';           // surface raw message
 
@@ -51,10 +39,6 @@ export interface ClassifiedBleError {
   kind: BleErrorKind;
   /** German user-facing message — what to show as `bleErrorMessage`. */
   userMessage: string;
-  /** Whether the OS-pairing modal should pop up alongside the message. */
-  showPairingModal: boolean;
-  /** Whether this should set `bleStaleBond` (drives the modal heading). */
-  staleBond: boolean;
 }
 
 export interface ClassifiedUsbError {
@@ -62,102 +46,28 @@ export interface ClassifiedUsbError {
   userMessage: string;
 }
 
-/**
- * Web Bluetooth's "GATT Server is disconnected" message (and variants) tend
- * to leak through whenever upstream tries to access a service on a stale
- * GATT handle. Match liberally — the text is canonical across Chrome
- * versions but spacing/punctuation may vary.
- */
-const GATT_DISCONNECT_RE = /GATT Server is disconnected/i;
-const CONNECTION_FAILED_RE = /Connection attempt failed|GATT operation failed|Failed to connect|NetworkError/i;
-const SERVICE_NOT_FOUND_RE = /No Services matching UUID|Service is not in the device|getPrimaryService/i;
-const SECURITY_ERR_RE = /security|encryption|authentication|insufficient/i;
-
-export function classifyBleError(err: unknown, hadPaired: boolean): ClassifiedBleError {
+export function classifyBleError(err: unknown): ClassifiedBleError {
   // Upstream lib's DeviceError gives us canonical codes — prefer those when
   // present so we don't second-guess the lib's classification.
   if (err instanceof DeviceError) {
     switch (err.code) {
-      case 'pairing-information-lost':
-        return {
-          kind: 'stale-bond',
-          userMessage: 'OS-Pairing veraltet — Calliope in den OS-Bluetooth-Einstellungen entkoppeln und neu pairen.',
-          showPairingModal: true,
-          staleBond: true,
-        };
-      case 'permission-denied':
-        return {
-          kind: 'pairing-missing',
-          userMessage: 'Bluetooth-Pairing fehlt: Calliope in den OS-Bluetooth-Einstellungen koppeln, oder per USB anschließen.',
-          showPairingModal: true,
-          staleBond: false,
-        };
       case 'no-device-selected':
       case 'aborted':
-        return { kind: 'aborted', userMessage: '', showPairingModal: false, staleBond: false };
+        return { kind: 'aborted', userMessage: '' };
       case 'unsupported':
         return {
           kind: 'unsupported',
           userMessage: 'Web Bluetooth wird in diesem Browser nicht unterstützt.',
-          showPairingModal: false,
-          staleBond: false,
         };
+      // Everything else (including 'pairing-information-lost' and
+      // 'permission-denied' which the lib used to emit on paired-mode
+      // failures) is now a transient — the device is probably running a
+      // hex without BLE, or just out of range. Daemon keeps trying.
     }
-  }
-  const msg = (err as Error)?.message ?? String(err ?? '');
-  // GATT disconnect mid-operation + had a bond before → stale bond. This is
-  // the regressed-on-the-17th symptom the user reported: "GATT Server is
-  // disconnected" instead of the bond-deletion modal.
-  if (GATT_DISCONNECT_RE.test(msg) || SERVICE_NOT_FOUND_RE.test(msg)) {
-    if (hadPaired) {
-      return {
-        kind: 'stale-bond',
-        userMessage: 'Bluetooth-Verbindung verloren — vermutlich altes Pairing. Calliope in den OS-Bluetooth-Einstellungen entkoppeln und neu pairen.',
-        showPairingModal: true,
-        staleBond: true,
-      };
-    }
-    // No prior bond + GATT disconnect during initial setup → user needs to
-    // pair via OS first. Same modal, different copy.
-    return {
-      kind: 'pairing-missing',
-      userMessage: 'Bluetooth-Pairing fehlt: Calliope einmal in den OS-Bluetooth-Einstellungen koppeln, oder per USB anschließen.',
-      showPairingModal: true,
-      staleBond: false,
-    };
-  }
-  // Generic "Connection attempt failed" — same routing as GATT disconnect.
-  if (CONNECTION_FAILED_RE.test(msg)) {
-    if (hadPaired) {
-      return {
-        kind: 'stale-bond',
-        userMessage: 'Bluetooth-Verbindung fehlgeschlagen — vermutlich altes Pairing. Calliope in den OS-Bluetooth-Einstellungen entkoppeln und neu pairen.',
-        showPairingModal: true,
-        staleBond: true,
-      };
-    }
-    return {
-      kind: 'pairing-missing',
-      userMessage: 'Bluetooth-Verbindung fehlgeschlagen: Calliope einmal in den OS-Bluetooth-Einstellungen koppeln, oder per USB anschließen.',
-      showPairingModal: true,
-      staleBond: false,
-    };
-  }
-  // Security/encryption errors are unambiguous stale-bond signals when we
-  // had paired before.
-  if (SECURITY_ERR_RE.test(msg) && hadPaired) {
-    return {
-      kind: 'stale-bond',
-      userMessage: 'Pairing-Schlüssel passt nicht mehr — Calliope in den OS-Bluetooth-Einstellungen entkoppeln und neu pairen.',
-      showPairingModal: true,
-      staleBond: true,
-    };
   }
   return {
-    kind: 'unknown',
-    userMessage: msg || 'Unbekannter Bluetooth-Fehler.',
-    showPairingModal: false,
-    staleBond: false,
+    kind: 'transient',
+    userMessage: 'Bluetooth-Verbindung fehlgeschlagen — wir versuchen es weiter.',
   };
 }
 
@@ -183,8 +93,7 @@ export function classifyUsbError(err: unknown): ClassifiedUsbError {
   }
   const msg = (err as Error)?.message ?? String(err ?? '');
   // Upstream's enrichedError sets DeviceError.code; the raw-string branches
-  // here are a safety net in case the error slipped past enrichment (e.g.
-  // a transferOut error reclassified later in the pipeline).
+  // here are a safety net in case the error slipped past enrichment.
   if (/Unable to claim interface/i.test(msg)) {
     return {
       kind: 'device-in-use',
@@ -203,27 +112,20 @@ export function classifyUsbError(err: unknown): ClassifiedUsbError {
   ) {
     return {
       kind: 'transfer-transient',
-      // Shown only if the caller already exhausted automatic retries (the
-      // dispatcher in usb.ts) — so the action item is on the user, not "we'll
-      // retry". Background-error usages silently log this kind without ever
-      // surfacing the message.
       userMessage: 'USB-Übertragung wiederholt fehlgeschlagen — bitte USB-Kabel kurz abziehen und neu einstecken.',
     };
   }
-  // adi.disconnect's dap.close racing with the polling loop. Same
-  // recovery path as a stale handle — user clicks the modal's Retry
-  // (inside a user gesture) and we wipe + reconnect cleanly.
+  // adi.disconnect's dap.close racing with the polling loop. Same recovery
+  // path as a stale handle.
   if (/operation that changes the device state is in progress/i.test(msg)) {
     return {
       kind: 'device-disconnected',
       userMessage: 'USB-Verbindung war kurz unterbrochen — bitte erneut verbinden.',
     };
   }
-  // Chrome refuses `requestDevice()` without a user gesture. Happens
-  // when an OS-level USB disconnect wiped `usbDevice` and upstream's
-  // auto-reconnect fell through to the picker outside of a click
-  // handler. Same modal-driven recovery — the Retry button IS a user
-  // gesture, so requestDevice works from there.
+  // Chrome refuses `requestDevice()` without a user gesture. Happens when an
+  // OS-level USB disconnect wiped `usbDevice` and the daemon fell through to
+  // the picker outside of a click handler.
   if (/Must be handling a user gesture/i.test(msg)) {
     return {
       kind: 'device-disconnected',
@@ -263,4 +165,25 @@ export function isExpectedRebootWindow(): boolean {
 
 export function clearExpectedReboot(): void {
   expectedRebootUntil = 0;
+}
+
+// ---- Mini 2 (J-Link) USB guidance -----------------------------------------
+
+/** SEGGER J-Link OB vendor id — the interface chip on Calliope Mini 2 units
+ *  that don't ship DAPLink. The standard CMSIS-DAP USB flash path (VID 0x0d28)
+ *  can't drive it; the dedicated WebUSB transport lives in `segger-jlink.ts`
+ *  and is not auto-routed (and is itself blocked on older J-Link OB firmware). */
+export const SEGGER_JLINK_VENDOR_ID = 0x1366;
+
+/** Shown when a Mini 2 J-Link device is the only thing present: rather than a
+ *  raw CMSIS-DAP failure, point the user at the reliable download+drag route. */
+export const MINI2_JLINK_USB_HINT =
+  'Auf den Calliope mini 2 (J-Link) kann über den Standard-USB-Weg nicht übertragen werden. '
+  + 'Bitte die .hex-Datei herunterladen und auf das Calliope-Laufwerk ziehen.';
+
+/** Returns the Mini 2 J-Link hint for a 0x1366 device, else undefined. Hosts
+ *  that learn the connected device's USB vendor id can use this to swap a
+ *  confusing DAP error for actionable guidance. */
+export function usbHintForVendorId(vendorId: number | undefined): string | undefined {
+  return vendorId === SEGGER_JLINK_VENDOR_ID ? MINI2_JLINK_USB_HINT : undefined;
 }

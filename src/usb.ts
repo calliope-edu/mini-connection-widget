@@ -17,15 +17,29 @@ import {
   type CalliopeStatus,
 } from './state';
 import { appendLog } from './log';
-import { detectCalliopeVersion, stripMakeCodeMetadata } from './helpers';
+import { detectCalliopeVersion, downloadHexFile, stripMakeCodeMetadata } from './helpers';
+import { awaitMini2FlashChoice } from './mini2-flash-fallback';
+import { connectJLinkSerial } from './web-serial';
 import { friendlyNameFromDeviceId } from './friendly-name';
 import { startHeartbeat, stopHeartbeat } from './serial';
-import { classifyUsbError, isExpectedRebootWindow } from './connection-errors';
-import { showUsbErrorInfo } from './usb-error-info';
+import { classifyUsbError, isExpectedRebootWindow, markExpectedReboot, SEGGER_JLINK_VENDOR_ID, MINI2_JLINK_USB_HINT } from './connection-errors';
+import { flashViaJLinkMsdImage, SEGGER_USB_FILTERS } from './segger-jlink';
+import { escalateUsbRecovery } from './usb-recovery';
+import { pauseJacdacExchange, resumeJacdacExchange, stopJacdacExchange } from './jacdac';
+import { forgetExchangeSightings } from './ram-scan';
+import { pauseBlocksDapExchange, resumeBlocksDapExchange, stopBlocksDapExchange, reinitBlocksDapAfterFlash } from './blocks-dap';
+import { pauseIotExchange, resumeIotExchange, stopIotExchange, reinitIotAfterFlash } from './iot-dap';
 
 let usbConn: MicrobitUSBConnection | null = null;
 let usbInitPromise: Promise<MicrobitUSBConnection> | null = null;
 let rxBuffer = '';
+
+// Set by applyFlashProgress when a full byte-transfer pass reaches completion,
+// reset at the start of each USB flash. Gates the post-flash reinit-race
+// recovery (see flashCalliopeViaUsb's catch): we only treat a TRANSFER_WAIT
+// throw as "flash succeeded, connection just needs a bounce" if the bytes
+// actually made it to the board.
+let flashByteTransferComplete = false;
 
 /** Internal accessor — used by serial.ts/connect.ts/flash.ts. */
 export function getUsbConn(): MicrobitUSBConnection | null { return usbConn; }
@@ -39,6 +53,17 @@ export function clearUsbConn(): void {
   // registerSerialDataListener() on the new instance.
   serialListeners.clear();
   serialPaused = false;
+  // The Jacdac + Blocks-DAP + IoT exchange loops were bound to that connection's
+  // ArmDebug — stop them so a fresh connection re-scans rather than poking a
+  // stale handle.
+  stopJacdacExchange();
+  stopBlocksDapExchange();
+  stopIotExchange();
+  // And forget what the sweeps saw. A sighting is an address in the RAM of the
+  // device that was on the other end of THIS connection; the next cable may
+  // hold a different mini running a different program. Keeping them would let
+  // `wasExchangeSighted` report the previous device's runtime as this one's.
+  forgetExchangeSightings();
 }
 
 // ---------------------------------------------------------------------------
@@ -108,6 +133,13 @@ export async function pauseSerialDataPolling(settleMs = 150): Promise<void> {
       }
     }
   }
+  // The Jacdac exchange loop is a separate consumer of the same DAP sendQueue,
+  // untouched by detaching serial listeners — pause it too so the flash sees a
+  // quiet bus. The loop parks at the top of its next iteration; the settle
+  // sleep below covers its (at most one) in-flight op draining.
+  pauseJacdacExchange();
+  pauseBlocksDapExchange();
+  pauseIotExchange();
   await new Promise((r) => setTimeout(r, settleMs));
 }
 
@@ -117,6 +149,14 @@ export async function pauseSerialDataPolling(settleMs = 150): Promise<void> {
  * polling again.
  */
 export function resumeSerialDataPolling(): void {
+  // Resume the exchange gates UNCONDITIONALLY — before the serialPaused
+  // guard. clearUsbConn() (mid-flash cancel/recovery) resets serialPaused
+  // without resuming the exchanges; if the guard ran first, the flash
+  // finally's resume would early-return and leave blocks-dap/jacdac
+  // paused forever (their lazy loop restarts are hard-gated on `paused`).
+  resumeJacdacExchange();
+  resumeBlocksDapExchange();
+  resumeIotExchange();
   if (!serialPaused) return;
   serialPaused = false;
   if (!usbConn) return;
@@ -164,6 +204,12 @@ function applyFlashProgress(stage: ProgressStage, progress: number | undefined):
   }
   // PartialFlashing / FullFlashing — actual byte transfer with 0..1 progress.
   const intPct = progress === undefined ? undefined : Math.round(progress * 100);
+  // Only an EXACT 1.0 means the transfer pass completed (the library emits
+  // per-page progress BEFORE writing each page, so >=0.98 could still have
+  // pages unwritten — treating that as complete masked real mid-flash
+  // failures as success). The library's rate limiter always delivers the
+  // final value===1, so this never misses a genuinely completed pass.
+  if (progress !== undefined && progress >= 1) flashByteTransferComplete = true;
   updateState((s) => ({
     ...s,
     flashPhase: 'flashing',
@@ -185,11 +231,33 @@ export async function getUsbConnection(): Promise<MicrobitUSBConnection> {
   usbInitPromise = (async () => {
     const c = createUSBConnection({ deviceSelectionMode: DeviceSelectionMode.UseAnyAllowed });
     await c.initialize();
+    // Exclude SEGGER J-Link OB (Calliope Mini 2 interface chip, VID 0x1366)
+    // from the WebUSB picker AND the auto-attempt-on-load: the CMSIS-DAP /
+    // DAPLink flash path can't drive a J-Link, so offering it here only yields
+    // a confusing "Unable to claim interface"-style CMSIS-DAP failure. Mini 2
+    // USB flashing goes through the dedicated segger-jlink transport instead.
+    // (getFilteredAllowedDevices + chooseDevice both honor exclusionFilters.)
+    c.setRequestDeviceExclusionFilters([{ vendorId: 0x1366 }]);
     c.addEventListener('status', (ev) => {
       const mapped = mapStatus(ev.status);
       const dev = c.getDevice();
       const pn = dev?.productName ?? undefined;
-      const cv = detectCalliopeVersion(pn, undefined);
+      // Hardware version over USB. Unlike BLE — which fingerprints the GATT
+      // service set authoritatively (boardVersionFromServices) — the only
+      // Calliope-specific signal DAPLink exposes here is the productName; a
+      // mini 3 reports "Arm Calliope mini V3 CMSIS-DAP". When the name carries
+      // a version digit we trust it (V3 ⇒ mini 3). Otherwise any device that
+      // still connects over this CMSIS-DAP path is a legacy Calliope, so once
+      // connected we default to V1 — the safe bet: it picks the DAL Blocks
+      // runtime and trips the editor's "mini 3 only" gate rather than leaving
+      // the version unknown (which BLE never does). A mini 2's SEGGER J-Link
+      // interface (VID 0x1366) is excluded from this transport and flashes via
+      // segger-jlink.ts, so it can't reach this handler — the vendorId branch
+      // only matters if that exclusion is ever lifted.
+      let cv = detectCalliopeVersion(pn, undefined);
+      if (!cv && mapped === 'connected') {
+        cv = dev?.vendorId === SEGGER_JLINK_VENDOR_ID ? 'V2' : 'V1';
+      }
       // FICR.DEVICEID[1] from DAPLink — same number the firmware feeds
       // into `microbit_friendly_name`. Throws when not yet connected, so
       // we only attempt it on the connected transition.
@@ -212,6 +280,8 @@ export async function getUsbConnection(): Promise<MicrobitUSBConnection> {
             : s.usbDeviceName,
           usbErrorMessage: mapped === 'connected' ? undefined : s.usbErrorMessage,
           calliopeVersion: cv ?? s.calliopeVersion,
+          // A USB-side verdict is definitive — clears any BLE "Mini 1 or 2?" guess.
+          versionAmbiguous: cv ? false : s.versionAmbiguous,
           friendlyName: friendly ?? s.friendlyName,
           connectedAt: mapped === 'connected' ? Date.now() : s.connectedAt,
         };
@@ -249,6 +319,15 @@ export async function getUsbConnection(): Promise<MicrobitUSBConnection> {
       }));
       appendLog({ direction: 'error', text: msg });
     });
+    // Pressing RESET on the mini resets only the target nRF; the DAPLink
+    // interface chip stays USB-enumerated, so the lib never fires a
+    // usb.disconnect (this.usbDevice stays set, status stays Connected) and the
+    // reconnect daemon — armed only on a connected→!connected edge — never runs.
+    // The target reset only tears down the serial read loop, which the lib
+    // signals via 'serialreset'. Mirror the mini-2 CDC silent resume: bounce
+    // the (still-enumerated) connection in place to rebuild SWD + serial with
+    // no picker and no user gesture.
+    c.addEventListener('serialreset', () => { void attemptSilentDaplinkResume(c); });
     usbConn = c;
     // Wire the rxBuffer line parser through the registry so it gets
     // detached during flash pause along with every other subscriber.
@@ -270,8 +349,14 @@ export async function getUsbConnection(): Promise<MicrobitUSBConnection> {
   return usbInitPromise;
 }
 
-export async function connectWithRetry(c: MicrobitUSBConnection, tries = 2): Promise<void> {
+export async function connectWithRetry(c: MicrobitUSBConnection, tries = 3): Promise<void> {
   let lastErr: unknown;
+  // Settle delays: { 500ms, 1200ms, 2000ms }. The Windows kernel often
+  // needs ~1.5 s to fully release the DAPLink endpoint after a previous
+  // disconnect; coming back faster than that hits the same stale handle.
+  // `device-disconnected` cases get an extra bump (doubles the next wait)
+  // because that's the kernel-release race specifically.
+  const baseSettleMs = [500, 1200, 2000];
   for (let i = 0; i < tries; i++) {
     try {
       await c.connect();
@@ -284,11 +369,8 @@ export async function connectWithRetry(c: MicrobitUSBConnection, tries = 2): Pro
       // just hit the same lock. Surface the recovery modal and stop.
       if (code === 'device-in-use') throw err;
       appendLog({ direction: 'info', text: `Connect attempt ${i + 1} failed: ${(err as Error).message}` });
-      // `device-disconnected` from open() is the Windows-side race after a
-      // previous disconnect — the kernel hasn't released the interface yet
-      // by the time we re-claim it. A longer settle window resolves it
-      // most of the time without the user noticing.
-      const settleMs = code === 'device-disconnected' ? 900 : 400;
+      const base = baseSettleMs[Math.min(i, baseSettleMs.length - 1)];
+      const settleMs = code === 'device-disconnected' ? base * 2 : base;
       await new Promise((r) => setTimeout(r, settleMs));
     }
   }
@@ -313,34 +395,322 @@ async function waitForUsbConnected(c: MicrobitUSBConnection, timeoutMs = 2_000):
   }
 }
 
-export async function flashCalliopeViaUsb(hex: string, name: string): Promise<void> {
+/**
+ * Outcome of a USB flash attempt. Lets the dispatcher distinguish a completed
+ * flash from one that was merely *deferred* to the recovery ladder, so it can
+ * decide whether to keep the user's flash intent pending (see
+ * `pendingFlash`/the auto-resume hook in `flash.ts`).
+ *
+ *  - `flashed`    — the transfer completed.
+ *  - `deferred`   — connect (or the transfer) failed with a recoverable error;
+ *                   the USB recovery ladder (replug → reconnect → reload) is now
+ *                   armed. The caller should keep the flash pending so it
+ *                   auto-resumes the moment USB comes back.
+ *  - `aborted`    — the user dismissed the picker / no device, or a
+ *                   non-recoverable error with no recovery path. Drop the intent.
+ *  - `unsupported`— no WebUSB in this browser.
+ */
+export type UsbFlashOutcome = 'flashed' | 'deferred' | 'aborted' | 'unsupported';
+
+/** DAPLink / CMSIS-DAP interface (Calliope mini 1 & 3). */
+const DAPLINK_VENDOR_ID = 0x0d28;
+
+/**
+ * Dev-mode escape hatch: when on, the USB flash picker drops ALL filters
+ * (`filters: []` → every USB device shows, even a keyboard), for debugging
+ * device enumeration. Off by default; the host wires it to its debug toggle.
+ */
+let usbPickerAllDevices = false;
+export function setUsbPickerAllDevices(enabled: boolean): void {
+  usbPickerAllDevices = enabled;
+}
+
+/**
+ * Auto-route the USB interface chip before the CMSIS-DAP connect.
+ *
+ * A Calliope mini 2 exposes a SEGGER J-Link OB (VID 0x1366) that the CMSIS-DAP
+ * flash path can't drive; mini 1 & 3 expose DAPLink (VID 0x0d28). Rather than
+ * make the user choose a transport, we show ONE combined WebUSB picker (DAPLink
+ * + every J-Link OB layout) and decide from the *picked device*:
+ *
+ *  - J-Link  → flash it right here over the SEGGER MSD transport; return the
+ *              outcome. On failure (e.g. old J-Link OB firmware) surface the
+ *              download+drag hint.
+ *  - DAPLink → return `null`. The device is now browser-authorized, so the
+ *              caller's normal `connectWithRetry` (UseAnyAllowed) reuses it with
+ *              NO second picker, and flashing continues down the CMSIS-DAP path.
+ *  - picker dismissed → `'aborted'`.
+ */
+/**
+ * Show the combined Calliope USB picker — DAPLink (mini 1/3) + every J-Link OB
+ * layout (mini 2) — or EVERY USB device when dev-mode `setUsbPickerAllDevices`
+ * is on. Returns the picked device, or null if the picker was dismissed / WebUSB
+ * is unavailable. Shared by the flash path (below) and the connect path
+ * (connect.ts), so both offer the same device list.
+ *
+ * WebUSB globals (`navigator.usb`, `USBDevice`) are only typed under this
+ * package's own tsconfig (@types/w3c-web-usb); a consumer that type-checks these
+ * sources (e.g. campus svelte-check) has no such lib, so we go through `any` and
+ * the `'usb' in navigator` guard used elsewhere in this file.
+ */
+export async function requestCalliopeUsbDevice(): Promise<any | null> {
+  if (typeof navigator === 'undefined' || !('usb' in navigator)) return null;
+  const usb = (navigator as unknown as { usb: { requestDevice(opts: unknown): Promise<any> } }).usb;
+  const requestOptions = usbPickerAllDevices
+    ? { filters: [] }
+    : { filters: [{ vendorId: DAPLINK_VENDOR_ID }, ...SEGGER_USB_FILTERS] };
+  try {
+    return await usb.requestDevice(requestOptions);
+  } catch {
+    return null;
+  }
+}
+
+/** True when a picked WebUSB device is a SEGGER J-Link OB (Calliope mini 2). */
+export function isSeggerJLinkDevice(device: any): boolean {
+  return device != null && device.vendorId === SEGGER_JLINK_VENDOR_ID;
+}
+
+/**
+ * Record the mini 2's J-Link WebUSB flash link as connected. Called the moment
+ * the combined picker grants a J-Link (connect.ts) — BEFORE the Web Serial
+ * picker — so a dismissed CDC picker still leaves the device visibly connected
+ * and flashable. The grant itself lives in browser permissions (reused via
+ * getDevices()); this state field is the UI/dispatcher-visible mirror.
+ */
+export function setJlinkUsbConnected(): void {
+  updateState((s) => {
+    // Don't clobber an active DAPLink session's identity: plugging in an
+    // (authorized) mini 2 while a mini 1/3 is connected must not relabel the
+    // device card / version — the DAPLink device is the one in use.
+    const dapActive = s.usbStatus === 'connected';
+    return {
+      ...s,
+      jlinkUsbStatus: 'connected',
+      usbDeviceName: dapActive ? s.usbDeviceName : 'Calliope mini 2 (USB)',
+      calliopeVersion: dapActive ? s.calliopeVersion : 'V2',
+      versionAmbiguous: dapActive ? s.versionAmbiguous : false,
+      usbErrorMessage: undefined,
+      userDisconnectedUsb: false,
+      connectedAt: s.connectedAt ?? Date.now(),
+    };
+  });
+}
+
+/** Drop the J-Link flash-link state (device unplugged / user disconnect). */
+export function clearJlinkUsb(): void {
+  updateState((s) => (s.jlinkUsbStatus === 'disconnected' ? s : {
+    ...s,
+    jlinkUsbStatus: 'disconnected',
+    // Leave usbDeviceName/calliopeVersion to whichever transport still holds
+    // the device; the CDC read loop clears its own state independently.
+  }));
+}
+
+/**
+ * Keep `jlinkUsbStatus` honest across plug events and page loads:
+ *  - on init, an already-authorized J-Link that's present (getDevices) counts
+ *    as connected — flashing works without any picker;
+ *  - WebUSB 'connect'/'disconnect' events (they only fire for authorized
+ *    devices) flip the state as the cable comes and goes.
+ * Called once from `initializeCalliopeConnection`.
+ */
+export function initJlinkUsbWatch(): void {
+  if (typeof navigator === 'undefined' || !('usb' in navigator)) return;
+  const usb = (navigator as any).usb;
+  const resume = () => {
+    setJlinkUsbConnected();
+    // Re-link the CDC serial silently when its grant survived (no picker, no
+    // gesture needed) — the mini 2 counterpart of the DAPLink/BLE reconnect
+    // daemon. A cancelled outcome just means "no grant"; flash-only stands.
+    void connectJLinkSerial({ silentOnly: true });
+  };
+  void (async () => {
+    try {
+      const devices: any[] = await usb.getDevices();
+      if (devices.some((d) => isSeggerJLinkDevice(d)) && !getState().userDisconnectedUsb) {
+        appendLog({ direction: 'info', text: 'Calliope mini 2 (J-Link) still authorized — flash link ready.' });
+        resume();
+      }
+    } catch { /* ignore */ }
+  })();
+  try {
+    usb.addEventListener('connect', (ev: any) => {
+      if (isSeggerJLinkDevice(ev?.device) && !getState().userDisconnectedUsb) resume();
+    });
+    usb.addEventListener('disconnect', (ev: any) => {
+      if (isSeggerJLinkDevice(ev?.device)) clearJlinkUsb();
+    });
+  } catch { /* ignore */ }
+}
+
+/**
+ * Flash a specific SEGGER J-Link device (Calliope mini 2) via the MSD-image path,
+ * driving the widget flash state. Shared by the picker path
+ * (`pickAndMaybeFlashJLink`) and the already-connected path
+ * (`flashConnectedMini2`). The J-Link bulk interface is independent of the CDC
+ * serial port, so a Web Serial comms link can stay open across the flash.
+ */
+async function flashJLinkDevice(device: any, hex: string, name: string): Promise<UsbFlashOutcome> {
+  appendLog({ direction: 'info', text: `Flashing via USB (J-Link / mini 2) "${name}"` });
+  // The picked/held device is live — reflect the flash link so the mini 2
+  // reads as connected even when the CDC serial was never added.
+  setJlinkUsbConnected();
+  const enterFlashState = () => updateState((s) => ({
+    ...s,
+    flashTransport: 'usb',
+    flashPhase: 'flashing',
+    flashProgress: 0,
+    flashPartial: false,
+    usbErrorMessage: undefined,
+    lastFlashName: name,
+  }));
+  const leaveFlashState = () => updateState((s) => ({
+    ...s,
+    flashTransport: undefined,
+    flashPhase: undefined,
+    flashProgress: undefined,
+    flashPartial: undefined,
+  }));
+  enterFlashState();
+  let attempts = 0;
+  for (;;) {
+    try {
+      attempts++;
+      await flashViaJLinkMsdImage(device, hex, {
+        onProgress: (f) => updateState((s) => ({ ...s, flashProgress: Math.round(f * 100) })),
+        onLog: (line) => appendLog({ direction: 'info', text: `jlink: ${line}` }),
+      });
+      leaveFlashState();
+      updateState((s) => ({ ...s, lastFlashAt: Date.now() }));
+      appendLog({ direction: 'info', text: `Flash finished (J-Link): ${name}` });
+      return 'flashed';
+    } catch (err) {
+      const msg = (err as Error)?.message ?? String(err);
+      appendLog({ direction: 'error', text: `J-Link flash failed (attempt ${attempts}): ${msg}` });
+      // One silent auto-retry: intermittent claim/enumeration races (Windows
+      // releasing the composite device, a previous session's lingering claim)
+      // routinely clear after a short settle — don't bother the user for those.
+      if (attempts === 1) {
+        await new Promise((r) => setTimeout(r, 1_200));
+        continue;
+      }
+      // Out of automatic options — ask via modal: retry again, download the
+      // hex for drag&drop onto the MINI drive, or give up. (Previously this
+      // was an inline hint the state roll-up could even swallow.)
+      leaveFlashState();
+      const choice = await awaitMini2FlashChoice(name, attempts, msg);
+      if (choice === 'retry') {
+        enterFlashState();
+        continue;
+      }
+      if (choice === 'download') {
+        downloadHexFile(hex, name);
+        return 'aborted';
+      }
+      updateState((s) => ({ ...s, usbErrorMessage: MINI2_JLINK_USB_HINT }));
+      return 'aborted';
+    }
+  }
+}
+
+/** Find an already-authorized SEGGER J-Link via getDevices() — no picker. */
+async function getAuthorizedJLinkDevice(): Promise<any | null> {
+  if (typeof navigator === 'undefined' || !('usb' in navigator)) return null;
+  const usb = (navigator as unknown as { usb: { getDevices(): Promise<any[]> } }).usb;
+  try {
+    const devices = await usb.getDevices();
+    return devices.find((d) => d.vendorId === SEGGER_JLINK_VENDOR_ID) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Flash a Calliope mini 2 that's already connected for comms (Web Serial). Its
+ * J-Link WebUSB device was authorized during connect, so reuse it via
+ * getDevices() — no re-prompt and no transport-choice modal. Falls back to the
+ * picker only if the grant somehow vanished.
+ */
+export async function flashConnectedMini2(hex: string, name: string): Promise<UsbFlashOutcome> {
+  let device = await getAuthorizedJLinkDevice();
+  if (!device) {
+    // Grant vanished (device unplugged / permissions cleared) — reflect that,
+    // then fall back to the picker.
+    clearJlinkUsb();
+    device = await requestCalliopeUsbDevice();
+    if (!isSeggerJLinkDevice(device)) {
+      updateState((s) => ({ ...s, usbStatus: 'disconnected' }));
+      return 'aborted';
+    }
+  }
+  return flashJLinkDevice(device, hex, name);
+}
+
+async function pickAndMaybeFlashJLink(hex: string, name: string): Promise<UsbFlashOutcome | null> {
+  const device = await requestCalliopeUsbDevice();
+  if (device === null) {
+    // Picker dismissed / nothing selected — a cancel, not a recoverable failure.
+    updateState((s) => ({ ...s, usbStatus: 'disconnected' }));
+    return 'aborted';
+  }
+  if (!isSeggerJLinkDevice(device)) {
+    // DAPLink (mini 1/3) — leave it authorized; the CMSIS-DAP path takes over.
+    return null;
+  }
+  return flashJLinkDevice(device, hex, name);
+}
+
+export interface UsbFlashOptions {
+  /**
+   * Skip the CMSIS-DAP partial flash and go straight to the DAPLink
+   * vendor-command full flash. Set for the Blocks runtime hex (see
+   * `FlashOptions.forceFullDfu` in flash.ts): its image is declared
+   * partial-unsafe, and the partial path's overlapped SWD/NVMC writes are
+   * exactly what produced the "dark display, shrinking changed-pages"
+   * multi-attempt failures.
+   */
+  forceFullDfu?: boolean;
+}
+
+export async function flashCalliopeViaUsb(hex: string, name: string, opts: UsbFlashOptions = {}): Promise<UsbFlashOutcome> {
   if (!SUPPORT.usb) {
     updateState((s) => ({ ...s, usbStatus: 'error', usbErrorMessage: 'WebUSB not supported — flashing requires USB' }));
-    return;
+    return 'unsupported';
   }
   let c: MicrobitUSBConnection;
   try {
     c = await getUsbConnection();
   } catch (err) {
     updateState((s) => ({ ...s, usbStatus: 'error', usbErrorMessage: (err as Error).message }));
-    return;
+    return 'aborted';
   }
   if (c.status !== ConnectionStatus.Connected) {
+    // Nothing connected yet → one combined picker that also lists mini 2 J-Link
+    // devices. A J-Link pick is flashed via SEGGER inside here; a DAPLink pick
+    // falls through (now authorized) to the CMSIS-DAP connect below.
+    const routed = await pickAndMaybeFlashJLink(hex, name);
+    if (routed) return routed;
     try {
       await connectWithRetry(c);
     } catch (err) {
       const classified = classifyUsbError(err);
       if (classified.kind === 'no-device') {
+        // User dismissed the picker / selected nothing — a cancel, not a
+        // recoverable failure. No recovery ladder, so drop the flash intent.
         updateState((s) => ({ ...s, usbStatus: 'disconnected' }));
-        return;
+        return 'aborted';
       }
       updateState((s) => ({ ...s, usbStatus: 'error', usbErrorMessage: classified.userMessage }));
-      if (classified.kind === 'device-in-use') {
-        showUsbErrorInfo('in-use', (err as Error)?.message ?? String(err ?? ''));
-      } else if (classified.kind === 'device-disconnected') {
-        showUsbErrorInfo('disconnected', (err as Error)?.message ?? String(err ?? ''));
+      if (classified.kind === 'device-in-use' || classified.kind === 'device-disconnected') {
+        // A cable/lock hiccup (common right after plugging in, before the OS
+        // releases the DAPLink endpoint). The recovery ladder is now armed —
+        // report 'deferred' so the caller keeps the flash intent pending and the
+        // transport-connected hook re-fires it once USB is back.
+        escalateUsbRecovery(classified.kind);
+        return 'deferred';
       }
-      return;
+      return 'aborted';
     }
   }
   // `c.connect()` resolves before the lib's internal status flips to
@@ -378,8 +748,10 @@ export async function flashCalliopeViaUsb(hex: string, name: string): Promise<vo
   appendLog({ direction: 'info', text: 'Pausing serial polling for flash' });
   await pauseSerialDataPolling();
 
+  flashByteTransferComplete = false;
+  let outcome: UsbFlashOutcome = 'flashed';
   try {
-    await runFlashWithTransferRetry(c, dataSource, progress);
+    await runFlashWithTransferRetry(c, dataSource, progress, opts);
     updateState((s) => ({
       ...s,
       flashTransport: undefined,
@@ -392,6 +764,44 @@ export async function flashCalliopeViaUsb(hex: string, name: string): Promise<vo
     // USB connection persists across flash (the lib reinitialises serial
     // automatically) — no manual reconnect needed.
   } catch (err) {
+    // The flash bytes were fully written but the library's post-flash
+    // adi.reinit() raced the target's reboot: its first SWD read returned
+    // TRANSFER_WAIT, and upstream's cleanup closed the USB transport while
+    // leaving connection.device dangling with status stuck at "Connected".
+    // Resuming serial against that half-dead handle is the "No device opened"
+    // the user hits — today only a manual Cancel + reconnect clears it. Do
+    // that automatically: bounce the same connection once the board is back,
+    // then let the finally re-arm serial on the healed handle.
+    if (flashByteTransferComplete && isPostFlashReinitRace(err)) {
+      appendLog({ direction: 'info', text: 'Flash OK; post-flash SWD reinit raced the reboot — auto-recovering USB' });
+      const recovered = await recoverUsbAfterFlashReboot(c, name);
+      if (recovered) {
+        // The throw may have escaped BEFORE the library's own post-partial
+        // cortexM.reset() ran — in that case the core is still parked at the
+        // flash-copy routine's bkpt and the display stays dark despite all
+        // bytes being on the board. Reset explicitly so the new program runs.
+        try {
+          await c.softwareReset();
+          appendLog({ direction: 'info', text: 'Post-recovery target reset issued' });
+        } catch (resetErr) {
+          appendLog({ direction: 'info', text: `Post-recovery reset failed (${(resetErr as Error).message}) — press the reset button if the display stays dark` });
+        }
+        updateState((s) => ({
+          ...s,
+          flashTransport: undefined,
+          flashProgress: undefined,
+          flashPhase: undefined,
+          flashPartial: undefined,
+          usbErrorMessage: undefined,
+          lastFlashAt: Date.now(),
+        }));
+        appendLog({ direction: 'info', text: `Flash finished: ${name}` });
+        return 'flashed';
+      }
+      // Recovery didn't take (board slow to boot / cable pulled) — fall
+      // through to the normal error state so the user can still recover
+      // manually with Cancel + reconnect.
+    }
     const classified = classifyUsbError(err);
     updateState((s) => ({
       ...s,
@@ -402,15 +812,28 @@ export async function flashCalliopeViaUsb(hex: string, name: string): Promise<vo
       flashPhase: undefined,
     }));
     appendLog({ direction: 'error', text: `Flash failed: ${(err as Error).message}` });
-    // Mirror the connect-path routing: the modal's Retry button is a
-    // real user gesture, so it can run `requestDevice` if the session
-    // was wiped.
-    if (classified.kind === 'device-in-use') {
-      showUsbErrorInfo('in-use', (err as Error)?.message ?? String(err ?? ''));
-    } else if (classified.kind === 'device-disconnected') {
-      showUsbErrorInfo('disconnected', (err as Error)?.message ?? String(err ?? ''));
+    // Mirror the connect-path routing: drive the banner's recovery ladder. The
+    // "Verbinden" rung is a real user gesture, so it can run `requestDevice` if
+    // the session was wiped. When the ladder is armed the flash is only
+    // deferred, not abandoned — report that so the caller keeps the intent
+    // pending and the transport-connected hook re-fires it after reconnect.
+    if (classified.kind === 'device-in-use' || classified.kind === 'device-disconnected') {
+      escalateUsbRecovery(classified.kind);
+      outcome = 'deferred';
+    } else {
+      outcome = 'aborted';
     }
   } finally {
+    // The flash reset the target, so ArmDebug's cached SWD state is stale: force
+    // the next Blocks-DAP scan to reinit the debug session rather than resume on
+    // the pre-flash mailbox / stale cache (else "exchange buffer not found" until
+    // a full reconnect). Must run BEFORE resume below — resume un-pauses the
+    // Blocks-DAP gate, and a queued frame could otherwise lazily restart the
+    // exchange loop on the stale session just for this to kill it mid-scan.
+    reinitBlocksDapAfterFlash();
+    // Same for the IoT channel: stale SWD cache, and the freshly flashed program
+    // may put its mailbox somewhere else (or not have one at all).
+    reinitIotAfterFlash();
     // Re-attach every subscriber. Upstream's eventActivated fires on the
     // first listener and starts polling again. Safe to call even when
     // the connection was wiped — `usbConn` may now be null and resume
@@ -419,6 +842,7 @@ export async function flashCalliopeViaUsb(hex: string, name: string): Promise<vo
     resumeSerialDataPolling();
     appendLog({ direction: 'info', text: 'Serial polling resumed' });
   }
+  return outcome;
 }
 
 /**
@@ -435,59 +859,73 @@ export async function flashCalliopeViaUsb(hex: string, name: string): Promise<vo
  *    dap.close races with an in-flight transferOut from the polling
  *    loop (the chatty-runtime case).
  *
- * Recovery: ONE retry. Bounce only if upstream still has its
- * `usbDevice` (status not yet flipped to NoAuthorizedDevice). When the
- * cancelled transferOut causes the OS to fire `usb.disconnect`,
- * upstream wipes `usbDevice` and any auto-reconnect would call
- * `requestDevice` — Chrome rejects that with `SecurityError: Must be
- * handling a user gesture`. In that case we surface the modal so the
- * user clicks Retry inside a gesture context.
+ * Recovery: up to 3 attempts with backoff (800ms, 1500ms, 2500ms).
+ * Windows USB sometimes needs multiple settle windows on back-to-back
+ * transients. Bails early when upstream's `usbDevice` is gone — that
+ * means the OS fired `usb.disconnect` and any reconnect needs a user
+ * gesture, which we don't have inside a flash() callback. The surrounding
+ * modal handles that case.
  */
+const TRANSFER_RETRY_SETTLE_MS = [800, 1500, 2500];
+
 async function runFlashWithTransferRetry(
   c: MicrobitUSBConnection,
   dataSource: FlashDataSource,
   progress: ProgressCallback,
+  opts: UsbFlashOptions = {},
 ): Promise<void> {
-  try {
-    await c.flash(dataSource, { partial: true, progress, minimumProgressIncrement: 0.05 });
-    return;
-  } catch (err) {
-    if (!isTransientUsbTransferError(err)) throw err;
-    // If upstream's `usb.disconnect` event already fired (OS-level USB
-    // reset triggered by the cancellation), `getDevice()` returns
-    // undefined. Re-connecting from here would need a user gesture
-    // (`requestDevice`), which we don't have inside a flash() callback.
-    // Skip the auto-retry and let the surrounding modal handle it.
-    if (!c.getDevice()) throw err;
-    appendLog({
-      direction: 'info',
-      text: `USB transfer error (${(err as Error).message}) — bouncing connection and retrying once`,
-    });
+  let lastErr: unknown = null;
+  for (let attempt = 0; attempt <= TRANSFER_RETRY_SETTLE_MS.length; attempt++) {
     try {
-      await c.disconnect();
-    } catch { /* ignore — we're about to reconnect anyway */ }
-    // Windows USB stack needs ~800ms to fully release the DAPLink
-    // endpoint after a cancellation. Coming back too fast hits the same
-    // cancelled-transferOut again.
-    await new Promise((r) => setTimeout(r, 800));
-    try {
-      await c.connect();
-    } catch (reconnectErr) {
-      throw new Error(
-        `USB transfer error; reconnect failed: ${(reconnectErr as Error).message}`,
-      );
+      if (attempt > 0) {
+        // Reset the UI flash phase between attempts so the progress bar
+        // doesn't jump backwards visually.
+        updateState((s) => ({ ...s, flashPhase: 'check', flashProgress: undefined }));
+      }
+      // Each pass is a fresh transfer — a stale completion flag from a pass
+      // that reached 100% and then died transiently must not launder a
+      // failure of THIS pass into reported success (the "dark display,
+      // shrinking changed-pages" bug).
+      flashByteTransferComplete = false;
+      await c.flash(dataSource, {
+        partial: !opts.forceFullDfu,
+        progress,
+        minimumProgressIncrement: 0.05,
+      });
+      return;
+    } catch (err) {
+      lastErr = err;
+      if (!isTransientUsbTransferError(err)) throw err;
+      // If upstream's `usb.disconnect` event fired, `getDevice()` returns
+      // undefined and a reconnect would need a user gesture. Bail out and
+      // let the surrounding modal handle it.
+      if (!c.getDevice()) throw err;
+      if (attempt >= TRANSFER_RETRY_SETTLE_MS.length) {
+        // Exhausted retries — propagate the last error.
+        throw err;
+      }
+      const settleMs = TRANSFER_RETRY_SETTLE_MS[attempt];
+      appendLog({
+        direction: 'info',
+        text: `USB transfer error #${attempt + 1} (${(err as Error).message}) — bouncing connection (settle ${settleMs}ms) and retrying`,
+      });
+      try {
+        await c.disconnect();
+      } catch { /* ignore — we're about to reconnect anyway */ }
+      await new Promise((r) => setTimeout(r, settleMs));
+      try {
+        await c.connect();
+      } catch (reconnectErr) {
+        throw new Error(
+          `USB transfer error; reconnect failed: ${(reconnectErr as Error).message}`,
+        );
+      }
+      // `c.connect()` returns before status flips to Connected. Without
+      // the wait, flash() throws "Must be connected now".
+      await waitForUsbConnected(c);
     }
-    // Same race as in `flashCalliopeViaUsb`: `c.connect()` returns before
-    // status flips to Connected. Without the wait, the lib's flash() throws
-    // "Must be connected now" and we'd surface that instead of the original
-    // transferOut error.
-    await waitForUsbConnected(c);
-    // Reset the UI flash phase — the lib starts the second attempt from
-    // scratch ("FindingDevice" → ...), so the progress bar would jump
-    // backwards if we left the previous percentage on screen.
-    updateState((s) => ({ ...s, flashPhase: 'check', flashProgress: undefined }));
-    await c.flash(dataSource, { partial: true, progress, minimumProgressIncrement: 0.05 });
   }
+  throw lastErr ?? new Error('USB flash failed after retries');
 }
 
 /**
@@ -516,6 +954,104 @@ function isTransientUsbTransferError(err: unknown): boolean {
     || /was cancelled|was canceled|aborted/i.test(msg)
     || name === 'AbortError'
   );
+}
+
+/**
+ * The distinctive throw when the library's post-flash `adi.reinit()` hits the
+ * target mid-reboot: a single-operation SWD debug-port read returns
+ * TRANSFER_WAIT — "Transfer WAIT (target busy, retries exhausted) at operation
+ * 0/1". We match WAIT + target-busy rather than the exact "0/1" so a wording
+ * tweak upstream doesn't silently disable recovery. Distinct from a mid-flash
+ * transfer error (those are `transferOut`/`transferIn` and handled by
+ * `runFlashWithTransferRetry`). Only acted on once the flash bytes completed.
+ */
+function isPostFlashReinitRace(err: unknown): boolean {
+  const msg = (err as Error)?.message ?? '';
+  return /transfer\s+wait/i.test(msg) && /target busy/i.test(msg);
+}
+
+/**
+ * Recover the USB connection after a full flash whose post-flash SWD reinit
+ * raced the reboot (see `flashCalliopeViaUsb`'s catch). Bounces the *same*
+ * connection instance — disconnect, wait for the freshly flashed board to
+ * finish booting, reconnect — WITHOUT clearing `usbConn`, so the serial-
+ * listener registry survives and the flash's `finally` re-arms serial on the
+ * healed handle (a manual Cancel does `clearUsbConn`, which wipes the registry
+ * and needs the higher layers to re-subscribe; the in-place bounce doesn't).
+ * The board reboots in well under 2 s, but the exact time varies, so retry
+ * across a few settle windows; each `c.connect()` re-runs SWD reinit and only
+ * succeeds once the target is actually up. Returns true when Connected.
+ */
+async function recoverUsbAfterFlashReboot(c: MicrobitUSBConnection, name: string): Promise<boolean> {
+  // Suppress the reboot-churn background-error toasts during the bounce.
+  markExpectedReboot(30_000);
+  updateState((s) => ({ ...s, flashPhase: 'reboot', flashProgress: undefined }));
+  const settleMs = [1200, 1200, 1800, 2500];
+  for (const settle of settleMs) {
+    await new Promise((r) => setTimeout(r, settle));
+    try { await c.disconnect(); } catch { /* transport already closed by the failed reinit — ignore */ }
+    try {
+      await c.connect();
+      await waitForUsbConnected(c);
+      appendLog({ direction: 'info', text: `USB reconnected after flash (${name})` });
+      return true;
+    } catch (e) {
+      appendLog({ direction: 'info', text: `Post-flash USB reconnect not ready yet: ${(e as Error).message}` });
+    }
+  }
+  return false;
+}
+
+// Single-flight guard for the DAPLink target-reset silent resume.
+let daplinkResumeActive = false;
+
+/**
+ * Silently recover the DAPLink USB connection after a TARGET reset (the mini's
+ * reset button). Mirrors web-serial.ts's `attemptSilentJlinkResume` for the
+ * CMSIS-DAP path: on the lib's `serialreset` event, bounce the SAME
+ * still-enumerated connection in place (disconnect → connect) so SWD + serial
+ * rebuild with NO picker and NO user gesture. Because `c.getDevice()` is still
+ * set, the lib's `connect()` takes its `device.reconnect()` branch.
+ *
+ * Guarded to fire only on a genuine unexpected drop: not during a user
+ * disconnect, not during a USB flash (that path has its own recovery), and
+ * only while the device is still enumerated and the lib still thinks it is
+ * Connected. Rebuilds the Blocks-DAP session on success so live comms resume
+ * on a fresh debug session rather than a stale ArmDebug handle.
+ */
+async function attemptSilentDaplinkResume(c: MicrobitUSBConnection): Promise<void> {
+  if (daplinkResumeActive) return;
+  const s = getState();
+  if (s.userDisconnectedUsb) return;          // user asked to disconnect — don't fight it
+  if (s.flashTransport === 'usb') return;      // flash owns recovery in its finally
+  if (!c.getDevice()) return;                  // usb.disconnect fired → needs a gesture
+  if (c.status !== ConnectionStatus.Connected) return;
+  daplinkResumeActive = true;
+  markExpectedReboot(15_000); // suppress reboot-churn toasts during the bounce
+  try {
+    const settleMs = [800, 1200, 1800, 2500];
+    for (const settle of settleMs) {
+      await new Promise((r) => setTimeout(r, settle));
+      if (getState().userDisconnectedUsb) return;
+      try { await c.disconnect(); } catch { /* already down — about to reconnect */ }
+      try {
+        await c.connect();
+        await waitForUsbConnected(c);
+        // The target reset invalidated ArmDebug's cached SWD state — force the
+        // Blocks-DAP and IoT loops to rebuild a fresh debug session, not resume
+        // stale.
+        reinitBlocksDapAfterFlash();
+        reinitIotAfterFlash();
+        appendLog({ direction: 'info', text: 'USB serial link resumed after target reset' });
+        return;
+      } catch (e) {
+        appendLog({ direction: 'info', text: `Post-reset USB resume not ready yet: ${(e as Error).message}` });
+      }
+    }
+    appendLog({ direction: 'info', text: 'USB did not resume after target reset — reconnect from the UI if needed' });
+  } finally {
+    daplinkResumeActive = false;
+  }
 }
 
 /**
@@ -583,8 +1119,57 @@ export async function forgetAllUsbDevices(): Promise<void> {
       usb: { getDevices(): Promise<{ vendorId: number; productId: number; forget?: () => Promise<void> }[]> };
     };
     const devices = await nav.usb.getDevices();
+    let forgotAny = false;
     for (const d of devices) {
-      if (d.vendorId !== 0x0d28 || d.productId !== 0x0204) continue;
+      // Forget both the standard DAPLink (CMSIS-DAP flash path) AND any SEGGER
+      // J-Link OB unit (Calliope Mini 2 interface chip, VID 0x1366). Without
+      // the J-Link case a paired Mini 2 keeps getting auto-attempted after the
+      // user clicked "Trennen & vergessen". The VID 0x1366 match covers every
+      // PID the J-Link picker (SEGGER_USB_FILTERS) can authorize, since they
+      // all share that vendor id.
+      const isDapLink = d.vendorId === 0x0d28 && d.productId === 0x0204;
+      const isJLink = d.vendorId === SEGGER_JLINK_VENDOR_ID;
+      if (!isJLink && !isDapLink) continue;
+      if (typeof d.forget === 'function') {
+        try { await d.forget(); forgotAny = true; } catch { /* ignore */ }
+      }
+    }
+    // On Windows the kernel needs a moment after `forget()` before it
+    // accepts a fresh `requestDevice` for the same VID/PID. Without this
+    // settle, the next user-initiated Connect can hit a "device not
+    // selected" or stale-handle error.
+    if (forgotAny) await new Promise((r) => setTimeout(r, 800));
+  } catch { /* ignore */ }
+}
+
+/**
+ * After the user picks a device in the "Verbinden" picker, forget every OTHER
+ * authorized Calliope USB device so exactly the picked one remains granted.
+ *
+ * Why: the connection is opened with `DeviceSelectionMode.UseAnyAllowed`, which
+ * connects to the FIRST authorized device — so with two Calliopes ever picked,
+ * "Verbinden" could silently reconnect the wrong one (the switch-devices bug).
+ * Pruning to the picked device makes UseAnyAllowed deterministic. The picked
+ * device is NOT forgotten, so its handle stays valid (no replug); the others
+ * were not connected, so forgetting them is harmless — they re-appear in the
+ * next picker. This keeps the UX at just "Verbinden" + "Trennen": one picker
+ * both connects and switches, with no separate "forget"/"other device" button.
+ */
+export async function forgetOtherUsbDevices(picked: unknown): Promise<void> {
+  if (typeof navigator === 'undefined' || !('usb' in navigator)) return;
+  const pickedSerial = (picked as { serialNumber?: string })?.serialNumber;
+  try {
+    const nav = navigator as unknown as {
+      usb: { getDevices(): Promise<{ vendorId: number; productId: number; serialNumber?: string; forget?: () => Promise<void> }[]> };
+    };
+    const devices = await nav.usb.getDevices();
+    for (const d of devices) {
+      const isDapLink = d.vendorId === 0x0d28 && d.productId === 0x0204;
+      const isJLink = d.vendorId === SEGGER_JLINK_VENDOR_ID;
+      if (!isJLink && !isDapLink) continue;
+      // Keep the just-picked device (match by serial when available, else by
+      // object identity) — forget the rest.
+      if (d === picked || (pickedSerial && d.serialNumber === pickedSerial)) continue;
       if (typeof d.forget === 'function') {
         try { await d.forget(); } catch { /* ignore */ }
       }
