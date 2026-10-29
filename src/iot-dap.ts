@@ -49,9 +49,10 @@ import { pushProxy } from './comms';
 import { IotMailbox, IOT_SEND_MAX, iotLineFits } from './iot-mailbox';
 import { wasExchangeSighted } from './ram-scan';
 import { getDapOwner, onDapOwnerChange, withDapBus } from './dap-arbiter';
+import { waitForDaplinkSwdRelease, type SwdGuardAdi } from './daplink-swd-guard';
 
 /** The slice of @microbit/microbit-connection's ArmDebug we use (same as blocks-dap.ts). */
-interface ArmDebugLike {
+interface ArmDebugLike extends SwdGuardAdi {
   readonly isOpen: boolean;
   /** Bring up the SWD debug port. Idempotent; does NOT halt or reset the core. */
   connect(maxRetries?: number): Promise<void>;
@@ -125,6 +126,9 @@ let wanted = false;
 // DP_SELECT/AP_CSW go stale; subsequent RAM reads fault and the scan finds
 // nothing until a full reconnect.
 let needsReinit = false;
+// Set by a mid-loop SWD fault: before that reinit, wait until DAPLink is not
+// holding the core halted (drag&drop flash — see daplink-swd-guard.ts).
+let faultReinit = false;
 let rescanTimer: ReturnType<typeof setTimeout> | null = null;
 /**
  * Bounded "try again" budget for a scan that found nothing. Refilled where a
@@ -213,11 +217,13 @@ function attemptRescan(armed: boolean): void {
  *  successful bring-up so a still-rebooting device retries reinit next scan. */
 async function ensureSwd(adi: ArmDebugLike): Promise<void> {
   if (needsReinit && typeof adi.reinit === 'function') {
+    if (faultReinit) await waitForDaplinkSwdRelease(adi);
     await adi.reinit();
   } else {
     await adi.connect();
   }
   needsReinit = false;
+  faultReinit = false;
 }
 
 /** True once the exchange mailbox has been located on the connected device. */
@@ -526,6 +532,7 @@ async function runLoop(): Promise<void> {
     // still-rebooting target.
     scanCooldownUntil = Date.now() + 1500;
     needsReinit = true;
+    faultReinit = true;
     // The program restarts from scratch after a reset, so its struct is built
     // (and its magic written) all over again — a fresh retry series, not one
     // shot.
