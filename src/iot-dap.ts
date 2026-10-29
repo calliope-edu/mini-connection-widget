@@ -315,6 +315,7 @@ export async function sendIotLine(line: string): Promise<boolean> {
   // silently corrupt pages (TAR clobber). resumeIotExchange() kicks the drain
   // once the flash window closes.
   if (!loopActive && !paused && Date.now() >= scanCooldownUntil) void runLoop();
+  return true;
 }
 
 /**

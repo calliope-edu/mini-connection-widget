@@ -1,3 +1,4 @@
+/// <reference types="w3c-web-usb" />
 /**
  * SEGGER J-Link USB transport + MSD-image-program flash for Calliope mini v2.
  *
