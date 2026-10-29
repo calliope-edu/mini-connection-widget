@@ -9,9 +9,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # pnpm 10 writes the patchedDependencies hash as sha256; pnpm 9 computes
+      # a different one and rejects the lockfile with LOCKFILE_CONFIG_MISMATCH.
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 10
       - uses: actions/setup-node@v4
         with:
           node-version: 24
