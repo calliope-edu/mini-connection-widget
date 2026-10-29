@@ -4,6 +4,7 @@
   "description": "High-level Calliope mini connection orchestration on top of @microbit/microbit-connection — simultaneous USB+BLE tracking, smart picker recovery, stale-bond detection, automatic flash routing, and a framework-agnostic store. UI widget arrives in a future release.",
   "type": "module",
   "license": "MIT",
+  "packageManager": "pnpm@10.11.1",
   "repository": {
     "type": "git",
     "url": "https://github.com/calliope-edu/mini-connection-widget.git"
