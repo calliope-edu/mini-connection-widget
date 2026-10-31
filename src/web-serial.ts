@@ -21,7 +21,7 @@
 import { updateState, getState } from './state';
 import { appendLog } from './log';
 import { pushRx } from './comms';
-import { SEGGER_JLINK_VENDOR_ID } from './connection-errors';
+import { SEGGER_JLINK_VENDOR_ID, connectionError } from './connection-errors';
 import { BlocksFrameParser } from './blocks-frame';
 import { noteBlocksFrame } from './blocks-liveness';
 
@@ -102,12 +102,12 @@ async function doConnectJLinkSerial(
     updateState((s) => ({
       ...s,
       jlinkSerialStatus: 'error',
-      usbErrorMessage: 'Web Serial wird in diesem Browser nicht unterstützt (für Calliope mini 2 nötig).',
+      usbError: connectionError('usb-serial-unsupported'),
     }));
     return 'unsupported';
   }
   if (getState().jlinkSerialStatus === 'connected') return 'connected';
-  updateState((s) => ({ ...s, usbErrorMessage: undefined }));
+  updateState((s) => ({ ...s, usbError: undefined }));
   try {
     // Silent resume: a previously-granted port needs no picker (and no user
     // gesture) — this is what re-links serial after a re-plug or page reload.

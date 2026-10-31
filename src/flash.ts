@@ -21,7 +21,7 @@ import { BluetoothDfuServiceMissingError } from './ble-dfu-web';
 import { detectHexRamClass, inspectHex, type HexFlavor } from './hex-inspect';
 import { awaitMini12VersionAnswer } from './mini12-version-ask';
 import { downloadHexFile } from './helpers';
-import { clearExpectedReboot, markExpectedReboot } from './connection-errors';
+import { clearExpectedReboot, connectionError, markExpectedReboot } from './connection-errors';
 import { showBleOfflineInfo } from './ble-offline-info';
 import { isNativeMode } from './native-bridge';
 import { nativeFlash } from './native-mode';
@@ -153,14 +153,14 @@ async function flashDispatch(
     s.usbStatus !== 'connected'
   ) {
     flashLog('Flash requested but BLE not connected — trying silent reconnect with cached device');
-    updateState((st) => ({ ...st, bleStatus: 'connecting', bleErrorMessage: undefined }));
+    updateState((st) => ({ ...st, bleStatus: 'connecting', bleError: undefined }));
     // Gesture-free reconnect: must not pop a chooser here (this is meant to be
     // silent), so never call requestDevice().
     const silent = await reconnectBleIfPermitted();
     if (silent === 'connected') {
       flashLog('Silent BLE reconnect succeeded');
     } else {
-      updateState((st) => ({ ...st, bleStatus: 'disconnected', bleErrorMessage: undefined }));
+      updateState((st) => ({ ...st, bleStatus: 'disconnected', bleError: undefined }));
       flashLog(`Silent BLE reconnect: ${silent === 'no-device' ? 'no cached device available' : 'connect error'} — continuing to dispatcher`);
     }
     s = getState();
@@ -275,8 +275,7 @@ async function flashDispatch(
       }
       updateState((st) => ({
         ...st,
-        bleErrorMessage:
-          'Übertragung per Bluetooth fehlgeschlagen und kein USB verfügbar — bitte ein BLE-fähiges Programm übertragen (A+B halten und Reset drücken, dann erneut versuchen).',
+        bleError: connectionError('ble-flash-failed-no-usb'),
       }));
       return;
     }
@@ -525,8 +524,7 @@ async function confirmRamFitForBleFlash(hex: string, name: string): Promise<bool
   const refuse = () => {
     updateState((st) => ({
       ...st,
-      bleErrorMessage:
-        'Dieses Programm benötigt 32 KB RAM und läuft nur auf dem Calliope mini 2 — auf dem Calliope mini 1 kann es nicht starten.',
+      bleError: connectionError('ble-needs-mini2'),
     }));
     flashLog(`RAM-fit gate: refused 32kb hex "${name}" for mini 1`);
     return false;
@@ -673,10 +671,7 @@ async function scheduleBleReconnect(): Promise<void> {
     });
     updateState((st) => ({
       ...st,
-      bleErrorMessage:
-        'Nach dem Übertragen ist keine Bluetooth-Verbindung zurückgekommen. Wenn dein Programm kein Bluetooth einschaltet '
-        + '(z. B. MakeCode auf Mini 1, ein Radio-Programm, oder MicroPython auf Mini 1/2), halte A+B gedrückt und drücke Reset, '
-        + 'um Bluetooth wieder zu starten.',
+      bleError: connectionError('ble-not-back-after-flash'),
     }));
     showBleOfflineInfo();
   } else {
@@ -695,7 +690,7 @@ async function flashCalliopeHybrid(
   opts: FlashOptions = {},
 ): Promise<UsbFlashOutcome> {
   if (!SUPPORT.usb) {
-    updateState((s) => ({ ...s, usbStatus: 'error', usbErrorMessage: 'Hybrid mode needs WebUSB' }));
+    updateState((s) => ({ ...s, usbStatus: 'error', usbError: connectionError('usb-unsupported') }));
     return 'unsupported';
   }
   // Record the user's flash intent up front. If the USB connect then fails and

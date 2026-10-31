@@ -10,6 +10,7 @@
 import { sendNative, addNativeGattListener } from './native-bridge';
 import { calliopeState, updateState, getState, type CalliopeTransport } from './state';
 import { appendLog } from './log';
+import { connectionError, connectionErrorMessage } from './connection-errors';
 import { pushTx } from './comms';
 
 // ---- Connect / disconnect --------------------------------------------------
@@ -17,8 +18,8 @@ import { pushTx } from './comms';
 export async function nativeConnect(transport: CalliopeTransport): Promise<void> {
   updateState((s) =>
     transport === 'ble'
-      ? { ...s, bleStatus: 'connecting', bleErrorMessage: undefined, userDisconnectedBle: false }
-      : { ...s, usbStatus: 'connecting', usbErrorMessage: undefined, userDisconnectedUsb: false },
+      ? { ...s, bleStatus: 'connecting', bleError: undefined, userDisconnectedBle: false }
+      : { ...s, usbStatus: 'connecting', usbError: undefined, userDisconnectedUsb: false },
   );
   try {
     await sendNative<void>('connect', { transport });
@@ -27,8 +28,8 @@ export async function nativeConnect(transport: CalliopeTransport): Promise<void>
     appendLog({ direction: 'error', text: `native connect ${transport} failed: ${msg}` });
     updateState((s) =>
       transport === 'ble'
-        ? { ...s, bleStatus: 'error', bleErrorMessage: msg }
-        : { ...s, usbStatus: 'error', usbErrorMessage: msg },
+        ? { ...s, bleStatus: 'error', bleError: connectionErrorMessage('ble', msg) ?? connectionError('ble-unknown') }
+        : { ...s, usbStatus: 'error', usbError: connectionErrorMessage('usb', msg) ?? connectionError('usb-unknown') },
     );
   }
 }
@@ -48,7 +49,7 @@ export async function nativeDisconnectAndForget(transport: CalliopeTransport): P
         ...s,
         usbStatus: 'disconnected',
         usbDeviceName: undefined,
-        usbErrorMessage: undefined,
+        usbError: undefined,
         userDisconnectedUsb: true,
         friendlyName: s.bleStatus === 'connected' ? s.friendlyName : undefined,
       };
@@ -57,7 +58,7 @@ export async function nativeDisconnectAndForget(transport: CalliopeTransport): P
       ...s,
       bleStatus: 'disconnected',
       bleDeviceName: undefined,
-      bleErrorMessage: undefined,
+      bleError: undefined,
       bleHasPermission: false,
       bleCanFlash: false,
       bleCanCommunicate: false,

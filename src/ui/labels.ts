@@ -17,6 +17,7 @@
  */
 
 import { writable, type Readable } from '../store';
+import type { ConnectionError, ConnectionErrorCode } from '../connection-errors';
 
 export interface ConnectLabels {
   // ---- Shared ------------------------------------------------------------
@@ -115,6 +116,31 @@ export interface ConnectLabels {
   appModeConnecting: string;
   /** Status string when the native host's BLE session is connected. */
   appModeConnected: string;
+
+  // ---- Connection errors (ConnectionPanel) --------------------------------
+  // One key per `ConnectionErrorCode` the connection layer puts into
+  // `calliopeState.usbError` / `bleError`; `CONNECTION_ERROR_LABELS` maps the
+  // codes onto them. A native host's own message is shown as it comes.
+  errorBleUnsupported: string;
+  errorBleFailed: string;
+  errorBleDfuBootloader: string;
+  errorBleRuntimeMismatch: string;
+  errorBleNoPartialFlashing: string;
+  errorBleHexNotFlashable: string;
+  errorBleFlashAborted: string;
+  errorBleFlashFailedNoUsb: string;
+  errorBleNeedsMini2: string;
+  errorBleNotBackAfterFlash: string;
+  errorBleUnknown: string;
+  errorUsbUnsupported: string;
+  errorUsbDeviceInUse: string;
+  errorUsbInterrupted: string;
+  errorUsbSessionLost: string;
+  errorUsbTransferFailed: string;
+  errorUsbNotReady: string;
+  errorUsbMini2Jlink: string;
+  errorUsbSerialUnsupported: string;
+  errorUsbUnknown: string;
 
   // ---- Name pattern (MiniNamePattern, PatternPad) -------------------------
   namePattern: (p: { name: string }) => string;
@@ -303,6 +329,36 @@ export const DEFAULT_LABELS: ConnectLabels = {
   appModeConnecting: 'über App – verbinde…',
   appModeConnected: 'über App – verbunden',
 
+  errorBleUnsupported: 'Web Bluetooth wird in diesem Browser nicht unterstützt.',
+  errorBleFailed: 'Bluetooth-Verbindung fehlgeschlagen — wir versuchen es weiter.',
+  errorBleDfuBootloader: 'Calliope ist im DFU-Bootloader. Reset drücken, um zurück in die Anwendung zu kommen.',
+  errorBleRuntimeMismatch: 'Runtime auf dem Calliope passt nicht zum Programm — bitte einmal per USB vollständig übertragen.',
+  errorBleNoPartialFlashing: 'Calliope läuft gerade ohne Partial-Flashing-Service — einmal per USB ein MakeCode-Programm übertragen.',
+  errorBleHexNotFlashable: 'Dieses Programm kann nicht über BLE übertragen werden (kein MakeCode-Marker).',
+  errorBleFlashAborted: 'Übertragung abgebrochen.',
+  errorBleFlashFailedNoUsb:
+    'Übertragung per Bluetooth fehlgeschlagen und kein USB verfügbar — bitte ein BLE-fähiges ' +
+    'Programm übertragen (A+B halten und Reset drücken, dann erneut versuchen).',
+  errorBleNeedsMini2:
+    'Dieses Programm benötigt 32 KB RAM und läuft nur auf dem Calliope mini 2 — auf dem ' +
+    'Calliope mini 1 kann es nicht starten.',
+  errorBleNotBackAfterFlash:
+    'Nach dem Übertragen ist keine Bluetooth-Verbindung zurückgekommen. Wenn dein Programm kein ' +
+    'Bluetooth einschaltet (z. B. MakeCode auf Mini 1, ein Radio-Programm, oder MicroPython auf ' +
+    'Mini 1/2), halte A+B gedrückt und drücke Reset, um Bluetooth wieder zu starten.',
+  errorBleUnknown: 'Unbekannter Bluetooth-Fehler.',
+  errorUsbUnsupported: 'WebUSB wird in diesem Browser nicht unterstützt.',
+  errorUsbDeviceInUse: 'Calliope wird gerade von einem anderen Tab oder Programm benutzt.',
+  errorUsbInterrupted: 'USB-Verbindung war kurz unterbrochen — bitte erneut verbinden.',
+  errorUsbSessionLost: 'USB-Sitzung verloren — bitte erneut verbinden.',
+  errorUsbTransferFailed: 'USB-Übertragung wiederholt fehlgeschlagen — bitte USB-Kabel kurz abziehen und neu einstecken.',
+  errorUsbNotReady: 'USB-Verbindung noch nicht bereit — bitte einen Moment warten und erneut probieren.',
+  errorUsbMini2Jlink:
+    'Auf den Calliope mini 2 (J-Link) kann über den Standard-USB-Weg nicht übertragen werden. ' +
+    'Bitte die .hex-Datei herunterladen und auf das Calliope-Laufwerk ziehen.',
+  errorUsbSerialUnsupported: 'Web Serial wird in diesem Browser nicht unterstützt (für Calliope mini 2 nötig).',
+  errorUsbUnknown: 'Unbekannter USB-Fehler.',
+
   namePattern: ({ name }) => `Calliope-Muster ${name}`,
   patternCell: ({ column, height }) => `Spalte ${column}, Höhe ${height}`,
 
@@ -465,6 +521,38 @@ function withoutUndefined(o: Partial<ConnectLabels>): Partial<ConnectLabels> {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(o)) if (v !== undefined) out[k] = v;
   return out as Partial<ConnectLabels>;
+}
+
+/** The label key that words each `ConnectionErrorCode`. */
+export const CONNECTION_ERROR_LABELS: Record<ConnectionErrorCode, Extract<keyof ConnectLabels, `error${string}`>> = {
+  'ble-unsupported': 'errorBleUnsupported',
+  'ble-failed': 'errorBleFailed',
+  'ble-dfu-bootloader': 'errorBleDfuBootloader',
+  'ble-runtime-mismatch': 'errorBleRuntimeMismatch',
+  'ble-no-partial-flashing': 'errorBleNoPartialFlashing',
+  'ble-hex-not-flashable': 'errorBleHexNotFlashable',
+  'ble-flash-aborted': 'errorBleFlashAborted',
+  'ble-flash-failed-no-usb': 'errorBleFlashFailedNoUsb',
+  'ble-needs-mini2': 'errorBleNeedsMini2',
+  'ble-not-back-after-flash': 'errorBleNotBackAfterFlash',
+  'ble-unknown': 'errorBleUnknown',
+  'usb-unsupported': 'errorUsbUnsupported',
+  'usb-device-in-use': 'errorUsbDeviceInUse',
+  'usb-interrupted': 'errorUsbInterrupted',
+  'usb-session-lost': 'errorUsbSessionLost',
+  'usb-transfer-failed': 'errorUsbTransferFailed',
+  'usb-not-ready': 'errorUsbNotReady',
+  'usb-mini2-jlink': 'errorUsbMini2Jlink',
+  'usb-serial-unsupported': 'errorUsbSerialUnsupported',
+  'usb-unknown': 'errorUsbUnknown',
+};
+
+/**
+ * The text for a connection error: a ready-made `message` (raw browser
+ * error, native host) as it is, otherwise the label for its code.
+ */
+export function connectionErrorText(labels: ConnectLabels, error: ConnectionError): string {
+  return error.message || labels[CONNECTION_ERROR_LABELS[error.code]];
 }
 
 /** A run of a label's text; `param` names the placeholder it was filled from. */

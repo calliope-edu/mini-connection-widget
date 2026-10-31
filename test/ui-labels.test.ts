@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { render } from 'svelte/server';
 
 import {
+  CONNECTION_ERROR_LABELS,
   DEFAULT_LABELS,
+  connectionErrorText,
   connectLabels,
   labelParts,
   mergeLabels,
@@ -236,5 +238,54 @@ test('ConnectionPanel: the labels prop wins over the registry', () => {
     assert.match(html(ConnectionPanel, props), /aria-label="Column 1, height 5"/);
   } finally {
     updateState((s) => ({ ...s, bleStatus: 'unsupported', bleSupported: false }));
+  }
+});
+
+// ---- Connection errors --------------------------------------------------------
+
+test('ConnectionPanel words the connection errors through the labels', () => {
+  const errors = { usbError: { code: 'usb-device-in-use' }, bleError: { code: 'ble-failed' } } as const;
+  updateState((s) => ({ ...s, usbStatus: 'error', bleStatus: 'error', usbSupported: true, bleSupported: true, ...errors }));
+  try {
+    shows(
+      text(ConnectionPanel),
+      ['Calliope wird gerade von einem anderen Tab oder Programm benutzt.', 'Bluetooth-Verbindung fehlgeschlagen'],
+      [],
+    );
+    setConnectLabels(EN_LABELS);
+    shows(
+      text(ConnectionPanel),
+      ['USB: The Calliope is being used by another tab or program.', 'BLE: Bluetooth connection failed — we keep trying.'],
+      ['anderen Tab oder Programm', 'Bluetooth-Verbindung fehlgeschlagen'],
+    );
+  } finally {
+    updateState((s) => ({
+      ...s,
+      usbStatus: 'unsupported',
+      bleStatus: 'unsupported',
+      usbSupported: false,
+      bleSupported: false,
+      usbError: undefined,
+      bleError: undefined,
+    }));
+  }
+});
+
+test('a native host message comes ready-made and is shown as it is', () => {
+  setConnectLabels(EN_LABELS);
+  updateState((s) => ({ ...s, bleStatus: 'error', bleError: { code: 'ble-unknown', message: 'Bluetooth ist aus.' } }));
+  try {
+    assert.ok(text(ConnectionPanel).includes('BLE: Bluetooth ist aus.'));
+  } finally {
+    updateState((s) => ({ ...s, bleStatus: 'unsupported', bleError: undefined }));
+  }
+});
+
+test('every error code has a German default and an English label', () => {
+  for (const [code, key] of Object.entries(CONNECTION_ERROR_LABELS)) {
+    const de = connectionErrorText(DEFAULT_LABELS, { code: code as keyof typeof CONNECTION_ERROR_LABELS });
+    const en = connectionErrorText(EN_LABELS, { code: code as keyof typeof CONNECTION_ERROR_LABELS });
+    assert.ok(de.length > 0 && en.length > 0, code);
+    assert.notEqual(de, en, `${key} is not translated`);
   }
 });

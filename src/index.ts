@@ -252,11 +252,20 @@ export type { Parsed, ParsedHeader, ParsedRow, ParsedSeparator } from './log-par
 export { extractFriendlyName, friendlyNameToPattern, patternToFriendlyName, friendlyNameFromDeviceId } from './friendly-name';
 // Mini 2 (J-Link) USB guidance primitives — hosts that learn a connected
 // device's USB vendor id can swap a confusing CMSIS-DAP failure for the
-// download+drag hint. Full WebUSB J-Link routing stays in segger-jlink.ts.
-export { SEGGER_JLINK_VENDOR_ID, MINI2_JLINK_USB_HINT, usbHintForVendorId } from './connection-errors';
+// download+drag hint (a `ConnectionError`, worded through the labels). Full WebUSB J-Link routing stays in segger-jlink.ts.
+export { SEGGER_JLINK_VENDOR_ID, usbHintForVendorId } from './connection-errors';
+export type { ConnectionError, ConnectionErrorCode } from './connection-errors';
 // UI labels (German defaults). `setConnectLabels` reaches every component in
 // src/ui, the host-mounted banner and modals included — see README "Labels".
-export { DEFAULT_LABELS, mergeLabels, setConnectLabels, connectLabels, labelParts } from './ui/labels';
+export {
+  DEFAULT_LABELS,
+  mergeLabels,
+  setConnectLabels,
+  connectLabels,
+  labelParts,
+  CONNECTION_ERROR_LABELS,
+  connectionErrorText,
+} from './ui/labels';
 export type { ConnectLabels, LabelPart } from './ui/labels';
 
 // ---- Native-proxy bridge --------------------------------------------------
