@@ -31,6 +31,7 @@
 
 import { updateState, NATIVE_MODE, type CalliopeState, type CalliopeFlashPhase, type CalliopeTransport } from './state';
 import { appendLog } from './log';
+import { connectionErrorMessage } from './connection-errors';
 import { showBleOfflineInfo } from './ble-offline-info';
 
 // ---- Detection -------------------------------------------------------------
@@ -234,12 +235,12 @@ function applyStateEvent(d: StateEventData): void {
     if (d.transport === 'usb') {
       if (d.status !== undefined) next.usbStatus = d.status;
       if (d.deviceName !== undefined) next.usbDeviceName = d.deviceName;
-      if (d.errorMessage !== undefined) next.usbErrorMessage = d.errorMessage || undefined;
+      if (d.errorMessage !== undefined) next.usbError = connectionErrorMessage('usb', d.errorMessage);
       if (d.status === 'connected') next.userDisconnectedUsb = false;
     } else if (d.transport === 'ble') {
       if (d.status !== undefined) next.bleStatus = d.status;
       if (d.deviceName !== undefined) next.bleDeviceName = d.deviceName;
-      if (d.errorMessage !== undefined) next.bleErrorMessage = d.errorMessage || undefined;
+      if (d.errorMessage !== undefined) next.bleError = connectionErrorMessage('ble', d.errorMessage);
       if (d.bleCanFlash !== undefined) next.bleCanFlash = d.bleCanFlash;
       if (d.bleCanCommunicate !== undefined) next.bleCanCommunicate = d.bleCanCommunicate;
       if (d.bleHasPermission !== undefined) next.bleHasPermission = d.bleHasPermission;

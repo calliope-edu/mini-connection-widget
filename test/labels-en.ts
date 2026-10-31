@@ -78,6 +78,36 @@ export const EN_LABELS: ConnectLabels = {
   appModeConnecting: 'via app – connecting…',
   appModeConnected: 'via app – connected',
 
+  errorBleUnsupported: 'Web Bluetooth is not supported in this browser.',
+  errorBleFailed: 'Bluetooth connection failed — we keep trying.',
+  errorBleDfuBootloader: 'The Calliope is in the DFU bootloader. Press reset to get back to the program.',
+  errorBleRuntimeMismatch: "The runtime on the Calliope doesn't match the program — please do one full transfer over USB.",
+  errorBleNoPartialFlashing: 'The Calliope is running without the partial-flashing service — transfer a MakeCode program over USB once.',
+  errorBleHexNotFlashable: "This program can't be transferred over Bluetooth (no MakeCode marker).",
+  errorBleFlashAborted: 'Transfer cancelled.',
+  errorBleFlashFailedNoUsb:
+    'Transfer over Bluetooth failed and USB is not available — please transfer a Bluetooth-capable ' +
+    'program (hold A+B and press reset, then try again).',
+  errorBleNeedsMini2:
+    'This program needs 32 KB of RAM and only runs on the Calliope mini 2 — it cannot start ' +
+    'on a Calliope mini 1.',
+  errorBleNotBackAfterFlash:
+    'The Bluetooth connection did not come back after the transfer. If your program does not turn ' +
+    'on Bluetooth (e.g. MakeCode on mini 1, a radio program, or MicroPython on mini 1/2), hold ' +
+    'A+B and press reset to start Bluetooth again.',
+  errorBleUnknown: 'Unknown Bluetooth error.',
+  errorUsbUnsupported: 'WebUSB is not supported in this browser.',
+  errorUsbDeviceInUse: 'The Calliope is being used by another tab or program.',
+  errorUsbInterrupted: 'The USB connection was briefly interrupted — please connect again.',
+  errorUsbSessionLost: 'USB session lost — please connect again.',
+  errorUsbTransferFailed: 'The USB transfer failed repeatedly — please unplug the USB cable briefly and plug it back in.',
+  errorUsbNotReady: 'The USB connection is not ready yet — please wait a moment and try again.',
+  errorUsbMini2Jlink:
+    "The Calliope mini 2 (J-Link) can't be programmed over the standard USB route. " +
+    'Please download the .hex file and drag it onto the Calliope drive.',
+  errorUsbSerialUnsupported: 'Web Serial is not supported in this browser (needed for the Calliope mini 2).',
+  errorUsbUnknown: 'Unknown USB error.',
+
   namePattern: ({ name }) => `Calliope pattern ${name}`,
   patternCell: ({ column, height }) => `Column ${column}, height ${height}`,
 

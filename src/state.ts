@@ -2,6 +2,7 @@ import type { BoardVersion } from '@microbit/microbit-connection';
 import type { CalliopeVersion } from './helpers';
 import type { CalliopeProgramType } from './program-type';
 import type { BleSessionKind } from './ble-state';
+import type { ConnectionError } from './connection-errors';
 import { writable, type Readable } from './store';
 
 /** Physical channel carrying serial / flashing. Both can be open at once. */
@@ -27,7 +28,10 @@ export interface CalliopeState {
   // ---- Per-transport state. USB and BLE are tracked independently. ----
   usbStatus: CalliopeStatus;
   usbDeviceName?: string;
-  usbErrorMessage?: string;
+  /** Last USB-family error, as a code the UI words through `ConnectLabels`
+   *  (see `ConnectionErrorCode`); `message` set when the text came ready-made
+   *  (a raw browser error, a native host). */
+  usbError?: ConnectionError;
 
   /**
    * Calliope mini 2 comms over Web Serial (the J-Link OB's CDC port). Tracked
@@ -52,7 +56,8 @@ export interface CalliopeState {
 
   bleStatus: CalliopeStatus;
   bleDeviceName?: string;
-  bleErrorMessage?: string;
+  /** Last Bluetooth error — same shape as `usbError`. */
+  bleError?: ConnectionError;
   /** Browser remembers a previously-permitted BLE device for this origin —
    *  i.e. `navigator.bluetooth.getDevices()` would return at least one
    *  Calliope. Refreshed on init and after every successful `connect()`.
@@ -234,18 +239,18 @@ function recomputeOverall(s: CalliopeState): CalliopeState {
   // transport the user is actively on are kept: those transports never sit at
   // `'connected'`, so we only ever clear the idle one's message here.
   if (status === 'connected' || status === 'flashing') {
-    // `usbErrorMessage` is shared by the whole USB family (DAPLink, mini 2
+    // `usbError` is shared by the whole USB family (DAPLink, mini 2
     // J-Link flash, mini 2 CDC serial) — only treat it as an idle-transport
     // background error when NONE of them is connected. Without this, a mini 2
     // flash failure would be silently cleared because `usbStatus` (DAPLink)
     // sits at 'disconnected' while the J-Link links are up.
     const usbFamilyConnected =
       s.usbStatus === 'connected' || s.jlinkSerialStatus === 'connected' || s.jlinkUsbStatus === 'connected';
-    if (!usbFamilyConnected && s.usbErrorMessage !== undefined) {
-      s = { ...s, usbErrorMessage: undefined };
+    if (!usbFamilyConnected && s.usbError !== undefined) {
+      s = { ...s, usbError: undefined };
     }
-    if (s.bleStatus !== 'connected' && s.bleErrorMessage !== undefined) {
-      s = { ...s, bleErrorMessage: undefined };
+    if (s.bleStatus !== 'connected' && s.bleError !== undefined) {
+      s = { ...s, bleError: undefined };
     }
   }
 

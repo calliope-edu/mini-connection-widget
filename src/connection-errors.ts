@@ -35,15 +35,70 @@ export type UsbErrorKind =
   | 'unsupported'        // no WebUSB
   | 'unknown';
 
+/**
+ * Every error the widget itself puts on screen, by what went wrong rather
+ * than as a finished sentence: the UI turns `code` into text through the
+ * `ConnectLabels` key `CONNECTION_ERROR_LABELS[code]` (German by default), so
+ * a host's translation reaches these messages too.
+ *
+ * Codes are per transport (`calliopeState.usbError` / `bleError`) and finer
+ * than the classifier's `kind` — `device-disconnected` alone has two wordings.
+ */
+export type ConnectionErrorCode =
+  // ---- Bluetooth ----
+  | 'ble-unsupported'            // no Web Bluetooth in this browser
+  | 'ble-failed'                 // connect failed; the daemon keeps trying
+  | 'ble-dfu-bootloader'         // device sits in the DFU bootloader
+  | 'ble-runtime-mismatch'       // partial flash: runtime doesn't match the program
+  | 'ble-no-partial-flashing'    // partial-flashing service missing
+  | 'ble-hex-not-flashable'      // hex has no MakeCode marker
+  | 'ble-flash-aborted'          // transfer cancelled
+  | 'ble-flash-failed-no-usb'    // BLE flash failed, no WebUSB to fall back to
+  | 'ble-needs-mini2'            // 32 KB hex refused for a mini 1
+  | 'ble-not-back-after-flash'   // BLE didn't return after flashing
+  | 'ble-unknown'                // raw error in `message`
+  // ---- USB (DAPLink, mini 2 J-Link, mini 2 Web Serial) ----
+  | 'usb-unsupported'            // no WebUSB in this browser
+  | 'usb-device-in-use'          // another tab/process holds the DAPLink
+  | 'usb-interrupted'            // stale USBDevice handle — reconnect
+  | 'usb-session-lost'           // picker refused outside a user gesture
+  | 'usb-transfer-failed'        // repeated transfer errors — replug
+  | 'usb-not-ready'              // flash() before connect() resolved
+  | 'usb-mini2-jlink'            // mini 2 J-Link: download + drag instead
+  | 'usb-serial-unsupported'     // no Web Serial (mini 2 comms)
+  | 'usb-unknown';               // raw error in `message`
+
+export interface ConnectionError {
+  code: ConnectionErrorCode;
+  /** Text that arrives ready-made — a raw browser error the classifier
+   *  doesn't recognise, or a native host's own (already localised) message.
+   *  Shown verbatim instead of the code's label. */
+  message?: string;
+}
+
 export interface ClassifiedBleError {
   kind: BleErrorKind;
-  /** German user-facing message — what to show as `bleErrorMessage`. */
-  userMessage: string;
+  /** What to put into `calliopeState.bleError`; absent for `aborted`. */
+  error?: ConnectionError;
 }
 
 export interface ClassifiedUsbError {
   kind: UsbErrorKind;
-  userMessage: string;
+  /** What to put into `calliopeState.usbError`; absent for `no-device`. */
+  error?: ConnectionError;
+}
+
+/** A widget-raised error: just the code, worded by the UI. */
+export function connectionError(code: ConnectionErrorCode): ConnectionError {
+  return { code };
+}
+
+/** A raw/native message on `transport`, shown as-is. Empty → `undefined`. */
+export function connectionErrorMessage(
+  transport: 'usb' | 'ble',
+  message: string | undefined,
+): ConnectionError | undefined {
+  return message ? { code: transport === 'usb' ? 'usb-unknown' : 'ble-unknown', message } : undefined;
 }
 
 export function classifyBleError(err: unknown): ClassifiedBleError {
@@ -53,22 +108,16 @@ export function classifyBleError(err: unknown): ClassifiedBleError {
     switch (err.code) {
       case 'no-device-selected':
       case 'aborted':
-        return { kind: 'aborted', userMessage: '' };
+        return { kind: 'aborted' };
       case 'unsupported':
-        return {
-          kind: 'unsupported',
-          userMessage: 'Web Bluetooth wird in diesem Browser nicht unterstützt.',
-        };
+        return { kind: 'unsupported', error: connectionError('ble-unsupported') };
       // Everything else (including 'pairing-information-lost' and
       // 'permission-denied' which the lib used to emit on paired-mode
       // failures) is now a transient — the device is probably running a
       // hex without BLE, or just out of range. Daemon keeps trying.
     }
   }
-  return {
-    kind: 'transient',
-    userMessage: 'Bluetooth-Verbindung fehlgeschlagen — wir versuchen es weiter.',
-  };
+  return { kind: 'transient', error: connectionError('ble-failed') };
 }
 
 export function classifyUsbError(err: unknown): ClassifiedUsbError {
@@ -76,73 +125,48 @@ export function classifyUsbError(err: unknown): ClassifiedUsbError {
     switch (err.code) {
       case 'no-device-selected':
       case 'aborted':
-        return { kind: 'no-device', userMessage: '' };
+        return { kind: 'no-device' };
       case 'unsupported':
-        return { kind: 'unsupported', userMessage: 'WebUSB wird in diesem Browser nicht unterstützt.' };
+        return { kind: 'unsupported', error: connectionError('usb-unsupported') };
       case 'device-in-use':
-        return {
-          kind: 'device-in-use',
-          userMessage: 'Calliope wird gerade von einem anderen Tab oder Programm benutzt.',
-        };
+        return { kind: 'device-in-use', error: connectionError('usb-device-in-use') };
       case 'device-disconnected':
-        return {
-          kind: 'device-disconnected',
-          userMessage: 'USB-Verbindung war kurz unterbrochen — bitte erneut verbinden.',
-        };
+        return { kind: 'device-disconnected', error: connectionError('usb-interrupted') };
     }
   }
   const msg = (err as Error)?.message ?? String(err ?? '');
   // Upstream's enrichedError sets DeviceError.code; the raw-string branches
   // here are a safety net in case the error slipped past enrichment.
   if (/Unable to claim interface/i.test(msg)) {
-    return {
-      kind: 'device-in-use',
-      userMessage: 'Calliope wird gerade von einem anderen Tab oder Programm benutzt.',
-    };
+    return { kind: 'device-in-use', error: connectionError('usb-device-in-use') };
   }
   if (/device was disconnected/i.test(msg)) {
-    return {
-      kind: 'device-disconnected',
-      userMessage: 'USB-Verbindung war kurz unterbrochen — bitte erneut verbinden.',
-    };
+    return { kind: 'device-disconnected', error: connectionError('usb-interrupted') };
   }
   if (
     /transferOut|transferIn/i.test(msg)
     && (/transfer error/i.test(msg) || /was cancelled|was canceled|aborted/i.test(msg))
   ) {
-    return {
-      kind: 'transfer-transient',
-      userMessage: 'USB-Übertragung wiederholt fehlgeschlagen — bitte USB-Kabel kurz abziehen und neu einstecken.',
-    };
+    return { kind: 'transfer-transient', error: connectionError('usb-transfer-failed') };
   }
   // adi.disconnect's dap.close racing with the polling loop. Same recovery
   // path as a stale handle.
   if (/operation that changes the device state is in progress/i.test(msg)) {
-    return {
-      kind: 'device-disconnected',
-      userMessage: 'USB-Verbindung war kurz unterbrochen — bitte erneut verbinden.',
-    };
+    return { kind: 'device-disconnected', error: connectionError('usb-interrupted') };
   }
   // Chrome refuses `requestDevice()` without a user gesture. Happens when an
   // OS-level USB disconnect wiped `usbDevice` and a connect outside of a click
   // handler fell through to the picker — and always in that case for the
   // DAPLink connection, whose own chooser is disabled (chooser-gate.ts).
   if (/Must be handling a user gesture/i.test(msg)) {
-    return {
-      kind: 'device-disconnected',
-      userMessage: 'USB-Sitzung verloren — bitte erneut verbinden.',
-    };
+    return { kind: 'device-disconnected', error: connectionError('usb-session-lost') };
   }
   if (/Must be connected/i.test(msg) || /not connected/i.test(msg)) {
-    return {
-      kind: 'not-connected-yet',
-      userMessage: 'USB-Verbindung noch nicht bereit — bitte einen Moment warten und erneut probieren.',
-    };
+    return { kind: 'not-connected-yet', error: connectionError('usb-not-ready') };
   }
-  return {
-    kind: 'unknown',
-    userMessage: msg || 'Unbekannter USB-Fehler.',
-  };
+  // A raw browser message is all we have — shown as-is; without one, the
+  // label's generic "unknown USB error".
+  return { kind: 'unknown', error: connectionErrorMessage('usb', msg) ?? connectionError('usb-unknown') };
 }
 
 /**
@@ -176,15 +200,10 @@ export function clearExpectedReboot(): void {
  *  and is not auto-routed (and is itself blocked on older J-Link OB firmware). */
 export const SEGGER_JLINK_VENDOR_ID = 0x1366;
 
-/** Shown when a Mini 2 J-Link device is the only thing present: rather than a
- *  raw CMSIS-DAP failure, point the user at the reliable download+drag route. */
-export const MINI2_JLINK_USB_HINT =
-  'Auf den Calliope mini 2 (J-Link) kann über den Standard-USB-Weg nicht übertragen werden. '
-  + 'Bitte die .hex-Datei herunterladen und auf das Calliope-Laufwerk ziehen.';
-
-/** Returns the Mini 2 J-Link hint for a 0x1366 device, else undefined. Hosts
- *  that learn the connected device's USB vendor id can use this to swap a
- *  confusing DAP error for actionable guidance. */
-export function usbHintForVendorId(vendorId: number | undefined): string | undefined {
-  return vendorId === SEGGER_JLINK_VENDOR_ID ? MINI2_JLINK_USB_HINT : undefined;
+/** Returns the Mini 2 J-Link guidance (download + drag the .hex) for a 0x1366
+ *  device, else undefined. Hosts that learn the connected device's USB vendor
+ *  id can use this to swap a confusing DAP error for actionable guidance; the
+ *  text is the `ConnectLabels` key for `usb-mini2-jlink`. */
+export function usbHintForVendorId(vendorId: number | undefined): ConnectionError | undefined {
+  return vendorId === SEGGER_JLINK_VENDOR_ID ? connectionError('usb-mini2-jlink') : undefined;
 }

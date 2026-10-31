@@ -20,7 +20,7 @@
   import { connectJLinkSerial } from '../web-serial';
   import { statusLabel } from '../connection-view';
   import { connectionTransferProgram, connectionRearmInputs } from '../connection-banner-extra';
-  import { connectLabels, mergeLabels, type ConnectLabels } from './labels';
+  import { connectLabels, connectionErrorText, mergeLabels, type ConnectLabels } from './labels';
   import { extractFriendlyName, friendlyNameToPattern, patternToFriendlyName } from '../friendly-name';
   import MiniNamePattern from './MiniNamePattern.svelte';
   import PatternPad from './PatternPad.svelte';
@@ -449,11 +449,11 @@
     </div>
   {/if}
 
-  {#if s.usbErrorMessage}
-    <div class="error">USB: {s.usbErrorMessage}</div>
+  {#if s.usbError}
+    <div class="error">USB: {connectionErrorText(labels, s.usbError)}</div>
   {/if}
-  {#if s.bleErrorMessage}
-    <div class="error">BLE: {s.bleErrorMessage}</div>
+  {#if s.bleError}
+    <div class="error">BLE: {connectionErrorText(labels, s.bleError)}</div>
   {/if}
 
   {#if !s.usbSupported && !s.bleSupported}

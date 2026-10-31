@@ -246,9 +246,16 @@ onLocaleChange(applyConnectLabels);
 The full key list with the German defaults is `src/ui/labels.ts`; a complete
 English set lives in `test/labels-en.ts`.
 
-Not covered yet: the error messages the connection layer writes into
-`calliopeState` (`usbErrorMessage` / `bleErrorMessage`) and the host-fed
-banner content (`setBannerExtra`), which the host words itself.
+- **Connection errors.** `calliopeState.usbError` / `bleError` carry a
+  `ConnectionError` — a `code` (`'usb-device-in-use'`, `'ble-failed'`, …), not
+  a sentence. The panel words it through the `error…` keys
+  (`CONNECTION_ERROR_LABELS` maps code → key; `connectionErrorText(labels,
+  error)` does it for a host's own UI). A ready-made `message` — a raw browser
+  error the widget doesn't recognise, or a native host's own text — is shown
+  as it comes.
+
+Not covered: the host-fed banner content (`setBannerExtra`), which the host
+words itself.
 
 ### Gotchas
 
