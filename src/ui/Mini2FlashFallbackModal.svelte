@@ -1,5 +1,7 @@
 <script lang="ts">
   import { mini2FlashFallbackRequest } from '../mini2-flash-fallback';
+  import { connectLabels, labelParts } from './labels';
+  import LabelText from './LabelText.svelte';
 
   /**
    * "Mini 2 USB flash failed — retry, download, or give up" modal. Driven by
@@ -8,6 +10,7 @@
    * `ConnectionChoiceModal`.
    */
   const req = $derived($mini2FlashFallbackRequest);
+  const labels = $derived($connectLabels);
 </script>
 
 {#if req}
@@ -22,8 +25,8 @@
   >
     <div class="card">
       <div class="card-header">
-        <h2 id="mini2-fallback-title">USB-Übertragung fehlgeschlagen</h2>
-        <button type="button" class="close-btn" aria-label="Schließen" onclick={() => req.choose('cancel')}>
+        <h2 id="mini2-fallback-title">{labels.mini2FallbackTitle}</h2>
+        <button type="button" class="close-btn" aria-label={labels.close} onclick={() => req.choose('cancel')}>
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M6 6l12 12M18 6 6 18" />
           </svg>
@@ -32,10 +35,13 @@
 
       <div class="card-body">
         <p>
-          <strong>{req.fileName}</strong> konnte nicht auf den Calliope mini 2 übertragen
-          werden ({req.attempts} Versuche). Du kannst es erneut versuchen — oder die
-          .hex-Datei herunterladen und selbst auf das Laufwerk <strong>MINI</strong> ziehen,
-          das klappt immer.
+          <LabelText
+            parts={labelParts(
+              labels.mini2FallbackText,
+              { fileName: req.fileName, attempts: req.attempts, drive: 'MINI' },
+              ['fileName', 'drive'],
+            )}
+          />
         </p>
 
         <div class="choices">
@@ -47,8 +53,8 @@
               </svg>
             </span>
             <span class="choice-body">
-              <span class="choice-title">Nochmal versuchen</span>
-              <span class="choice-detail">Übertragung über USB erneut starten.</span>
+              <span class="choice-title">{labels.mini2FallbackRetry}</span>
+              <span class="choice-detail">{labels.mini2FallbackRetryDetail}</span>
             </span>
           </button>
           <button type="button" class="choice choice-dl" onclick={() => req.choose('download')}>
@@ -60,20 +66,20 @@
               </svg>
             </span>
             <span class="choice-body">
-              <span class="choice-title">Als Datei herunterladen</span>
-              <span class="choice-detail">.hex-Datei speichern und im Datei-Explorer auf das Laufwerk „MINI“ ziehen.</span>
+              <span class="choice-title">{labels.downloadFile}</span>
+              <span class="choice-detail">{labels.mini2FallbackDownloadDetail}</span>
             </span>
           </button>
         </div>
 
         {#if req.errorDetail}
-          <p class="error-detail" title={req.errorDetail}>Details: {req.errorDetail}</p>
+          <p class="error-detail" title={req.errorDetail}>{labels.details}: {req.errorDetail}</p>
         {/if}
       </div>
 
       <div class="actions">
         <button type="button" class="btn ghost" onclick={() => req.choose('cancel')}>
-          Abbrechen
+          {labels.cancel}
         </button>
       </div>
     </div>

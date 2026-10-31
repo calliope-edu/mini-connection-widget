@@ -20,7 +20,7 @@
   import { connectJLinkSerial } from '../web-serial';
   import { statusLabel } from '../connection-view';
   import { connectionTransferProgram, connectionRearmInputs } from '../connection-banner-extra';
-  import { mergeLabels, type ConnectLabels } from './labels';
+  import { connectLabels, mergeLabels, type ConnectLabels } from './labels';
   import { extractFriendlyName, friendlyNameToPattern, patternToFriendlyName } from '../friendly-name';
   import MiniNamePattern from './MiniNamePattern.svelte';
   import PatternPad from './PatternPad.svelte';
@@ -58,7 +58,7 @@
     onHeaderPointerUp,
   }: Props = $props();
 
-  const labels = $derived(mergeLabels(labelsProp));
+  const labels = $derived(mergeLabels(labelsProp, $connectLabels));
   const s = $derived($calliopeState);
 
   const isIndeterminate = $derived(
@@ -205,8 +205,6 @@
   // device, so the next "Verbinden" opens a fresh picker — no page reload.
   function doCancelBle() { fire(); void disconnectAndForget('ble'); }
   function doCancelUsb() { fire(); void disconnectAndForget('usb'); }
-
-  const PATTERN_HINT = 'Zeichne das Muster, das dein Calliope mini anzeigt.';
 </script>
 
 <div class="panel">
@@ -230,8 +228,8 @@
         type="button"
         class="header-btn"
         class:active={pinned}
-        title={pinned ? 'Wieder anhängen' : 'Als Fenster anheften'}
-        aria-label={pinned ? 'Wieder anhängen' : 'Als Fenster anheften'}
+        title={pinned ? labels.unpin : labels.pin}
+        aria-label={pinned ? labels.unpin : labels.pin}
         onclick={onTogglePin}
       >
         {#if pinned}
@@ -253,7 +251,7 @@
     <div class="device-card">
       <div class="device-card-head">
         {#if friendly}
-          <MiniNamePattern name={friendly} size={32} />
+          <MiniNamePattern name={friendly} size={32} labels={labelsProp} />
         {:else}
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <rect x="3" y="5" width="18" height="14" rx="2" />
@@ -274,8 +272,8 @@
         {#if s.calliopeVersion || s.boardVersion}
           <div class="meta-row">
             <span class="meta-key">{labels.version}</span>
-            <!-- Over BLE, Mini 1 und Mini 2 sind nicht unterscheidbar — zeige
-                 die Unschärfe statt einer falschen Gewissheit. -->
+            <!-- Over BLE a mini 1 and a mini 2 look the same — show the
+                 ambiguity rather than a false certainty. -->
             <span class="meta-val">{s.versionAmbiguous ? 'V1/V2' : (s.calliopeVersion ?? s.boardVersion)}</span>
           </div>
         {/if}
@@ -335,16 +333,12 @@
         {#if s.jlinkSerialStatus === 'connecting'}
           <!-- The native Web Serial picker floats above this panel — tell the
                user what phase they're in and that cancelling is harmless. -->
-          <p class="usb-hint">
-            USB 1/2 verbunden — wähle jetzt noch „CDC – COM x“, um die
-            Datenverbindung (Serial) herzustellen. Abbrechen ist okay:
-            Programme übertragen geht auch ohne.
-          </p>
+          <p class="usb-hint">{labels.serialPickHint}</p>
         {:else if mini2SerialMissing}
           <div class="usb-serial-add">
-            <span class="usb-hint">Übertragen bereit — Serial (Datenverbindung) fehlt noch.</span>
+            <span class="usb-hint">{labels.serialMissing}</span>
             <button type="button" class="row-btn connect" onclick={doAddSerial} disabled={addingSerial || s.status === 'flashing'}>
-              {addingSerial ? 'Verbinde…' : 'Serial verbinden'}
+              {addingSerial ? labels.connecting : labels.serialConnect}
             </button>
           </div>
         {/if}
@@ -358,8 +352,8 @@
           <span class="transport-name">
             {labels.ble}
             {#if bleConnected && s.bleSessionKind === 'dfu-bootloader'}
-              <span class="session-chip session-dfu-bootloader" title="Nordic DFU bootloader erkannt">
-                Bootloader
+              <span class="session-chip session-dfu-bootloader" title={labels.bootloaderTitle}>
+                {labels.bootloader}
               </span>
             {/if}
           </span>
@@ -379,14 +373,14 @@
             {@const connectedName = s.friendlyName ?? extractFriendlyName(s.bleDeviceName)}
             {#if connectedName}
               <div class="pattern-wrap">
-                <PatternPad value={friendlyNameToPattern(connectedName) ?? emptyPattern()} size={132} disabled />
+                <PatternPad value={friendlyNameToPattern(connectedName) ?? emptyPattern()} size={132} disabled labels={labelsProp} />
               </div>
             {/if}
           {:else}
             <div class="pattern-wrap">
-              <PatternPad value={pattern} onchange={(g) => (pattern = g)} size={132} disabled={bleBusy} />
+              <PatternPad value={pattern} onchange={(g) => (pattern = g)} size={132} disabled={bleBusy} labels={labelsProp} />
               {#if !advanced}
-                <p class="pattern-hint">{PATTERN_HINT}</p>
+                <p class="pattern-hint">{labels.patternHint}</p>
               {/if}
             </div>
           {/if}
@@ -420,14 +414,14 @@
 
   {#if anyConnected && transfer && s.status !== 'flashing'}
     <button type="button" class="transfer-btn" onclick={runTransfer} disabled={transferring}>
-      {transferring ? 'Übertrage…' : (transfer.label ?? 'Programm übertragen')}
+      {transferring ? labels.transferring : (transfer.label ?? labels.transferProgram)}
     </button>
   {/if}
 
   <!-- Dev-only "Re-arm inputs" escape hatch — not shown for regular users. -->
   {#if advanced && anyConnected && rearm && s.status !== 'flashing'}
     <button type="button" class="rearm-btn" onclick={runRearm} disabled={rearming}>
-      {rearming ? 'Verbinde Eingänge neu…' : (rearm.label ?? 'Eingänge neu verbinden')}
+      {rearming ? labels.rearmingInputs : (rearm.label ?? labels.rearmInputs)}
     </button>
   {/if}
 
@@ -478,7 +472,7 @@
 
   {#if advanced && (s.status === 'connected' || s.status === 'flashing')}
     <div class="comms-embed">
-      <CommsPanel />
+      <CommsPanel labels={labelsProp} />
     </div>
   {/if}
 </div>
