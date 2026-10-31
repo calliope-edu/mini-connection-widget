@@ -254,8 +254,10 @@ export { extractFriendlyName, friendlyNameToPattern, patternToFriendlyName, frie
 // device's USB vendor id can swap a confusing CMSIS-DAP failure for the
 // download+drag hint. Full WebUSB J-Link routing stays in segger-jlink.ts.
 export { SEGGER_JLINK_VENDOR_ID, MINI2_JLINK_USB_HINT, usbHintForVendorId } from './connection-errors';
-export { DEFAULT_LABELS, mergeLabels } from './ui/labels';
-export type { ConnectLabels } from './ui/labels';
+// UI labels (German defaults). `setConnectLabels` reaches every component in
+// src/ui, the host-mounted banner and modals included — see README "Labels".
+export { DEFAULT_LABELS, mergeLabels, setConnectLabels, connectLabels, labelParts } from './ui/labels';
+export type { ConnectLabels, LabelPart } from './ui/labels';
 
 // ---- Native-proxy bridge --------------------------------------------------
 // Detection + GATT/serial proxy helpers for iOS/Android hosts that inject

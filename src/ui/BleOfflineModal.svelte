@@ -3,8 +3,10 @@
   import { calliopeState } from '../state';
   import { connectCalliope, disconnectAndForget } from '../connect';
   import { isNativeMode } from '../native-bridge';
+  import { connectLabels } from './labels';
 
   const visible = $derived($calliopeBleOfflineInfo);
+  const labels = $derived($connectLabels);
 
   // In native (iOS/Android bridge) mode the host owns the radio: it auto-
   // reconnects and flashes once the mini is back in Bluetooth mode, and the
@@ -66,10 +68,10 @@
           <line x1="4" y1="4" x2="20" y2="20" stroke="currentColor" stroke-width="2" />
         </svg>
       </div>
-      <h2 id="ble-offline-title">Bluetooth ist auf deinem Calliope gerade aus</h2>
+      <h2 id="ble-offline-title">{labels.bleOfflineTitle}</h2>
       <p class="lead">
-        Wahrscheinlich läuft ein Programm ohne Bluetooth.
-        {native ? 'So geht es weiter:' : 'Zwei Wege zurück:'}
+        {labels.bleOfflineLead}
+        {native ? labels.bleOfflineStepsNative : labels.bleOfflineStepsWeb}
       </p>
 
       <!-- The ways back are alternatives, not a sequence: no numbers, an
@@ -77,35 +79,22 @@
            the Bluetooth way (it only matters when reconnecting over BLE). -->
       <div class="ways">
         <div class="way">
-          <div class="way-title">A + B halten und Reset drücken</div>
+          <div class="way-title">{labels.bleOfflineResetTitle}</div>
           <div class="way-hint">
-            {#if native}
-              Der Calliope startet in den Bluetooth-Modus. Wir verbinden uns
-              dann automatisch neu und übertragen dein Programm.
-            {:else}
-              Der Calliope startet in den DFU-Modus
-              (Display zeigt z.&nbsp;B. ein Plus „+"). Dann unten auf
-              <em>„Erneut verbinden"</em> klicken — wir übertragen ein
-              BLE-fähiges Programm.
-            {/if}
+            {native ? labels.bleOfflineResetHintNative : labels.bleOfflineResetHint}
           </div>
           {#if isMac && !native}
             <div class="way-extra">
-              <strong>Klappt es auf dem Mac trotzdem nicht?</strong>
-              macOS speichert manchmal eine veraltete Bluetooth-Verbindung.
-              Öffne <em>Systemeinstellungen → Bluetooth</em>, klicke bei
-              „Calliope mini" auf das „×" und verbinde dann erneut.
+              <strong>{labels.bleOfflineMacTitle}</strong>
+              {labels.bleOfflineMacHint}
             </div>
           {/if}
         </div>
         {#if !native}
-          <div class="or"><span>oder</span></div>
+          <div class="or"><span>{labels.bleOfflineOr}</span></div>
           <div class="way">
-            <div class="way-title">USB-Kabel anschließen</div>
-            <div class="way-hint">
-              Funktioniert immer, auch ohne Bluetooth auf dem Calliope —
-              und ist deutlich schneller als BLE.
-            </div>
+            <div class="way-title">{labels.bleOfflineUsbTitle}</div>
+            <div class="way-hint">{labels.bleOfflineUsbHint}</div>
           </div>
         {/if}
       </div>
@@ -113,21 +102,21 @@
       {#if !native}
       <div class="actions">
         <button type="button" class="btn secondary" onclick={useUsbInstead}>
-          USB nehmen
+          {labels.bleOfflineUseUsb}
         </button>
         <button type="button" class="btn primary" onclick={retryBle} disabled={retrying}>
-          {retrying ? 'Verbinde…' : 'Erneut verbinden'}
+          {retrying ? labels.connecting : labels.reconnect}
         </button>
       </div>
       {/if}
       <div class="dismiss-row">
         {#if !native}
         <button type="button" class="link-btn" onclick={cancelConnection}>
-          Verbindung abbrechen
+          {labels.bleOfflineAbort}
         </button>
         {/if}
         <button type="button" class="link-btn" onclick={() => dismissBleOfflineInfo()}>
-          Schließen
+          {labels.close}
         </button>
       </div>
     </div>
@@ -196,7 +185,6 @@
     font-size: 12.5px;
     color: #4b5563;
     line-height: 1.45;
-    em { font-style: normal; font-weight: 600; color: #111; }
   }
   .way-extra {
     margin-top: 4px;

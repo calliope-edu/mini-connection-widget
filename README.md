@@ -203,16 +203,59 @@ setBleFlashEnabled(false)                      // BLE stays comms-only; USB + do
 setUsbPickerAllDevices(true)                   // dev escape hatch: drop USB picker filters
 ```
 
+### Labels
+
+Every visible string in the Svelte UI is a key of `ConnectLabels`; German is
+the default (`DEFAULT_LABELS`). Set the labels once, app-wide, and they reach
+every component — the singletons above included:
+
+```ts
+import { setConnectLabels } from '@calliope-edu/mini-connection-widget';
+import { m } from './paraglide/messages';
+
+function applyConnectLabels() {
+  setConnectLabels({
+    cancel: m.cancel(),
+    choiceTitle: m.connect_choice_title(),
+    // Keys with a placeholder are functions taking one params object — the
+    // shape Paraglide messages have, so they pass straight through.
+    choiceText: m.connect_choice_text,         // ({ fileName }) => string
+    mini2FallbackText: m.connect_mini2_failed, // ({ fileName, attempts, drive }) => string
+    // …
+  });
+}
+applyConnectLabels();
+onLocaleChange(applyConnectLabels);
+```
+
+- **Reactive.** `connectLabels` is a store; mounted components re-render the
+  moment `setConnectLabels` is called. Call it again after every locale switch
+  — that is also what re-renders the function-valued keys, which read the
+  locale only when called.
+- **Replaces, doesn't merge.** Each call replaces the previous set. A key the
+  new set leaves out (or sets to `undefined`) falls back to German, never to
+  the previous language. `setConnectLabels()` resets to the defaults.
+- **Placeholders.** `fileName` (and `drive`, the "MINI" drive) render bold, the
+  code examples in the comms log as `<code>`, always as text — a translation
+  never needs markup. Counts (`attempts`, `rows`, …) arrive as numbers, so a
+  message can pluralise on them.
+- **`labels` prop.** `ConnectButton` and `ConnectionPanel` still take a
+  `labels` prop (`Partial<ConnectLabels>`); it wins over the registry for that
+  instance.
+
+The full key list with the German defaults is `src/ui/labels.ts`; a complete
+English set lives in `test/labels-en.ts`.
+
+Not covered yet: the error messages the connection layer writes into
+`calliopeState` (`usbErrorMessage` / `bleErrorMessage`) and the host-fed
+banner content (`setBannerExtra`), which the host words itself.
+
 ### Gotchas
 
 - **`status === 'connected'` is not "serial works".** The rollup also reports
   connected for a mini 2 linked flash-only (`jlinkUsbStatus` up, no CDC port).
   Gate serial writes on `usbStatus` / `jlinkSerialStatus` / `bleStatus` — the
   three transports `sendSerialLine` actually routes over.
-- **The UI is German-only below the label layer.** `ConnectLabels` /
-  `mergeLabels` cover `ConnectButton` and `ConnectionPanel`, via props. The
-  banner and all six modals hardcode German with no label hook, so a host with
-  its own i18n currently has to fork a component to translate it.
 
 ## MakeCode host (`/makecode` subpath)
 
@@ -318,13 +361,6 @@ patch):
    (`e95d0001…`) already exposes the flash log; the widget just needs a client.
    Protocol + plan written up in
    [`docs/ble-datalogger-readback.md`](./docs/ble-datalogger-readback.md).
-5. **Labels for the banner + modals.** `ConnectLabels` only reaches
-   `ConnectButton` / `ConnectionPanel`, and only through props — the
-   host-rendered singletons have no hook at all, which is why campus forked
-   `ConnectionChoiceModal` to translate it. A module-level `setConnectLabels()`
-   registry would cover every component including the singletons. ~60–80 new
-   keys across the banner and six modals; the consumer that needs it most is
-   Teachable (de/en/fr/es/it/el with a language picker, German connection UI).
 
 ## License
 

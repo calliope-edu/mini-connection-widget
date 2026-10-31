@@ -1,6 +1,6 @@
 /**
  * Test-runner resolution hook: let a `.ts` source use extensionless relative
- * imports under `node --experimental-strip-types`.
+ * imports under `node --experimental-transform-types`.
  *
  * The src/ tree is written for bundlers (Vite/esbuild), which resolve
  * `./ram-scan` to `ram-scan.ts` on their own. Node's ESM resolver does not —

@@ -17,7 +17,8 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # Runs the TypeScript unit suite directly via node --experimental-strip-types
+      # Runs the TypeScript unit suite directly via node --experimental-transform-types
       # (see package.json "test"). Gates ble-state, connection-errors, blocks-frame,
-      # helpers, program-type, hex-inspect and log-parser.
+      # helpers, program-type, hex-inspect, log-parser and the UI labels (Svelte
+      # components rendered server-side).
       - run: pnpm test

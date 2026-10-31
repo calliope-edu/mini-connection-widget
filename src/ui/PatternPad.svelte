@@ -11,6 +11,8 @@
    * `onchange`. Bottom-anchored editing guarantees every column stays a valid
    * histogram bar, so the decoded name is always well-formed.
    */
+  import { connectLabels, mergeLabels, type ConnectLabels } from './labels';
+
   interface Props {
     /** 5×5 lit grid; `value[row][col]`, row 0 is the top. */
     value: boolean[][];
@@ -24,6 +26,8 @@
     offColor?: string;
     /** Read-only display (no pointer/keyboard editing). */
     disabled?: boolean;
+    /** Translation overrides, passed down from the panel's `labels` prop. */
+    labels?: Partial<ConnectLabels>;
   }
   let {
     value,
@@ -32,7 +36,9 @@
     color = '#ff4e00',
     offColor = 'rgba(255,255,255,0.12)',
     disabled = false,
+    labels: labelsProp,
   }: Props = $props();
+  const labels = $derived(mergeLabels(labelsProp, $connectLabels));
 
   const rows = [0, 1, 2, 3, 4];
   const cols = [0, 1, 2, 3, 4];
@@ -55,7 +61,7 @@
         type="button"
         class="cell"
         class:on={lit(r, c)}
-        aria-label={`Spalte ${c + 1}, Höhe ${5 - r}`}
+        aria-label={labels.patternCell({ column: c + 1, height: 5 - r })}
         aria-pressed={lit(r, c)}
         {disabled}
         onclick={() => setColumn(c, r)}

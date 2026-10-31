@@ -1,7 +1,10 @@
 <script lang="ts">
   import { calliopeConnectionChoiceRequest } from '../connection-choice';
+  import { connectLabels, labelParts } from './labels';
+  import LabelText from './LabelText.svelte';
 
   const req = $derived($calliopeConnectionChoiceRequest);
+  const labels = $derived($connectLabels);
 </script>
 
 {#if req}
@@ -16,8 +19,8 @@
   >
     <div class="card">
       <div class="card-header">
-        <h2 id="conn-choice-title">Programm übertragen</h2>
-        <button type="button" class="close-btn" aria-label="Schließen" onclick={() => req.cancel()}>
+        <h2 id="conn-choice-title">{labels.choiceTitle}</h2>
+        <button type="button" class="close-btn" aria-label={labels.close} onclick={() => req.cancel()}>
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M6 6l12 12M18 6 6 18" />
           </svg>
@@ -26,7 +29,7 @@
 
       <div class="card-body">
         <p>
-          Der Calliope ist gerade nicht verbunden. Wähle, wie <strong>{req.fileName}</strong> aufs Gerät kommen soll.
+          <LabelText parts={labelParts(labels.choiceText, { fileName: req.fileName }, ['fileName'])} />
         </p>
 
         <div class="choices">
@@ -38,8 +41,8 @@
                 </svg>
               </span>
               <span class="choice-body">
-                <span class="choice-title">Per Bluetooth</span>
-                <span class="choice-detail">Drahtlos — Calliope muss eingeschaltet und in Reichweite sein.</span>
+                <span class="choice-title">{labels.choiceBle}</span>
+                <span class="choice-detail">{labels.choiceBleDetail}</span>
               </span>
             </button>
           {/if}
@@ -52,8 +55,8 @@
               </svg>
             </span>
             <span class="choice-body">
-              <span class="choice-title">Per USB-Kabel</span>
-              <span class="choice-detail">Zuverlässig, funktioniert immer. Kabel an Calliope und Rechner anschließen.</span>
+              <span class="choice-title">{labels.choiceUsb}</span>
+              <span class="choice-detail">{labels.choiceUsbDetail}</span>
             </span>
           </button>
           <button type="button" class="choice choice-dl" onclick={() => req.choose('download')}>
@@ -65,8 +68,8 @@
               </svg>
             </span>
             <span class="choice-body">
-              <span class="choice-title">Als Datei herunterladen</span>
-              <span class="choice-detail">.hex-Datei speichern und manuell auf den Calliope kopieren.</span>
+              <span class="choice-title">{labels.downloadFile}</span>
+              <span class="choice-detail">{labels.choiceDownloadDetail}</span>
             </span>
           </button>
         </div>
@@ -74,7 +77,7 @@
 
       <div class="actions">
         <button type="button" class="btn ghost" onclick={() => req.cancel()}>
-          Abbrechen
+          {labels.cancel}
         </button>
       </div>
     </div>
