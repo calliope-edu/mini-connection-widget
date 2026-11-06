@@ -34,7 +34,10 @@ import { flashOverLegacyDfuWeb } from './ble-legacy-dfu-web';
 import { extractFriendlyName, friendlyNameFromDeviceId } from './friendly-name';
 import {
   classifyBleError,
+  connectionError,
+  connectionErrorMessage,
   isExpectedRebootWindow,
+  type ConnectionError,
 } from './connection-errors';
 import { classifyBleSessionFromDevice, boardVersionFromServices } from './ble-state';
 import type { CalliopeVersion } from './helpers';
@@ -343,7 +346,7 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
         updateState((s) => ({
           ...s,
           bleStatus: 'connected',
-          bleErrorMessage: undefined,
+          bleError: undefined,
           bleDeviceName: name ?? s.bleDeviceName,
           friendlyName: friendly ?? s.friendlyName,
           bleCanCommunicate: true,
@@ -435,8 +438,7 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
                   bleSessionKind: 'dfu-bootloader',
                   bleCanFlash: false,
                   bleCanCommunicate: false,
-                  bleErrorMessage:
-                    'Calliope ist im DFU-Bootloader. Reset drücken, um zurück in die Anwendung zu kommen.',
+                  bleError: connectionError('ble-dfu-bootloader'),
                 };
               }
               return { ...s, ...patch, bleSessionKind: result.kind };
@@ -474,7 +476,7 @@ export async function getBleConnection(): Promise<MicrobitBluetoothConnection> {
       updateState((s) => ({
         ...s,
         bleStatus: 'error',
-        bleErrorMessage: classified.userMessage,
+        bleError: classified.error,
       }));
       appendLog({ direction: 'error', text: msg });
     });
@@ -549,14 +551,14 @@ function applyFlashProgress(stage: ProgressStage, progress: number | undefined):
 
 export async function flashCalliopeViaBle(hex: string, name: string): Promise<void> {
   if (!SUPPORT.ble) {
-    updateState((s) => ({ ...s, bleStatus: 'error', bleErrorMessage: 'Web Bluetooth not supported' }));
+    updateState((s) => ({ ...s, bleStatus: 'error', bleError: connectionError('ble-unsupported') }));
     return;
   }
   let c: MicrobitBluetoothConnection;
   try {
     c = await getBleConnection();
   } catch (err) {
-    updateState((s) => ({ ...s, bleStatus: 'error', bleErrorMessage: (err as Error).message }));
+    updateState((s) => ({ ...s, bleStatus: 'error', bleError: connectionErrorMessage('ble', (err as Error).message) ?? connectionError('ble-unknown') }));
     return;
   }
   const device = await getBleDevice(c);
@@ -577,7 +579,7 @@ export async function flashCalliopeViaBle(hex: string, name: string): Promise<vo
     flashProgress: undefined,
     flashPhase: 'check',
     flashPartial: true,
-    bleErrorMessage: undefined,
+    bleError: undefined,
     lastFlashName: name,
   }));
   const cleanHex = stripMakeCodeMetadata(hex);
@@ -736,7 +738,7 @@ export async function flashCalliopeViaBleDfu(
       flashProgress: undefined,
       flashPhase: 'reboot',
       flashPartial: false,
-      bleErrorMessage: undefined,
+      bleError: undefined,
       lastFlashName: name,
     }));
     try {
@@ -810,7 +812,7 @@ export async function flashCalliopeViaBleDfu(
     flashProgress: undefined,
     flashPhase: 'reboot',
     flashPartial: false,
-    bleErrorMessage: undefined,
+    bleError: undefined,
     lastFlashName: name,
   }));
   try {
@@ -870,7 +872,7 @@ export async function flashCalliopeViaBleDfu(
       flashPhase: undefined,
       flashPartial: undefined,
     }));
-    // Don't promote the error into state.bleErrorMessage here — the caller
+    // Don't promote the error into state.bleError here — the caller
     // (flash.ts) decides whether to retry via USB or surface the failure.
     appendLog({ direction: 'info', text: `BLE-DFU flash failed: ${(err as Error)?.message ?? err}` });
     throw err;
@@ -900,33 +902,33 @@ function handleBleFlashError(err: unknown): void {
   // semantics ("DAL mismatch", "service missing") that the generic
   // classifier doesn't see. Everything else routes through the classifier
   // so we get one consistent BLE-error story.
-  let userMsg: string;
+  let error: ConnectionError | undefined;
   if (err instanceof BluetoothPartialFlashDalMismatchError) {
-    userMsg = 'Runtime auf dem Calliope passt nicht zum Programm — bitte einmal per USB vollständig übertragen.';
+    error = connectionError('ble-runtime-mismatch');
     updateState((s) => ({ ...s, bleCanFlash: false }));
   } else if (err instanceof BluetoothPartialFlashServiceMissingError) {
-    userMsg = 'Calliope läuft gerade ohne Partial-Flashing-Service — einmal per USB ein MakeCode-Programm übertragen.';
+    error = connectionError('ble-no-partial-flashing');
     updateState((s) => ({ ...s, bleCanFlash: false }));
   } else if (err instanceof BluetoothPartialFlashInvalidHexError) {
-    userMsg = 'Dieses Programm kann nicht über BLE übertragen werden (kein MakeCode-Marker).';
+    error = connectionError('ble-hex-not-flashable');
   } else if (err instanceof DOMException && err.name === 'AbortError') {
-    userMsg = 'Übertragung abgebrochen.';
+    error = connectionError('ble-flash-aborted');
   } else if (err instanceof DeviceError && err.code === 'firmware-update-required') {
-    userMsg = 'Runtime auf dem Calliope passt nicht zum Programm — bitte einmal per USB vollständig übertragen.';
+    error = connectionError('ble-runtime-mismatch');
     updateState((s) => ({ ...s, bleCanFlash: false }));
   } else {
     const classified = classifyBleError(err);
-    userMsg = classified.kind === 'aborted' ? 'Übertragung abgebrochen.' : classified.userMessage;
+    error = classified.kind === 'aborted' ? connectionError('ble-flash-aborted') : classified.error;
   }
   updateState((s) => ({
     ...s,
     flashTransport: undefined,
     bleStatus: 'error',
-    bleErrorMessage: userMsg,
+    bleError: error,
     flashProgress: undefined,
     flashPhase: undefined,
   }));
-  appendLog({ direction: 'error', text: `BLE flash failed: ${userMsg}` });
+  appendLog({ direction: 'error', text: `BLE flash failed (${error?.code}): ${(err as Error)?.message ?? err}` });
 }
 
 export async function disconnectBle(): Promise<void> {

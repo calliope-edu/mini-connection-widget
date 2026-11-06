@@ -16,6 +16,19 @@
     setCommsPaused,
     type CommsEntry,
   } from '../comms';
+  import { connectLabels, labelParts, mergeLabels, type ConnectLabels } from './labels';
+  import LabelText from './LabelText.svelte';
+
+  type Props = {
+    /** Translation overrides, passed down from the panel's `labels` prop. */
+    labels?: Partial<ConnectLabels>;
+  };
+  let { labels: labelsProp }: Props = $props();
+  const labels = $derived(mergeLabels(labelsProp, $connectLabels));
+
+  // Code examples in the empty Rows / Graph placeholders.
+  const LOG_EXAMPLES = { writeValue: 'serial.writeValue("Licht", x)', print: "print('x,y'); print('1,2')", mirror: 'datalogger.mirrorToSerial(true)' };
+  const CODE_PARAMS = ['writeValue', 'print', 'mirror'] as const;
 
   type Tab = 'stream' | 'live' | 'rows' | 'graph';
   let tab: Tab = $state('stream');
@@ -249,7 +262,7 @@
       ctx.font = '12px system-ui, sans-serif';
       ctx.textAlign = 'left';
       ctx.textBaseline = 'alphabetic';
-      ctx.fillText('Warte auf Datenpunkte …', PADL + 8, PADT + 18);
+      ctx.fillText(labels.commsGraphWaiting, PADL + 8, PADT + 18);
       return;
     }
     if (yMin === yMax) { yMin -= 1; yMax += 1; }
@@ -293,7 +306,7 @@
     ctx.textBaseline = 'bottom';
     ctx.fillText(`−${WINDOW_MS / 1000}s`, PADL + 2, h - 2);
     ctx.textAlign = 'right';
-    ctx.fillText('jetzt', PADL + innerW, h - 2);
+    ctx.fillText(labels.commsGraphNow, PADL + innerW, h - 2);
 
     // Clip to the plot rect so off-window line segments don't spill over axes.
     ctx.save();
@@ -343,30 +356,30 @@
 <div class="comms">
   <div class="tabs">
     <button class="tab" class:active={tab === 'stream'} onclick={() => (tab = 'stream')}>
-      Stream
+      {labels.commsStream}
       <span class="tab-count">{streamEntries.length}</span>
     </button>
     <button class="tab" class:active={tab === 'rows'} onclick={() => (tab = 'rows')}>
-      Zeilen
+      {labels.commsRows}
       <span class="tab-count">{tables.reduce((n, t) => n + t.rows.length, 0)}</span>
     </button>
     <button class="tab" class:active={tab === 'graph'} onclick={() => (tab = 'graph')}>
-      Graph
+      {labels.commsGraph}
     </button>
     <button
       class="tab live-toggle"
       class:active={tab === 'live'}
-      title="Live-Sensordaten (COMMAND/STATE/MOTION/ANALOG) — je Typ der neueste Wert"
+      title={labels.commsLiveTitle}
       onclick={() => (tab = 'live')}
     >
       <span class="live-dot" class:flowing={liveEntries.length > 0}></span>
-      Live <span class="tab-count">{latestLive.length}</span>
+      {labels.commsLive} <span class="tab-count">{latestLive.length}</span>
     </button>
     <div class="spacer"></div>
-    <button class="btn-icon" title={paused ? 'Fortsetzen' : 'Pausieren'} onclick={() => setCommsPaused(!paused)}>
+    <button class="btn-icon" title={paused ? labels.commsResume : labels.commsPause} onclick={() => setCommsPaused(!paused)}>
       {paused ? '▶' : '❚❚'}
     </button>
-    <button class="btn-icon" title="Leeren" onclick={() => clearComms()}>✕</button>
+    <button class="btn-icon" title={labels.commsClear} onclick={() => clearComms()}>✕</button>
   </div>
 
   {#if tab === 'stream'}
@@ -374,8 +387,8 @@
       {#if streamEntries.length === 0}
         <div class="placeholder">
           {entries.length > 0 && liveEntries.length > 0
-            ? 'Nur Live-Polling aktiv — relevante Ereignisse (Befehle, Tastendrücke) erscheinen hier.'
-            : 'Noch keine Daten gesendet oder empfangen.'}
+            ? labels.commsStreamLiveOnly
+            : labels.commsStreamEmpty}
         </div>
       {/if}
       {#each streamEntries as e (e.id)}
@@ -395,10 +408,7 @@
   {:else if tab === 'live'}
     <div class="live-scroll">
       {#if latestLive.length === 0}
-        <div class="placeholder">
-          Noch keine Live-Daten. Sensor-Polling (STATE/MOTION/ANALOG) und der
-          Handshake (COMMAND) erscheinen hier — je Typ nur der neueste Wert.
-        </div>
+        <div class="placeholder">{labels.commsLiveEmpty}</div>
       {/if}
       {#each latestLive as e (e.liveKey)}
         <div class="live-row entry-{e.direction}">
@@ -412,20 +422,20 @@
   {:else if tab === 'rows'}
     <div class="rows-scroll">
       {#if tables.length === 0}
-        <div class="placeholder">Noch keine Logzeilen erkannt. Sende z. B. <code>serial.writeValue("Licht", x)</code>, <code>print('x,y'); print('1,2')</code> oder nutze <code>datalogger.mirrorToSerial(true)</code>.</div>
+        <div class="placeholder"><LabelText parts={labelParts(labels.commsRowsEmpty, LOG_EXAMPLES, CODE_PARAMS)} tag="code" /></div>
       {/if}
       {#each tables as t, ti (ti)}
         <div class="rows-card">
           <div class="rows-card-head">
-            <strong>Tabelle {ti + 1}</strong>
-            <span class="meta">{t.rows.length} Zeilen, {t.columns.length} Spalten</span>
+            <strong>{labels.commsTable({ index: ti + 1 })}</strong>
+            <span class="meta">{labels.commsTableSize({ rows: t.rows.length, columns: t.columns.length })}</span>
             <div class="spacer"></div>
-            <button class="btn-text" disabled={t.rows.length === 0} onclick={() => downloadCsv(t)}>CSV laden</button>
+            <button class="btn-text" disabled={t.rows.length === 0} onclick={() => downloadCsv(t)}>{labels.commsCsv}</button>
           </div>
           <div class="rows-table-wrap">
             <table class="rows-table">
               <thead>
-                <tr><th class="c-time">Zeit</th>{#each t.columns as col}<th>{col}</th>{/each}</tr>
+                <tr><th class="c-time">{labels.commsTime}</th>{#each t.columns as col}<th>{col}</th>{/each}</tr>
               </thead>
               <tbody>
                 {#each t.rows.slice(-100) as r, ri (ri)}
@@ -433,7 +443,7 @@
                     <td class="c-time">{fmtTime(r.time)}</td>
                     {#each r.values as v}
                       {#if v === '' || v === undefined || v === null}
-                        <td class="c-val c-empty" title="kein Wert">·</td>
+                        <td class="c-val c-empty" title={labels.commsNoValue}>·</td>
                       {:else}
                         <td class="c-val" class:num={typeof v === 'number'}>{v}</td>
                       {/if}
@@ -443,7 +453,7 @@
               </tbody>
             </table>
             {#if t.rows.length > 100}
-              <div class="rows-truncated">Zeige die letzten 100 von {t.rows.length} Zeilen.</div>
+              <div class="rows-truncated">{labels.commsTruncated({ shown: 100, total: t.rows.length })}</div>
             {/if}
           </div>
         </div>
@@ -452,7 +462,7 @@
   {:else}
     <div class="graph-wrap">
       {#if series.length === 0}
-        <div class="placeholder">Noch keine Daten zum Plotten. Logge Zahlen mit <code>serial.writeValue("Licht", x)</code>, <code>print('x,y'); print('1,2')</code> oder <code>datalogger.mirrorToSerial(true)</code>.</div>
+        <div class="placeholder"><LabelText parts={labelParts(labels.commsGraphEmpty, LOG_EXAMPLES, CODE_PARAMS)} tag="code" /></div>
       {:else}
         <div class="legend">
           {#each series as c (c.name)}

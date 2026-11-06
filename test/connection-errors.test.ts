@@ -15,10 +15,10 @@ import {
 
 // ---- BLE -----------------------------------------------------------------
 
-test('user-cancelled picker → aborted with empty message', () => {
+test('user-cancelled picker → aborted, nothing to show', () => {
   const c = classifyBleError(new DeviceError({ code: 'no-device-selected', message: 'cancelled' }));
   assert.equal(c.kind, 'aborted');
-  assert.equal(c.userMessage, '');
+  assert.equal(c.error, undefined);
 });
 
 test('DeviceError aborted → aborted', () => {
@@ -29,13 +29,13 @@ test('DeviceError aborted → aborted', () => {
 test('DeviceError unsupported → unsupported', () => {
   const c = classifyBleError(new DeviceError({ code: 'unsupported', message: 'x' }));
   assert.equal(c.kind, 'unsupported');
-  assert.ok(c.userMessage.length > 0);
+  assert.deepEqual(c.error, { code: 'ble-unsupported' });
 });
 
 test('pairing-information-lost → transient (no bond to lose in open mode)', () => {
   const c = classifyBleError(new DeviceError({ code: 'pairing-information-lost', message: 'lost' }));
   assert.equal(c.kind, 'transient');
-  assert.ok(c.userMessage.length > 0);
+  assert.deepEqual(c.error, { code: 'ble-failed' });
 });
 
 test('permission-denied → transient', () => {
@@ -67,7 +67,7 @@ test('"Must be connected" → not-connected-yet', () => {
 test('DeviceError device-in-use → device-in-use', () => {
   const c = classifyUsbError(new DeviceError({ code: 'device-in-use', message: 'busy' }));
   assert.equal(c.kind, 'device-in-use');
-  assert.ok(c.userMessage.length > 0);
+  assert.deepEqual(c.error, { code: 'usb-device-in-use' });
 });
 
 test('DeviceError device-disconnected → device-disconnected', () => {
@@ -81,16 +81,28 @@ test('"Unable to claim interface" → device-in-use', () => {
   assert.equal(classifyUsbError(new Error('Unable to claim interface.')).kind, 'device-in-use');
 });
 
-test('USB user-cancelled picker → no-device with empty message', () => {
+test('USB user-cancelled picker → no-device, nothing to show', () => {
   const c = classifyUsbError(new DeviceError({ code: 'no-device-selected', message: 'x' }));
   assert.equal(c.kind, 'no-device');
-  assert.equal(c.userMessage, '');
+  assert.equal(c.error, undefined);
 });
 
 test('unrecognised USB error → unknown carries the raw message', () => {
   const c = classifyUsbError(new Error('something weird'));
   assert.equal(c.kind, 'unknown');
-  assert.equal(c.userMessage, 'something weird');
+  assert.deepEqual(c.error, { code: 'usb-unknown', message: 'something weird' });
+});
+
+test('unrecognised USB error without a message → unknown, worded by the label', () => {
+  assert.deepEqual(classifyUsbError(new Error('')).error, { code: 'usb-unknown' });
+});
+
+test('the two device-disconnected wordings stay apart', () => {
+  assert.deepEqual(classifyUsbError(new Error('The device was disconnected.')).error, { code: 'usb-interrupted' });
+  assert.deepEqual(
+    classifyUsbError(new Error("Failed to execute 'requestDevice': Must be handling a user gesture")).error,
+    { code: 'usb-session-lost' },
+  );
 });
 
 // ---- expected-reboot window ----------------------------------------------

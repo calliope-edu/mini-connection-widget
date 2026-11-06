@@ -30,7 +30,7 @@
   import { calliopeUsbRecovery } from '../usb-recovery';
   import { deriveConnectionView, statusLabel } from '../connection-view';
   import ConnectionPanel from './ConnectionPanel.svelte';
-  import { mergeLabels, type ConnectLabels } from './labels';
+  import { connectLabels, mergeLabels, type ConnectLabels } from './labels';
   import { onMount } from 'svelte';
 
   type Props = {
@@ -45,14 +45,14 @@
      *     neutral otherwise.
      */
     appearance?: 'dark' | 'light' | 'icon';
-    /** Translation overrides; defaults are German. */
+    /** Translation overrides for this instance; win over `setConnectLabels`. */
     labels?: Partial<ConnectLabels>;
     /** Expose the pin / drag floating window + comms log (off by default). */
     advanced?: boolean;
   };
 
   let { appearance = 'dark', labels: labelsProp, advanced = false }: Props = $props();
-  const labels = $derived(mergeLabels(labelsProp));
+  const labels = $derived(mergeLabels(labelsProp, $connectLabels));
 
   const s = $derived($calliopeState);
   const recovery = $derived($calliopeUsbRecovery);
@@ -257,7 +257,7 @@
       onclick={() => (open = !open)}
       aria-haspopup="true"
       aria-expanded={open}
-      title={effectivePinned ? labels.triggerTitle + ' (Fenster offen)' : labels.triggerTitle}
+      title={effectivePinned ? `${labels.triggerTitle} (${labels.triggerPinned})` : labels.triggerTitle}
     >
       {#if isIndeterminate}
         <span class="spinner" aria-hidden="true"></span>
@@ -281,7 +281,7 @@
         {advanced}
       />
     </div>
-    <button class="popover-scrim" type="button" aria-label="close" onclick={() => (open = false)}></button>
+    <button class="popover-scrim" type="button" aria-label={labels.close} onclick={() => (open = false)}></button>
   {/if}
 </div>
 
@@ -306,7 +306,7 @@
     <div
       class="floating-resize"
       role="presentation"
-      title="Größe ändern"
+      title={labels.resize}
       onpointerdown={onResizePointerDown}
       onpointermove={onResizePointerMove}
       onpointerup={onResizePointerUp}

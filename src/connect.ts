@@ -62,7 +62,7 @@ export async function connectCalliope(
       updateState((s) => ({
         ...s,
         bleStatus: 'connecting',
-        bleErrorMessage: undefined,
+        bleError: undefined,
         // User is explicitly asking for BLE — clear the "I disconnected on
         // purpose" flag so the reconnect daemon resumes work if this attempt
         // ever drops.
@@ -106,7 +106,7 @@ export async function connectCalliope(
           if (getState().userDisconnectedBle) return; // user cancelled meanwhile
           const classified = classifyBleError(err);
           if (classified.kind === 'aborted') {
-            updateState((s) => ({ ...s, bleStatus: 'disconnected', bleErrorMessage: undefined, connectTargetName: undefined }));
+            updateState((s) => ({ ...s, bleStatus: 'disconnected', bleError: undefined, connectTargetName: undefined }));
             return;
           }
           // Timed out or failed → the saved device isn't answering. Forget it so
@@ -140,7 +140,7 @@ export async function connectCalliope(
           const classified = classifyBleError(err);
           if (classified.kind === 'aborted') {
             // User cancelled the picker — not an error; don't retry or modal.
-            updateState((s) => ({ ...s, bleStatus: 'disconnected', bleErrorMessage: undefined, connectTargetName: undefined }));
+            updateState((s) => ({ ...s, bleStatus: 'disconnected', bleError: undefined, connectTargetName: undefined }));
             return;
           }
           // User hit "Abbrechen / give up" mid-retry → stop quietly.
@@ -162,7 +162,7 @@ export async function connectCalliope(
         direction: 'info',
         text: `BLE connect failed after ${BLE_TRIES} attempts (kind=${classified.kind}): ${(lastErr as Error)?.message ?? lastErr}`,
       });
-      updateState((s) => ({ ...s, bleStatus: 'error', bleErrorMessage: classified.userMessage, connectTargetName: undefined }));
+      updateState((s) => ({ ...s, bleStatus: 'error', bleError: classified.error, connectTargetName: undefined }));
       if (classified.kind === 'transient') showBleOfflineInfo();
       return;
     } else {
@@ -204,7 +204,7 @@ export async function connectCalliope(
       updateState((s) => ({
         ...s,
         usbStatus: 'connecting',
-        usbErrorMessage: undefined,
+        usbError: undefined,
         userDisconnectedUsb: false,
       }));
       // Arm the recovery ladder up front so its "please re-plug the mini" step
@@ -226,7 +226,7 @@ export async function connectCalliope(
     if (transport === 'ble') {
       const classified = classifyBleError(err);
       if (classified.kind === 'aborted') {
-        updateState((s) => ({ ...s, bleStatus: 'disconnected', bleErrorMessage: undefined, connectTargetName: undefined }));
+        updateState((s) => ({ ...s, bleStatus: 'disconnected', bleError: undefined, connectTargetName: undefined }));
         return;
       }
       appendLog({
@@ -236,7 +236,7 @@ export async function connectCalliope(
       updateState((s) => ({
         ...s,
         bleStatus: 'error',
-        bleErrorMessage: classified.userMessage,
+        bleError: classified.error,
       }));
       // Transient connect failures on a user-initiated attempt usually mean
       // the Calliope is running a non-BLE hex. Surface the offline-info
@@ -247,10 +247,10 @@ export async function connectCalliope(
     }
     const classified = classifyUsbError(err);
     if (classified.kind === 'no-device') {
-      updateState((s) => ({ ...s, usbStatus: 'disconnected', usbErrorMessage: undefined }));
+      updateState((s) => ({ ...s, usbStatus: 'disconnected', usbError: undefined }));
       return;
     }
-    updateState((s) => ({ ...s, usbStatus: 'error', usbErrorMessage: classified.userMessage }));
+    updateState((s) => ({ ...s, usbStatus: 'error', usbError: classified.error }));
     // Raw Chromium messages like "Unable to claim interface" / "The device was
     // disconnected" mean nothing to a kid. Drive the light banner's recovery
     // ladder (Verbinden → USB neu einstecken → Seite neu laden) instead.
@@ -292,7 +292,7 @@ export async function disconnectUsbKeepPermission(): Promise<void> {
     ...s,
     usbStatus: SUPPORT.usb ? 'disconnected' : 'unsupported',
     jlinkUsbStatus: 'disconnected',
-    usbErrorMessage: undefined,
+    usbError: undefined,
     // Stop the reconnect daemon from immediately re-attaching; the next
     // explicit "Verbinden" clears this. The permission is retained, so that
     // reconnect is silent (getDevices) — no picker.
@@ -318,7 +318,7 @@ export async function disconnectAndForget(transport: CalliopeTransport): Promise
       usbStatus: SUPPORT.usb ? 'disconnected' : 'unsupported',
       jlinkUsbStatus: 'disconnected',
       usbDeviceName: undefined,
-      usbErrorMessage: undefined,
+      usbError: undefined,
       userDisconnectedUsb: true,
       // Drop the friendly name if BLE isn't also holding the device.
       friendlyName: s.bleStatus === 'connected' ? s.friendlyName : undefined,
@@ -332,7 +332,7 @@ export async function disconnectAndForget(transport: CalliopeTransport): Promise
     ...s,
     bleStatus: SUPPORT.ble ? 'disconnected' : 'unsupported',
     bleDeviceName: undefined,
-    bleErrorMessage: undefined,
+    bleError: undefined,
     bleHasPermission: false,
     bleCanFlash: false,
     bleCanCommunicate: false,

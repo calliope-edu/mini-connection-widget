@@ -1,7 +1,9 @@
 <script lang="ts">
   import { calliopeUsbPlugRequest } from '../usb-plug';
+  import { connectLabels } from './labels';
 
   const req = $derived($calliopeUsbPlugRequest);
+  const labels = $derived($connectLabels);
 </script>
 
 {#if req}
@@ -14,17 +16,17 @@
           <path d="M12 17v3" />
         </svg>
       </div>
-      <h2 id="usb-plug-title">Calliope per USB anschließen</h2>
+      <h2 id="usb-plug-title">{labels.usbPlugTitle}</h2>
       <ol class="steps">
-        <li>USB-Kabel mit dem Calliope verbinden.</li>
-        <li>Auf <em>"Übertragen"</em> klicken — beim allerersten Mal Browser-Dialog mit dem Calliope auswählen.</li>
+        <li>{labels.usbPlugStep1}</li>
+        <li>{labels.usbPlugStep2}</li>
       </ol>
       <div class="actions">
         <button type="button" class="btn ghost" onclick={() => req.cancel()}>
-          Abbrechen
+          {labels.cancel}
         </button>
         <button type="button" class="btn primary" onclick={() => req.confirm()}>
-          Übertragen
+          {labels.usbPlugConfirm}
         </button>
       </div>
     </div>

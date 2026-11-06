@@ -29,9 +29,10 @@ import { BlocksFrameParser, buildBlocksFrame, BLOCKS_REQ, BLOCKS_RES, type Block
 import { logIncomingFrame, logOutgoingFrame } from './blocks-protocol';
 import { noteBlocksFrame, noteBlocksVersion, resetBlocksLiveness } from './blocks-liveness';
 import { getDapOwner, setDapOwner, onDapOwnerChange, withDapBus } from './dap-arbiter';
+import { waitForDaplinkSwdRelease, type SwdGuardAdi } from './daplink-swd-guard';
 
 /** The slice of @microbit/microbit-connection's ArmDebug we use (same as jacdac.ts). */
-interface ArmDebugLike {
+interface ArmDebugLike extends SwdGuardAdi {
   readonly isOpen: boolean;
   /** Bring up the SWD debug port. Idempotent; does NOT halt or reset the core. */
   connect(maxRetries?: number): Promise<void>;
@@ -82,6 +83,10 @@ let droppedFrames = 0;
 // finds nothing ("exchange buffer not found") until a full reconnect. reinit()
 // clears the cache + re-powers the debug domain — the lib's fix for exactly this.
 let needsReinit = false;
+// Set by a mid-loop SWD fault: before that reinit, wait until DAPLink is not
+// holding the core halted — the fault may be DAPLink taking the port for a
+// drag&drop flash, and a reinit then kills that flash (daplink-swd-guard.ts).
+let faultReinit = false;
 
 /**
  * After a USB flash, force the next Blocks-DAP scan to rebuild the SWD session.
@@ -134,11 +139,13 @@ export function kickBlocksDapRescan(): void {
  *  successful bring-up so a still-rebooting device retries reinit next scan. */
 async function ensureSwd(adi: ArmDebugLike): Promise<void> {
   if (needsReinit && typeof adi.reinit === 'function') {
+    if (faultReinit) await waitForDaplinkSwdRelease(adi);
     await adi.reinit();
   } else {
     await adi.connect();
   }
   needsReinit = false;
+  faultReinit = false;
 }
 
 /** True once the exchange mailbox has been located on the connected device. */
@@ -381,6 +388,7 @@ async function runLoop(): Promise<void> {
     // don't tight-loop against a still-rebooting target.
     scanCooldownUntil = Date.now() + 1500;
     needsReinit = true;
+    faultReinit = true;
     if (rescanTimer) clearTimeout(rescanTimer);
     rescanTimer = setTimeout(() => { rescanTimer = null; kickBlocksDapRescan(); }, 2000);
   } finally {

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { mini2SerialOfferRequest } from '../mini2-serial';
+  import { connectLabels } from './labels';
 
   /**
    * "Add the mini 2's serial link?" modal. Driven by `mini2SerialOfferRequest`
@@ -8,6 +9,7 @@
    * from this button's click — the user gesture `requestPort` requires.
    */
   const req = $derived($mini2SerialOfferRequest);
+  const labels = $derived($connectLabels);
   let busy = $state(false);
   async function accept(): Promise<void> {
     if (!req || busy) return;
@@ -32,8 +34,8 @@
   >
     <div class="card">
       <div class="card-header">
-        <h2 id="mini2-serial-title">Serial verbinden?</h2>
-        <button type="button" class="close-btn" aria-label="Schließen" onclick={() => req.decline()}>
+        <h2 id="mini2-serial-title">{labels.mini2SerialTitle}</h2>
+        <button type="button" class="close-btn" aria-label={labels.close} onclick={() => req.decline()}>
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M6 6l12 12M18 6 6 18" />
           </svg>
@@ -41,19 +43,15 @@
       </div>
 
       <div class="card-body">
-        <p>
-          Dieser Editor kann mit dem Calliope mini kommunizieren (Serial). Dein
-          Calliope mini 2 ist bisher nur zum Übertragen verbunden — wähle im
-          nächsten Dialog „CDC – COM x“, um die Datenverbindung herzustellen.
-        </p>
+        <p>{labels.mini2SerialText}</p>
       </div>
 
       <div class="actions">
         <button type="button" class="btn ghost" onclick={() => req.decline()} disabled={busy}>
-          Später
+          {labels.later}
         </button>
         <button type="button" class="btn usb" onclick={accept} disabled={busy}>
-          {busy ? 'Verbinde…' : 'Serial verbinden'}
+          {busy ? labels.connecting : labels.serialConnect}
         </button>
       </div>
     </div>

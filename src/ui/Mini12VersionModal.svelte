@@ -1,5 +1,7 @@
 <script lang="ts">
   import { mini12VersionAskRequest } from '../mini12-version-ask';
+  import { connectLabels, labelParts } from './labels';
+  import LabelText from './LabelText.svelte';
 
   /**
    * "Which Calliope mini is this — 1 or 2?" modal. Raised by the flash
@@ -7,6 +9,7 @@
    * whose version is ambiguous. Same card styling as `ConnectionChoiceModal`.
    */
   const req = $derived($mini12VersionAskRequest);
+  const labels = $derived($connectLabels);
 </script>
 
 {#if req}
@@ -21,8 +24,8 @@
   >
     <div class="card">
       <div class="card-header">
-        <h2 id="mini12-version-title">Welcher Calliope mini ist das?</h2>
-        <button type="button" class="close-btn" aria-label="Schließen" onclick={() => req.choose('cancel')}>
+        <h2 id="mini12-version-title">{labels.mini12Title}</h2>
+        <button type="button" class="close-btn" aria-label={labels.close} onclick={() => req.choose('cancel')}>
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M6 6l12 12M18 6 6 18" />
           </svg>
@@ -31,22 +34,20 @@
 
       <div class="card-body">
         <p>
-          <strong>{req.fileName}</strong> braucht 32&nbsp;KB RAM und läuft nur auf dem
-          Calliope mini&nbsp;2. Über Bluetooth können wir mini&nbsp;1 und mini&nbsp;2
-          nicht unterscheiden — die Version steht auf der Rückseite des Boards.
+          <LabelText parts={labelParts(labels.mini12Text, { fileName: req.fileName }, ['fileName'])} />
         </p>
 
         <div class="choices">
           <button type="button" class="choice" onclick={() => req.choose('V2')}>
             <span class="choice-body">
               <span class="choice-title">Calliope mini 2</span>
-              <span class="choice-detail">32 KB RAM — Übertragung startet.</span>
+              <span class="choice-detail">{labels.mini12Mini2Detail}</span>
             </span>
           </button>
           <button type="button" class="choice" onclick={() => req.choose('V1')}>
             <span class="choice-body">
               <span class="choice-title">Calliope mini 1</span>
-              <span class="choice-detail">16 KB RAM — dieses Programm kann darauf nicht laufen.</span>
+              <span class="choice-detail">{labels.mini12Mini1Detail}</span>
             </span>
           </button>
         </div>
@@ -54,7 +55,7 @@
 
       <div class="actions">
         <button type="button" class="btn ghost" onclick={() => req.choose('cancel')}>
-          Abbrechen
+          {labels.cancel}
         </button>
       </div>
     </div>
