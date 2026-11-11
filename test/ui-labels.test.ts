@@ -135,7 +135,7 @@ test('BleOfflineModal shows the English set', () => {
   try {
     shows(
       text(BleOfflineModal),
-      ['Bluetooth is off on your Calliope right now', 'Two ways back:', 'Hold A + B and press Reset', 'Plug in the USB cable', 'Use USB', 'Reconnect', 'Cancel connection', 'Close'],
+      ['Bluetooth is off on your Calliope right now', 'Two ways back:', 'Triple Reset: press the reset button three times quickly', 'Plug in the USB cable', 'Use USB', 'Reconnect', 'Cancel connection', 'Close'],
       ['Bluetooth ist auf deinem Calliope gerade aus', 'Zwei Wege zurück', 'USB nehmen', 'Erneut verbinden', 'Schließen'],
     );
   } finally {

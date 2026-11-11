@@ -338,14 +338,14 @@ export const DEFAULT_LABELS: ConnectLabels = {
   errorBleFlashAborted: 'Übertragung abgebrochen.',
   errorBleFlashFailedNoUsb:
     'Übertragung per Bluetooth fehlgeschlagen und kein USB verfügbar — bitte ein BLE-fähiges ' +
-    'Programm übertragen (A+B halten und Reset drücken, dann erneut versuchen).',
+    'Programm übertragen (Triple Reset: Reset-Knopf dreimal schnell drücken, dann erneut versuchen).',
   errorBleNeedsMini2:
     'Dieses Programm benötigt 32 KB RAM und läuft nur auf dem Calliope mini 2 — auf dem ' +
     'Calliope mini 1 kann es nicht starten.',
   errorBleNotBackAfterFlash:
     'Nach dem Übertragen ist keine Bluetooth-Verbindung zurückgekommen. Wenn dein Programm kein ' +
     'Bluetooth einschaltet (z. B. MakeCode auf Mini 1, ein Radio-Programm, oder MicroPython auf ' +
-    'Mini 1/2), halte A+B gedrückt und drücke Reset, um Bluetooth wieder zu starten.',
+    'Mini 1/2), mach einen Triple Reset (Reset-Knopf dreimal schnell drücken), um Bluetooth wieder zu starten.',
   errorBleUnknown: 'Unbekannter Bluetooth-Fehler.',
   errorUsbUnsupported: 'WebUSB wird in diesem Browser nicht unterstützt.',
   errorUsbDeviceInUse: 'Calliope wird gerade von einem anderen Tab oder Programm benutzt.',
@@ -410,7 +410,7 @@ export const DEFAULT_LABELS: ConnectLabels = {
   bleOfflineLead: 'Wahrscheinlich läuft ein Programm ohne Bluetooth.',
   bleOfflineStepsNative: 'So geht es weiter:',
   bleOfflineStepsWeb: 'Zwei Wege zurück:',
-  bleOfflineResetTitle: 'A + B halten und Reset drücken',
+  bleOfflineResetTitle: 'Triple Reset: Reset-Knopf dreimal schnell drücken',
   bleOfflineResetHint:
     'Der Calliope startet in den DFU-Modus (Display zeigt z. B. ein Plus „+“). ' +
     'Dann unten auf „Erneut verbinden“ klicken — wir übertragen ein BLE-fähiges Programm.',

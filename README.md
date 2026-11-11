@@ -168,7 +168,7 @@ doesn't render is a flow that dead-ends. Mount all of them once, app-wide:
 | `Mini2SerialOfferModal` | A mini 2 linked flash-only never gets its CDC port offered. |
 | `Mini12VersionModal` | The BLE RAM-fit gate can't ask mini 1 vs mini 2 and cancels the flash. |
 | `UsbPlugRequestModal` | The "plug in the cable" prompt never appears. |
-| `BleOfflineModal` | No A+B+Reset guidance when BLE can't be reached. |
+| `BleOfflineModal` | No Triple Reset guidance when BLE can't be reached. |
 
 A host is free to render its own component off the same store instead — campus
 substitutes its own `ConnectionChoiceModal` so the card matches its other

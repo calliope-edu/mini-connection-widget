@@ -11,7 +11,7 @@
   // In native (iOS/Android bridge) mode the host owns the radio: it auto-
   // reconnects and flashes once the mini is back in Bluetooth mode, and the
   // USB / "retry BLE" web actions don't map to anything there. So the modal is
-  // purely an A+B+Reset instruction — hide the web-only steps and buttons.
+  // purely a Triple Reset instruction — hide the web-only steps and buttons.
   const native = isNativeMode();
 
   // "Connection attempt failed" is CoreBluetooth error 6 (CBErrorConnectionFailed),
@@ -24,7 +24,7 @@
   let retrying = $state(false);
 
   // Auto-dismiss as soon as either transport becomes connected — the
-  // recovery worked (whether via AB+Reset → DfuTarg or via USB cable),
+  // recovery worked (whether via Triple Reset → DfuTarg or via USB cable),
   // there's nothing more to do.
   $effect(() => {
     if (!visible) return;

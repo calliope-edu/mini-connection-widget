@@ -8,7 +8,7 @@ import { writable, type Readable } from './store';
  * without BLE enabled.
  *
  * Recovery paths from the modal:
- *  1. User presses A+B+Reset on the Calliope → device enters DfuTarg → user
+ *  1. User does a Triple Reset on the Calliope → device enters DfuTarg → user
  *     clicks Verbinden again → reconnect daemon picks up the DFU device →
  *     dispatcher routes any pending flash via BLE-DFU.
  *  2. User plugs in USB → connection-choice modal or direct USB flow.
