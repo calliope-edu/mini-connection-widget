@@ -306,7 +306,7 @@ export interface FlashOverNordicDfuOptions {
   /**
    * Whether the device is currently running the application or is already
    * sitting in the bootloader (e.g. a previous BLE-DFU was interrupted
-   * mid-transfer, or the user entered DFU mode with A+B+Reset). Drives the
+   * mid-transfer, or the user entered DFU mode with Triple Reset). Drives the
    * resume path.
    *
    * Defaults to `'auto'`, which probes the GATT characteristics:
@@ -356,7 +356,7 @@ export async function flashOverNordicDfuWeb(opts: FlashOverNordicDfuOptions): Pr
   // previous BLE-DFU was interrupted mid-transfer (the bootloader stays in
   // its DFU-in-progress state, showing "+" on the LED matrix from the
   // progress histogram and keeping the Nordic DFU service advertised), or
-  // when the user forced DFU mode with A+B+Reset.
+  // when the user forced DFU mode with Triple Reset.
   //
   // In that case we skip the buttonless-enter dance entirely — there's no
   // app running to host the buttonless characteristic, and trying to write

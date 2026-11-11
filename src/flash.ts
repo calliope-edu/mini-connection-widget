@@ -76,7 +76,7 @@ export interface FlashOptions {
    * Whether the program being flashed will leave BLE running. `false` for
    * programs known to turn BLE off (MicroPython, or MakeCode with the radio
    * extension); omit when unknown. Only forwarded to the native host, which
-   * uses it to prompt for A+B+Reset sooner during reconnect-before-flash — it
+   * uses it to prompt for Triple Reset sooner during reconnect-before-flash — it
    * never gates the flash itself.
    */
   programHasBle?: boolean;
@@ -91,7 +91,7 @@ export async function flashCalliope(
   if (isNativeMode()) {
     // Native host owns transport choice and reconnect, but we still tell it
     // when to force full DFU and whether the program keeps BLE on (so it can
-    // prompt for A+B+Reset sooner). `preferredTransport` is ignored — there's
+    // prompt for Triple Reset sooner). `preferredTransport` is ignored — there's
     // only one path on mobile (BLE open-mode).
     return nativeFlash(hex, name, opts.forceFullDfu ?? false, opts.programHasBle);
   }
@@ -667,7 +667,7 @@ async function scheduleBleReconnect(): Promise<void> {
   if (s.bleStatus !== 'connected' && !s.userDisconnectedBle) {
     appendLog({
       direction: 'info',
-      text: 'BLE did not return after flash — likely a program without BLE; prompting A+B+Reset.',
+      text: 'BLE did not return after flash — likely a program without BLE; prompting Triple Reset.',
     });
     updateState((st) => ({
       ...st,

@@ -94,7 +94,7 @@ export async function nativeFlash(hex: string, name: string, forceFullDfu = fals
     //
     // `programHasBle: false` tells the host the new program turns BLE off
     // (MicroPython, MakeCode-with-radio), so its reconnect-before-flash prompts
-    // for A+B+Reset sooner. Omitted ⇒ unknown; `JSON.stringify` drops it.
+    // for Triple Reset sooner. Omitted ⇒ unknown; `JSON.stringify` drops it.
     await sendNative<void>('flash', { hex, name, forceFullDfu, programHasBle });
     updateState((st) => ({ ...st, lastFlashAt: Date.now() }));
   } catch (err) {

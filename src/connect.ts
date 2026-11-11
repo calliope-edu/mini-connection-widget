@@ -120,9 +120,9 @@ export async function connectCalliope(
         }
       }
       // Retry transient connect failures BEFORE surfacing the destructive
-      // A+B+Reset offline modal — mirrors the USB connectWithRetry. A momentary
+      // Triple Reset offline modal — mirrors the USB connectWithRetry. A momentary
       // RF glitch / Windows-BT hiccup / device-asleep on a BLE-capable device
-      // must not tell a child to A+B+Reset (which drops the running program
+      // must not tell a child to do a Triple Reset (which drops the running program
       // into the bootloader). The chooser (if any) ran inside the first
       // c.connect(); retries reuse the already-picked device — no re-prompt.
       const BLE_TRIES = 3;
@@ -240,7 +240,7 @@ export async function connectCalliope(
       }));
       // Transient connect failures on a user-initiated attempt usually mean
       // the Calliope is running a non-BLE hex. Surface the offline-info
-      // modal so the user gets numbered steps to recover (AB+Reset → DFU,
+      // modal so the user gets numbered steps to recover (Triple Reset → DFU,
       // or plug in USB) instead of just a red error chip in the panel.
       if (classified.kind === 'transient') showBleOfflineInfo();
       return;
