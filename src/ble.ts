@@ -796,7 +796,7 @@ export async function flashCalliopeViaBleDfu(
   const hasSecureDfu = await deviceHasService(device, 0xfe59);
   if (!hasSecureDfu) {
     throw new BluetoothDfuFailedError(
-      'Kein BLE-DFU-Dienst gefunden. Mach einen Triple Reset (Reset-Knopf dreimal schnell drücken) ' +
+      'Kein BLE-DFU-Dienst gefunden. Drücke den Reset-Knopf dreimal schnell ' +
       'und verbinde erneut — oder übertrage per USB.',
     );
   }

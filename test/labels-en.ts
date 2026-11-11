@@ -87,14 +87,14 @@ export const EN_LABELS: ConnectLabels = {
   errorBleFlashAborted: 'Transfer cancelled.',
   errorBleFlashFailedNoUsb:
     'Transfer over Bluetooth failed and USB is not available — please transfer a Bluetooth-capable ' +
-    'program (Triple Reset: press the reset button three times quickly, then try again).',
+    'program (press the reset button three times quickly, then try again).',
   errorBleNeedsMini2:
     'This program needs 32 KB of RAM and only runs on the Calliope mini 2 — it cannot start ' +
     'on a Calliope mini 1.',
   errorBleNotBackAfterFlash:
     'The Bluetooth connection did not come back after the transfer. If your program does not turn ' +
-    'on Bluetooth (e.g. MakeCode on mini 1, a radio program, or MicroPython on mini 1/2), do a ' +
-    'Triple Reset (press the reset button three times quickly) to start Bluetooth again.',
+    'on Bluetooth (e.g. MakeCode on mini 1, a radio program, or MicroPython on mini 1/2), press ' +
+    'the reset button three times quickly to start Bluetooth again.',
   errorBleUnknown: 'Unknown Bluetooth error.',
   errorUsbUnsupported: 'WebUSB is not supported in this browser.',
   errorUsbDeviceInUse: 'The Calliope is being used by another tab or program.',
@@ -158,7 +158,7 @@ export const EN_LABELS: ConnectLabels = {
   bleOfflineLead: 'A program without Bluetooth is probably running.',
   bleOfflineStepsNative: 'Here is how to continue:',
   bleOfflineStepsWeb: 'Two ways back:',
-  bleOfflineResetTitle: 'Triple Reset: press the reset button three times quickly',
+  bleOfflineResetTitle: 'Press the reset button three times quickly',
   bleOfflineResetHint:
     'The Calliope starts in DFU mode (the display shows a plus “+”, for example). Then click ' +
     '“Reconnect” below — we transfer a program with Bluetooth.',
