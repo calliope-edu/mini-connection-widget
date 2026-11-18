@@ -18,9 +18,9 @@
     onchange?: (grid: boolean[][]) => void;
     /** Pixel size of the square pad. */
     size?: number;
-    /** Lit-pixel color. */
+    /** Lit-pixel color (any CSS colour; default: the Calliope LED orange). */
     color?: string;
-    /** Unlit-pixel color. */
+    /** Unlit-pixel color (any CSS colour; default: the hover tint token, readable on light and dark surfaces). */
     offColor?: string;
     /** Read-only display (no pointer/keyboard editing). */
     disabled?: boolean;
@@ -29,8 +29,8 @@
     value,
     onchange,
     size = 150,
-    color = '#ff4e00',
-    offColor = 'rgba(255,255,255,0.12)',
+    color = 'var(--cui-palette-orange)',
+    offColor = 'var(--cui-action-hover)',
     disabled = false,
   }: Props = $props();
 
@@ -69,17 +69,19 @@
     display: grid;
     grid-template-columns: repeat(5, 1fr);
     grid-template-rows: repeat(5, 1fr);
-    gap: 6px;
+    gap: var(--cui-space-1);
     width: var(--size);
     height: var(--size);
   }
   .cell {
     padding: 0;
     border: 0;
-    border-radius: 6px;
+    border-radius: var(--cui-radius-md);
     background: var(--off);
     cursor: pointer;
-    transition: background 0.12s ease, transform 0.08s ease;
+    transition:
+      background var(--cui-duration-fast) var(--cui-easing-standard),
+      transform var(--cui-duration-fast) var(--cui-easing-standard);
   }
   .cell.on {
     background: var(--on);
@@ -88,8 +90,8 @@
     transform: scale(1.06);
   }
   .cell:not(:disabled):focus-visible {
-    outline: 2px solid #fff;
-    outline-offset: 2px;
+    outline: var(--cui-border-width-focus) solid var(--cui-focus-ring);
+    outline-offset: var(--cui-focus-offset);
   }
   .cell:disabled {
     cursor: default;

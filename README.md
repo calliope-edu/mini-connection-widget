@@ -48,6 +48,10 @@ local checkout (`link:`), or a vendored copy. With pnpm:
     // superrepo overlay can rewrite it to workspace:* for local widget work.
     "@calliope-edu/mini-connection-widget":
       "github:calliope-edu/mini-connection-widget#<full-sha>",
+    // The Svelte UI is built from calliope-ui. Pin the sha this repo's
+    // package.json names as peer dependency (or a newer one).
+    "@calliope-edu/ui":
+      "github:calliope-edu/calliope-ui#e5c6cb82dceadf73078a0442bc5beb99f7605453",
     "@capacitor-community/bluetooth-le": "^7.3.0",
     "@capacitor/core": "^7.4.4",
     "@capacitor/filesystem": "^7.1.6",
@@ -65,6 +69,27 @@ local checkout (`link:`), or a vendored copy. With pnpm:
 }
 ```
 
+### calliope-ui (the UI's look)
+
+Every Svelte component here (`ConnectButton`, `ConnectionPanel`, the banner,
+the six modals, `CommsPanel`, `MakeCodeToolbar`, `MakeCodeShareModal`) is
+built from [calliope-ui](https://github.com/calliope-edu/calliope-ui)
+(`@calliope-edu/ui`): `Dialog`, `ChoiceList`, `Button`, `Popover`,
+`StatusDot`, `ProgressBar`, `Tabs`, `Icon`, and colours only through its
+`--cui-*` tokens. It is an optional peer dependency (only the UI needs it), so
+the host installs it and loads its CSS once, app-wide:
+
+```ts
+// e.g. the root +layout.svelte
+import '@calliope-edu/ui/styles.css'; // brings tokens.css with it
+```
+
+Without the tokens the components render unstyled (no colours, no spacing).
+The UI follows calliope-ui's `data-theme`: light by default, dark inside any
+`data-theme="dark"` subtree. `ConnectButton` draws its trigger in the dark
+theme by default (it sits in dark headers; `theme="light"` or `"inherit"`
+changes that), while its dropdown, the dialogs and the banner follow the page.
+
 ### Vite setup
 
 This package ships **unbuilt source** — its entry is `src/index.ts` and it
@@ -75,7 +100,8 @@ required, and the second is easy to miss:
 // vite.config.js
 optimizeDeps: {
   // Without this the dep optimizer tries to prebundle the widget and fails.
-  exclude: ['@calliope-edu/mini-connection-widget'],
+  // calliope-ui ships Svelte source as well.
+  exclude: ['@calliope-edu/mini-connection-widget', '@calliope-edu/ui'],
   // Excluded means Vite never crawls the widget's imports, so its transitive
   // deps go un-prebundled too. nrf-intel-hex (MemoryMap, used by four widget
   // modules) ships a UMD `browser` build with no ESM exports, which Vite
@@ -85,6 +111,9 @@ optimizeDeps: {
 },
 // Only when consuming the widget from a checkout outside node_modules:
 server: { fs: { allow: ['..'] } },
+// With a linked widget checkout, also dedupe calliope-ui so the widget and
+// the app share one copy:
+resolve: { dedupe: ['svelte', '@calliope-edu/ui'] },
 ```
 
 ## Usage
@@ -174,10 +203,16 @@ A host is free to render its own component off the same store instead — campus
 substitutes its own `ConnectionChoiceModal` so the card matches its other
 modals. What isn't optional is that *something* resolves each request.
 
-**Banner placement.** By default the banner is a fixed top-centre toast at
-`z-index: 8000`. If your app has a header above that, pass `container` — an
-element with `position: relative` — and the banner positions itself inside it
-instead.
+**Banner placement.** By default the banner is a fixed top-centre toast on
+calliope-ui's overlay layer (`--cui-z-index-overlay`: above the page header,
+below dialogs and popovers). If your app has a header above that, pass
+`container` — an element with `position: relative` — and the banner positions
+itself inside it instead.
+
+**Look.** Dialogs are calliope-ui `Dialog`s (focus trap; Escape, the scrim and
+the close button cancel the request like "Abbrechen"). USB and Bluetooth carry
+no colour of their own: green and blue are status colours in calliope-ui, so
+transports are told apart by their `usb` / `bluetooth` icons and a word.
 
 **App mode.** Inside the iOS / Android shells (`calliopeState.nativeMode`, set
 once at load from the injected native bridge) the host app owns the connection,
@@ -240,7 +275,7 @@ import {
 | `project` | Pure pxt.json helpers: Calliope headers, extension list/remove, `v1`/`v2`/`v3` board revision, structural validation. |
 | `serial-bridge` | Device serial → the editor's serial monitor, as the same `{type:'serial'}` message pxt's own reader posts. Declares `setSerialConsumer` so a flash-only mini 2 gets the widget's serial offer, and pauses while the Blocks LIVE runtime owns the link. |
 | `jacdac-host` | Jacdac frames between the device and pxt's Jacdac message simulator. |
-| `ui/` | `MakeCodeToolbar` + `MakeCodeShareModal`, themed through `--mkc-*` custom properties and translated through `MakeCodeLabels`. |
+| `ui/` | `MakeCodeToolbar` + `MakeCodeShareModal`, built from calliope-ui and translated through `MakeCodeLabels`. The toolbar follows the surrounding theme; `theme="light"` / `"dark"` pins it. (The `--mkc-*` custom properties are gone, and so is the old `Popover` / `closeAllPopovers` export.) |
 
 The host still owns program storage, workspace-sync policy and program
 switching — those differ per app and deliberately stay in the app.

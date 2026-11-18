@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
+  import { Button, Icon, IconButton, ProgressBar, Spinner, type IconName } from '@calliope-edu/ui';
   import type { CalliopeTransport } from '../state';
   import { calliopeState, getState } from '../state';
   import {
@@ -37,9 +38,13 @@
    * Once a transport is connected we never nudge for the other one (goal 4):
    * the only thing shown on a healthy connection is editor `extra` content.
    *
-   * Transport palette (kept in sync with the panel + choice modal):
-   *   USB  = green  #98f600 (dark text)
-   *   BLE  = blue   #2f80ed (white text)
+   * Look: calliope-ui `Banner` (status colour as a left stripe and an icon
+   * disc, never as a tinted background), rebuilt here because the leading
+   * slot also shows a spinner, the target mini's LED pattern or the replug
+   * illustration, and the banner keeps its own fixed / portaled positioning.
+   * Transports carry no colour of their own: green and blue are status
+   * colours in calliope-ui, so USB and Bluetooth buttons are neutral with an
+   * icon.
    *
    * `container`: optional element to portal the banner into (e.g. an editor's
    * content area). When set, the banner renders INSIDE it, positioned near the
@@ -228,6 +233,27 @@
     || (kind === 'extra' && extra?.tone === 'loading'),
   );
 
+  type Tone = 'info' | 'success' | 'warning' | 'error';
+  const tone = $derived.by<Tone>(() => {
+    if (kind === 'success') return 'success';
+    if (kind === 'unsupported') return 'error';
+    if (kind === 'recovery') {
+      if (recovery === 'replug') return 'warning';
+      if (recovery === 'reload') return 'error';
+    }
+    return 'info';
+  });
+  const toneIcon: Record<Tone, IconName> = {
+    info: 'info',
+    success: 'check',
+    warning: 'warning',
+    error: 'error',
+  };
+  // Extra actions name their transport only when the editor says so.
+  function actionIcon(variant: 'usb' | 'ble' | undefined): IconName | undefined {
+    return variant === 'ble' ? 'bluetooth' : variant === 'usb' ? 'usb' : undefined;
+  }
+
   async function connect(transport: CalliopeTransport): Promise<void> {
     if (connecting) return;
     connecting = true;
@@ -302,45 +328,46 @@
 </script>
 
 {#if visible}
-  <div class="banner" class:neutral class:success={kind === 'success'} class:illustrated={kind === 'recovery' && recovery === 'replug'} class:portaled={!!container} use:portal={container} role="status" aria-live="polite">
-    {#if kind === 'success'}
-      <span class="icon check" aria-hidden="true">
-        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M20 6 9 17l-5-5" />
-        </svg>
-      </span>
-    {:else if kind === 'connecting' && targetName}
-      <!-- Show the target mini's LED name-pattern so the user can confirm which
-           device is being connected. -->
-      <MiniNamePattern name={targetName} size={28} />
-    {:else if neutral}
-      <span class="spinner" aria-hidden="true"></span>
-    {:else if kind === 'recovery' && recovery === 'replug'}
-      <!-- Show the unplug/replug motion right where the plug icon would be, so
-           the instruction and the illustration read as one unit. -->
-      <img class="reconnect-gif" src={reconnectGif} alt="" aria-hidden="true" />
-    {:else}
-      <span class="icon" aria-hidden="true">
-        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M9 7V4h6v3" />
-          <path d="M8 7h8v6a4 4 0 0 1-8 0V7z" />
-          <path d="M12 17v3" />
-        </svg>
-      </span>
-    {/if}
+  <div
+    class="banner"
+    data-tone={tone}
+    class:illustrated={kind === 'recovery' && recovery === 'replug'}
+    class:portaled={!!container}
+    use:portal={container}
+    role="status"
+    aria-live="polite"
+  >
+    <span class="lead" aria-hidden="true">
+      {#if kind === 'connecting' && targetName}
+        <!-- Show the target mini's LED name-pattern so the user can confirm which
+             device is being connected. -->
+        <MiniNamePattern name={targetName} size={28} />
+      {:else if neutral}
+        <Spinner size="m" />
+      {:else if kind === 'recovery' && recovery === 'replug'}
+        <!-- Show the unplug/replug motion right where the icon would be, so
+             the instruction and the illustration read as one unit. -->
+        <img class="reconnect-gif" src={reconnectGif} alt="" />
+      {:else}
+        <span class="disc"><Icon name={toneIcon[tone]} size="s" /></span>
+      {/if}
+    </span>
 
     <div class="text">
       {#if kind === 'success'}
         <strong>{successLabel}</strong>
       {:else if kind === 'flashing'}
-        <strong>Programm wird übertragen…</strong>
-        <span>{flashPhaseLabel}</span>
+        <ProgressBar
+          label="Programm wird übertragen…"
+          value={flashIndeterminate ? null : flashPct}
+          hint={flashIndeterminate ? flashPhaseLabel : undefined}
+        />
       {:else if kind === 'recovery'}
         {#if recovery === 'reconnecting'}
           <strong>Verbinde mit dem Calliope mini…</strong>
         {:else if recovery === 'replug'}
           <strong>Calliope mini neu verbinden.</strong>
-          <span>Zieh den Calliope mini einmal vom USB-Kabel ab und steck ihn wieder ein — schließe ggf. andere Tabs, die ihn nutzen. Klicke dann auf „Erneut verbinden“.</span>
+          <span>Zieh den Calliope mini einmal vom USB-Kabel ab und steck ihn wieder ein. Schließe ggf. andere Tabs, die ihn nutzen. Klicke dann auf „Erneut verbinden“.</span>
         {:else}
           <strong>Das hat nicht geholfen.</strong>
           <span>Lade die Seite neu, um die USB-Verbindung zurückzusetzen. Dein Calliope mini bleibt verbunden.</span>
@@ -363,229 +390,190 @@
       {/if}
     </div>
 
-    <div class="actions">
-      {#if kind === 'recovery'}
-        {#if recovery === 'replug'}
-          <button type="button" class="btn usb" onclick={confirmAndRetry} disabled={connecting}>
-            {connecting ? 'Verbinde…' : 'Erneut verbinden'}
-          </button>
-        {:else if recovery === 'reload'}
-          <button type="button" class="btn usb" onclick={reloadForUsbReconnect}>Seite neu laden</button>
+    {#if kind === 'recovery' || (kind === 'connecting' && !view.nativeMode) || kind === 'no-connection' || (kind === 'extra' && (extra?.action || extra?.secondaryAction))}
+      <div class="actions">
+        {#if kind === 'recovery'}
+          {#if recovery === 'replug'}
+            <Button size="s" variant="secondary" icon="retry" onclick={confirmAndRetry} loading={connecting}>
+              Erneut verbinden
+            </Button>
+          {:else if recovery === 'reload'}
+            <Button size="s" variant="secondary" icon="retry" onclick={reloadForUsbReconnect}>Seite neu laden</Button>
+          {/if}
+        {:else if kind === 'connecting'}
+          <!-- Abort an in-flight BLE connect. Forgets the device so the NEXT
+               "Verbinden" opens a fresh picker (switch minis) instead of silently
+               resuming the same one.
+               Native (app) mode has no such button: the host app owns the
+               connection, so there is nothing here to cancel — only the X to
+               hide the banner. -->
+          <Button size="s" variant="secondary" onclick={cancelConnecting}>Abbrechen</Button>
+        {:else if kind === 'no-connection'}
+          {#if view.usb.supported}
+            <Button size="s" variant="secondary" icon="usb" onclick={() => connect('usb')} disabled={connecting}>
+              USB verbinden
+            </Button>
+          {/if}
+          {#if view.ble.supported}
+            <Button size="s" variant="secondary" icon="bluetooth" onclick={() => connect('ble')} disabled={connecting}>
+              Bluetooth verbinden
+            </Button>
+          {/if}
+        {:else if extra}
+          {#if extra.action}
+            <Button
+              size="s"
+              variant="secondary"
+              icon={actionIcon(extra.action.variant)}
+              onclick={runExtra}
+              disabled={extraBusy || extraSecondaryBusy}
+            >
+              {extraBusy ? (extra.action.busyLabel ?? 'Bitte warten…') : extra.action.label}
+            </Button>
+          {/if}
+          {#if extra.secondaryAction}
+            <Button
+              size="s"
+              variant="secondary"
+              icon={actionIcon(extra.secondaryAction.variant)}
+              onclick={runExtraSecondary}
+              disabled={extraBusy || extraSecondaryBusy}
+            >
+              {extraSecondaryBusy ? (extra.secondaryAction.busyLabel ?? 'Bitte warten…') : extra.secondaryAction.label}
+            </Button>
+          {/if}
         {/if}
-      {:else if kind === 'connecting' && !view.nativeMode}
-        <!-- Abort an in-flight BLE connect. Forgets the device so the NEXT
-             "Verbinden" opens a fresh picker (switch minis) instead of silently
-             resuming the same one.
-             Native (app) mode has no such button: the host app owns the
-             connection, so there is nothing here to cancel — only the X to
-             hide the banner. -->
-        <button type="button" class="btn ghost" onclick={cancelConnecting}>Abbrechen</button>
-      {:else if kind === 'no-connection'}
-        {#if view.usb.supported}
-          <button type="button" class="btn usb" onclick={() => connect('usb')} disabled={connecting}>
-            {connecting ? 'Verbinde…' : 'USB verbinden'}
-          </button>
-        {/if}
-        {#if view.ble.supported}
-          <button type="button" class="btn ble" onclick={() => connect('ble')} disabled={connecting}>
-            {connecting ? 'Verbinde…' : 'Bluetooth verbinden'}
-          </button>
-        {/if}
-      {:else if kind === 'extra' && extra}
-        {#if extra.action}
-          <button
-            type="button"
-            class="btn"
-            class:usb={extra.action.variant !== 'ble'}
-            class:ble={extra.action.variant === 'ble'}
-            onclick={runExtra}
-            disabled={extraBusy || extraSecondaryBusy}
-          >
-            {extraBusy ? (extra.action.busyLabel ?? 'Bitte warten…') : extra.action.label}
-          </button>
-        {/if}
-        {#if extra.secondaryAction}
-          <button
-            type="button"
-            class="btn"
-            class:usb={extra.secondaryAction.variant !== 'ble'}
-            class:ble={extra.secondaryAction.variant === 'ble'}
-            onclick={runExtraSecondary}
-            disabled={extraBusy || extraSecondaryBusy}
-          >
-            {extraSecondaryBusy ? (extra.secondaryAction.busyLabel ?? 'Bitte warten…') : extra.secondaryAction.label}
-          </button>
-        {/if}
-      {/if}
-    </div>
+      </div>
+    {/if}
 
     <!-- Always offer a quiet way to hide the banner. -->
-    <button type="button" class="close" aria-label="Ausblenden" title="Ausblenden" onclick={dismiss}>
-      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-        <path d="M6 6l12 12M18 6L6 18" />
-      </svg>
-    </button>
-
-    {#if kind === 'flashing' && !flashIndeterminate}
-      <span class="flash-bar" aria-hidden="true" style="width: {flashPct}%"></span>
-    {/if}
+    <div class="close">
+      <IconButton icon="close" label="Ausblenden" size="s" onclick={dismiss} />
+    </div>
   </div>
 {/if}
 
-<style lang="scss">
+<style>
   .banner {
+    --_fill: var(--cui-status-info-fill);
+    --_on: var(--cui-status-info-on);
+
     position: fixed;
-    top: 16px;
+    top: var(--cui-space-4);
     left: 50%;
     transform: translateX(-50%);
-    z-index: 8000;
-    overflow: hidden; // clip the flash progress bar to the rounded corners
-    // Portaled into a host element (an editor area): sit inside it near the top
-    // rather than floating over the whole page. The host element provides the
-    // positioning context.
-    &.portaled {
-      position: absolute;
-      top: 12px;
-    }
+    /* Over the page and its header, under dialogs and the connection popover. */
+    z-index: var(--cui-z-index-overlay);
+    box-sizing: border-box;
     display: flex;
     align-items: center;
-    gap: 12px;
-    max-width: min(720px, calc(100vw - 32px));
-    padding: 12px 14px;
-    border-radius: 12px;
-    background: #fff;
-    color: #1b1c1d;
-    box-shadow: 0 12px 34px rgba(0, 0, 0, 0.18);
-    font-size: 13px;
-    line-height: 1.35;
-    // Success — a brief, fully-green confirmation that we connected.
-    &.success {
-      background: #2fb344;
-      color: #fff;
-      .text strong { color: #fff; }
-      .icon.check { color: #fff; }
-    }
+    gap: var(--cui-space-3);
+    width: max-content;
+    max-width: min(45rem, calc(100vw - 2 * var(--cui-space-4)));
+    padding: var(--cui-space-3) var(--cui-space-3) var(--cui-space-3) var(--cui-space-4);
+    border: var(--cui-border-width-hairline) solid var(--cui-border-subtle);
+    border-left: 4px solid var(--_fill);
+    border-radius: var(--cui-radius-lg);
+    background-color: var(--cui-surface-raised);
+    box-shadow: var(--cui-shadow-menu);
+    color: var(--cui-text-default);
+    font-family: var(--cui-typography-body-font-family);
+    font-size: var(--cui-typography-label-font-size);
+    line-height: var(--cui-typography-body-line-height);
   }
-  .text {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    flex: 1;
-    min-width: 0;
+  /* Portaled into a host element (an editor area): sit inside it near the top
+     rather than floating over the whole page. The host element provides the
+     positioning context. */
+  .banner.portaled {
+    position: absolute;
+    top: var(--cui-space-3);
   }
-  .text strong { font-weight: 600; }
-  .text span { color: #4b5563; }
-  .icon {
-    color: #e53f4b;
-    display: flex;
-    flex-shrink: 0;
+  .banner[data-tone='success'] {
+    --_fill: var(--cui-status-success-fill);
+    --_on: var(--cui-status-success-on);
   }
-  // The replug illustration takes the leading slot. The source gif is large
-  // (≈991×920), so cap it to a small square box — it never grows past 104px,
-  // keeping the toast well-proportioned. No frame/background: the artwork sits
-  // directly on the banner.
+  .banner[data-tone='warning'] {
+    --_fill: var(--cui-status-warning-fill);
+    --_on: var(--cui-status-warning-on);
+  }
+  .banner[data-tone='error'] {
+    --_fill: var(--cui-status-error-fill);
+    --_on: var(--cui-status-error-on);
+  }
+
+  .lead {
+    display: inline-grid;
+    flex: none;
+    place-items: center;
+  }
+  /* 24px disc with the paired mark colour, as in calliope-ui Banner. */
+  .disc {
+    display: inline-grid;
+    place-items: center;
+    width: var(--cui-size-icon-l);
+    height: var(--cui-size-icon-l);
+    border-radius: var(--cui-radius-full);
+    background-color: var(--_fill);
+    color: var(--_on);
+  }
+  /* The replug illustration takes the leading slot. The source gif is large
+     (≈991×920), so cap it to a small square box (6.5rem), keeping the toast
+     well-proportioned. No frame/background: the artwork sits on the banner. */
   .reconnect-gif {
-    flex-shrink: 0;
-    align-self: center;
-    width: 104px;
-    height: 104px;
+    width: 6.5rem;
+    height: 6.5rem;
     object-fit: contain;
   }
-  // Narrow toast: the fixed illustration + button + text don't fit on one row,
-  // so stack them (illustration → text → full-width button). Only the
-  // illustrated (replug) banner is affected; every other state stays a row.
+
+  .text {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: var(--cui-space-0-5);
+    min-width: 0;
+  }
+  .text strong {
+    font-weight: var(--cui-font-weight-semibold);
+  }
+  .text span {
+    color: var(--cui-text-muted);
+  }
+  .text :global(.cui-progress-bar) {
+    min-width: 18rem;
+  }
+
+  .actions {
+    display: flex;
+    flex: none;
+    flex-wrap: wrap;
+    gap: var(--cui-space-2);
+  }
+  .close {
+    flex: none;
+    align-self: flex-start;
+  }
+
+  /* Narrow toast: the illustration + button + text don't fit on one row, so
+     stack them (illustration → text → full-width button). Only the
+     illustrated (replug) banner is affected; every other state stays a row. */
   @media (max-width: 520px) {
     .banner.illustrated {
       flex-direction: column;
       align-items: flex-start;
-      gap: 10px;
-      padding-top: 14px;
+      gap: var(--cui-space-2);
     }
-    .banner.illustrated .actions { align-self: stretch; }
-    .banner.illustrated .btn { flex: 1; }
-    // Keep the hide affordance out of the flow so it stays pinned top-right
-    // instead of dropping to a lonely row of its own.
+    .banner.illustrated .actions {
+      align-self: stretch;
+    }
+    .banner.illustrated .actions > :global(*) {
+      flex: 1;
+    }
+    /* Keep the hide affordance out of the flow so it stays pinned top-right
+       instead of dropping to a lonely row of its own. */
     .banner.illustrated .close {
       position: absolute;
-      top: 8px;
-      right: 8px;
-    }
-  }
-  .spinner {
-    width: 16px;
-    height: 16px;
-    flex-shrink: 0;
-    border-radius: 50%;
-    border: 2px solid rgba(0, 0, 0, 0.18);
-    border-top-color: #1b1c1d;
-    animation: connbanner-spin 0.8s linear infinite;
-  }
-  @keyframes connbanner-spin {
-    to { transform: rotate(360deg); }
-  }
-  .actions {
-    display: flex;
-    gap: 8px;
-    flex-shrink: 0;
-  }
-  .btn {
-    flex-shrink: 0;
-    padding: 8px 14px;
-    border-radius: 8px;
-    border: 1px solid transparent;
-    font-size: 13px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: background 0.15s, opacity 0.15s;
-    white-space: nowrap;
-    // USB = green
-    &.usb {
-      background: #98f600;
-      color: #1b1c1d;
-      &:hover:not(:disabled) { background: #aaff1f; }
-    }
-    // BLE = blue
-    &.ble {
-      background: #2f80ed;
-      color: #fff;
-      &:hover:not(:disabled) { background: #2670d8; }
-    }
-    // Ghost = quiet secondary (e.g. "Abbrechen" while connecting)
-    &.ghost {
-      background: transparent;
-      border-color: rgba(0, 0, 0, 0.2);
-      color: inherit;
-      &:hover:not(:disabled) { background: rgba(0, 0, 0, 0.06); }
-    }
-    &:disabled { opacity: 0.55; cursor: default; }
-  }
-  // Flash transfer progress — a thin bar pinned to the banner's bottom edge.
-  .flash-bar {
-    position: absolute;
-    left: 0;
-    bottom: 0;
-    height: 3px;
-    background: #00b8cc;
-    transition: width 0.2s linear;
-  }
-  // Always-present quiet hide affordance.
-  .close {
-    flex-shrink: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 26px;
-    height: 26px;
-    padding: 0;
-    border: none;
-    border-radius: 6px;
-    background: transparent;
-    color: #6b7280;
-    cursor: pointer;
-    transition: background 0.15s, color 0.15s;
-    &:hover {
-      background: rgba(0, 0, 0, 0.06);
-      color: #1b1c1d;
+      top: var(--cui-space-2);
+      right: var(--cui-space-2);
     }
   }
 </style>

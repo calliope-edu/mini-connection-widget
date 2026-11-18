@@ -6,13 +6,13 @@
     name: string | undefined;
     /** Pixel size of the rendered grid; the 5×5 fills `size`×`size`. */
     size?: number;
-    /** Pixel color when lit. */
+    /** Pixel color when lit (any CSS colour; default: the Calliope LED orange). */
     color?: string;
-    /** Pixel color when off. */
+    /** Pixel color when off (any CSS colour; default: the hover tint token, readable on light and dark surfaces). */
     offColor?: string;
   }
 
-  let { name, size = 36, color = '#ff4e00', offColor = 'rgba(0,0,0,0.08)' }: Props = $props();
+  let { name, size = 36, color = 'var(--cui-palette-orange)', offColor = 'var(--cui-action-hover)' }: Props = $props();
 
   const grid = $derived(friendlyNameToPattern(name));
   const cell = $derived(size / 5);
@@ -35,7 +35,7 @@
           width={cell * 0.8}
           height={cell * 0.8}
           rx={cell * 0.15}
-          fill={on ? color : offColor}
+          style:fill={on ? color : offColor}
         />
       {/each}
     {/each}

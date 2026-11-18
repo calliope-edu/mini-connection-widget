@@ -2,9 +2,9 @@
   /**
    * Header pill that opens a `<ConnectionPanel>`. Two layouts:
    *
-   *   - **Dropdown** (default): the panel appears as a popover anchored to
-   *     the pill, like a typical browser-extension menu. A scrim closes on
-   *     outside click.
+   *   - **Dropdown** (default): the panel appears in a calliope-ui `Popover`
+   *     anchored to the trigger, like a typical browser-extension menu.
+   *     Escape and a click outside close it.
    *   - **Floating** (user-pinned): the panel detaches into a draggable,
    *     resizable window rendered at `position: fixed`. Survives pill clicks
    *     and editor navigation; position + size + the pinned preference are
@@ -26,6 +26,7 @@
    * inspect here. The `<ConnectionBanner>` remains as the only surface, showing
    * what the app is doing.
    */
+  import { Button, Popover, Spinner, StatusDot, type Status } from '@calliope-edu/ui';
   import { calliopeState } from '../state';
   import { calliopeUsbRecovery } from '../usb-recovery';
   import { deriveConnectionView, statusLabel } from '../connection-view';
@@ -33,26 +34,39 @@
   import { mergeLabels, type ConnectLabels } from './labels';
   import { onMount } from 'svelte';
 
+  import { calliopeMiniMark as calliopeMark } from '../assets/calliope-mini';
+
   type Props = {
     /**
      * Visual style for the trigger:
-     *   - `dark` / `light` — the labelled status pill (dot + text), tuned for
-     *     dark headers vs light backgrounds.
-     *   - `icon` — a compact, status-coloured circle showing the Calliope
-     *     logo. It morphs into a short pill while flashing (logo hidden,
-     *     `%` for a determinate transfer or a spinner for an indeterminate
-     *     phase). Background: green=connected, blue=transferring, red=error,
-     *     neutral otherwise.
+     *   - `dark` / `light` — the labelled status pill (StatusDot + word in a
+     *     calliope-ui `Button`), for dark headers vs light backgrounds.
+     *   - `icon` — a compact circle showing the Calliope mini mark, filled
+     *     in the calliope-ui status colour (success = connected, info =
+     *     transferring, error = error, outlined otherwise). It morphs into a
+     *     short pill while flashing (mark hidden, `%` for a determinate
+     *     transfer or a spinner for an indeterminate phase).
      */
     appearance?: 'dark' | 'light' | 'icon';
+    /**
+     * Which calliope-ui theme the trigger is drawn in (`data-theme`). Defaults
+     * to `light` for `appearance="light"` and `dark` otherwise (the pill and
+     * icon triggers sit in dark headers); `inherit` follows the surrounding
+     * `data-theme`. The dropdown panel follows the page, not the trigger.
+     */
+    theme?: 'light' | 'dark' | 'inherit';
     /** Translation overrides; defaults are German. */
     labels?: Partial<ConnectLabels>;
     /** Expose the pin / drag floating window + comms log (off by default). */
     advanced?: boolean;
   };
 
-  let { appearance = 'dark', labels: labelsProp, advanced = false }: Props = $props();
+  let { appearance = 'dark', theme, labels: labelsProp, advanced = false }: Props = $props();
   const labels = $derived(mergeLabels(labelsProp));
+  const dataTheme = $derived.by(() => {
+    const t = theme ?? (appearance === 'light' ? 'light' : 'dark');
+    return t === 'inherit' ? undefined : t;
+  });
 
   const s = $derived($calliopeState);
   const recovery = $derived($calliopeUsbRecovery);
@@ -201,6 +215,18 @@
 
   const isIcon = $derived(appearance === 'icon');
   const isFlashing = $derived(s.status === 'flashing');
+  const dotStatus = $derived.by<Status>(() => {
+    switch (displayStatus) {
+      case 'connected': return 'success';
+      case 'flashing':
+      case 'connecting': return 'info';
+      case 'error': return 'error';
+      default: return 'neutral';
+    }
+  });
+  const pillTitle = $derived(
+    effectivePinned ? labels.triggerTitle + ' (Fenster offen)' : labels.triggerTitle,
+  );
 
   // Native (app) mode: the host app owns the connection, so the trigger — and
   // with it the whole panel / floating window — has nothing to offer. Render
@@ -208,80 +234,63 @@
   const appMode = $derived(s.nativeMode);
 </script>
 
-{#if !appMode}
-<div class="connect-wrap">
+{#snippet triggerButton(props: Record<string, unknown>)}
   {#if isIcon}
     <button
       type="button"
-      class="conn-icon status-{displayStatus}"
+      {...props}
+      class="conn-icon"
+      data-status={displayStatus}
       class:flashing={isFlashing}
-      class:pinned-indicator={effectivePinned}
-      onclick={() => (open = !open)}
-      aria-haspopup="true"
-      aria-expanded={open}
       title={badgeLabel}
       aria-label={badgeLabel}
     >
       {#if isFlashing}
         {#if isIndeterminate}
-          <span class="spinner" aria-hidden="true"></span>
+          <Spinner size="s" />
         {:else}
           <span class="pct">{s.flashProgress ?? 0}%</span>
-          <span class="progress" style="width: {s.flashProgress ?? 0}%"></span>
+          <span class="progress" style:width="{s.flashProgress ?? 0}%"></span>
         {/if}
       {:else if displayStatus === 'connecting'}
-        <span class="spinner" aria-hidden="true"></span>
+        <Spinner size="m" />
       {:else}
-        <span class="calliope-icon" aria-hidden="true">
-          <!-- Calliope mini hardware icon (board outline + LED matrix), from the
-               native apps' ic_device_24dp. Single-colour so it inherits the
-               status fill via currentColor. -->
-          <svg viewBox="0 0 47.384 47.384" width="26" height="26" fill="currentColor">
-            <g transform="translate(0 1.6)">
-              <path d="M12.727,3.678C12.385,3.932 12.338,4.548 12.403,4.998 12.591,6.338 12.996,11.021 10.252,15.02 8.401,17.718 5.566,19.49 3.511,20.501 2.474,21.012 2.391,21.623 2.455,22.207 2.552,23.075 3.481,23.403 3.587,23.437 5.083,23.927 6.854,24.837 9.657,28.147 12.946,32.032 12.591,37.149 12.404,38.625 12.343,39.105 12.337,39.986 12.978,40.486c0.366,0.286 1.265,0.181 1.78,-0.203 1.273,-0.954 2.28,-1.581 3.264,-2.032 1.212,-0.553 2.496,-0.929 3.436,-1.007 0.014,-0.001 0.029,-0.003 0.041,-0.004 0.385,-0.969 1.186,-1.542 2.174,-1.542 1.006,-0 1.806,0.566 2.204,1.556 0.773,0.083 1.866,0.393 3.25,0.922 1.2,0.459 2.128,1.09 2.873,1.596 0.159,0.107 0.311,0.212 0.458,0.308 1.069,0.701 1.693,0.463 2.067,0.224 0.294,-0.188 0.453,-0.54 0.404,-0.895 -0.232,-1.682 -0.513,-6.031 1.87,-10.103 1.868,-3.189 4.665,-4.81 6.893,-5.866 0.597,-0.283 1.299,-0.777 1.248,-1.526 -0.035,-0.514 -0.367,-0.95 -0.845,-1.114 -1.585,-0.537 -4.062,-1.945 -6.86,-5.596 -2.569,-3.353 -2.469,-7.436 -2.171,-10.216 0.071,-0.663 -0.322,-1.284 -0.956,-1.508l-0.09,-0.032c-0.422,-0.15 -0.891,-0.085 -1.255,0.17 -1.784,1.253 -5.337,3.356 -9.088,3.356 -3.367,-0 -6.764,-1.818 -9.021,-3.343 -0.584,-0.395 -1.357,-0.375 -1.926,0.046M13.594,42.767C12.908,42.767 12.229,42.584 11.679,42.156 10.606,41.32 10.105,39.936 10.306,38.358 10.465,37.099 10.774,32.74 8.042,29.513 5.58,26.606 4.13,25.84 2.928,25.447 1.805,25.08 0.537,24.097 0.353,22.441c-0.132,-1.186 0.146,-2.815 2.224,-3.837 1.827,-0.9 4.339,-2.461 5.93,-4.78 2.313,-3.371 1.963,-7.381 1.801,-8.53 -0.197,-1.39 0.236,-2.63 1.159,-3.314 1.29,-0.956 3.045,-0.997 4.37,-0.1 1.648,1.112 4.856,2.98 7.836,2.98 3.17,-0 6.293,-1.862 7.872,-2.971 0.924,-0.65 2.112,-0.81 3.179,-0.434l0.09,0.032c1.56,0.553 2.528,2.086 2.352,3.728 -0.26,2.419 -0.361,5.953 1.747,8.703 2.476,3.229 4.554,4.437 5.862,4.881 1.289,0.438 2.182,1.605 2.275,2.972 0.101,1.489 -0.792,2.795 -2.452,3.582 -1.954,0.926 -4.399,2.333 -5.974,5.024C36.576,33.876 36.824,37.657 37.026,39.12 37.187,40.293 36.652,41.458 35.662,42.09 34.904,42.572 33.332,43.181 31.301,41.85c-0.157,-0.102 -0.318,-0.212 -0.488,-0.327 -0.69,-0.468 -1.47,-0.998 -2.441,-1.37 -1.645,-0.63 -2.441,-0.772 -2.769,-0.8 -0.751,-0.066 -1.41,-0.57 -1.68,-1.284 -0.096,-0.255 -0.168,-0.255 -0.25,-0.255 -0.073,-0 -0.141,-0 -0.229,0.265C23.33,38.426 22.925,39.246 21.633,39.353 21.11,39.396 20.081,39.637 18.901,40.176 18.061,40.561 17.174,41.115 16.027,41.975 15.38,42.459 14.482,42.767 13.594,42.767"/>
-              {#each [16.829, 21.381, 25.933, 30.486] as cx (cx)}
-                {#each [15.17, 19.623, 24.076, 28.53] as cy (cy)}
-                  <circle {cx} {cy} r="1.41" />
-                {/each}
-              {/each}
-            </g>
-          </svg>
-        </span>
+        <span class="calliope-mark" style:--mark={`url("${calliopeMark}")`} aria-hidden="true"></span>
       {/if}
     </button>
   {:else}
-    <button
-      type="button"
-      class="conn-pill status-{displayStatus} appearance-{appearance}"
-      class:pinned-indicator={effectivePinned}
-      onclick={() => (open = !open)}
-      aria-haspopup="true"
-      aria-expanded={open}
-      title={effectivePinned ? labels.triggerTitle + ' (Fenster offen)' : labels.triggerTitle}
-    >
-      {#if isIndeterminate}
-        <span class="spinner" aria-hidden="true"></span>
+    <Button {...props} variant="secondary" size="s" title={pillTitle}>
+      {#if isIndeterminate || displayStatus === 'connecting'}
+        <span class="pill-busy"><Spinner size="s" />{badgeLabel}</span>
       {:else}
-        <span class="dot" aria-hidden="true"></span>
+        <StatusDot status={dotStatus} label={badgeLabel} />
       {/if}
-      <span class="label">{badgeLabel}</span>
-      {#if s.status === 'flashing' && s.flashProgress != null && !isIndeterminate}
-        <span class="progress" style="width: {s.flashProgress}%"></span>
-      {/if}
-    </button>
+    </Button>
   {/if}
+{/snippet}
 
-  {#if open && !effectivePinned}
-    <div class="popover" role="dialog" aria-label={labels.panelTitle}>
+{#if !appMode}
+<div class="connect-wrap" data-theme={dataTheme} class:pinned-indicator={effectivePinned}>
+  {#if effectivePinned}
+    {@render triggerButton({
+      onclick: () => (open = !open),
+      'aria-haspopup': 'dialog',
+      'aria-expanded': open,
+    })}
+  {:else}
+    <Popover bind:open side="bottom" align="end" size={advanced ? 'l' : 'm'}>
+      {#snippet trigger({ props })}
+        {@render triggerButton(props)}
+      {/snippet}
       <ConnectionPanel
         labels={labelsProp}
+        embedded
         onaction={() => (open = false)}
         pinned={effectivePinned}
         onTogglePin={advanced ? togglePin : undefined}
         {advanced}
       />
-    </div>
-    <button class="popover-scrim" type="button" aria-label="close" onclick={() => (open = false)}></button>
+    </Popover>
   {/if}
 </div>
 
@@ -290,7 +299,10 @@
     class="floating"
     role="dialog"
     aria-label={labels.panelTitle}
-    style="left:{pos.x}px; top:{pos.y}px; width:{size.w}px; height:{size.h}px;"
+    style:left="{pos.x}px"
+    style:top="{pos.y}px"
+    style:width="{size.w}px"
+    style:height="{size.h}px"
   >
     <div class="floating-body">
       <ConnectionPanel
@@ -311,168 +323,128 @@
       onpointermove={onResizePointerMove}
       onpointerup={onResizePointerUp}
       onpointercancel={onResizePointerUp}
-    >
-      <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
-        <path d="M11 1L1 11M11 5L5 11M11 9L9 11" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" fill="none"/>
-      </svg>
-    </div>
+    ></div>
   </div>
 {/if}
 {/if}
 
 <style>
-  .connect-wrap { position: relative; display: inline-flex; }
-
-  .conn-pill {
+  .connect-wrap {
     position: relative;
     display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 14px;
-    border-radius: 20px;
-    font-size: 13px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: background 0.15s;
-    overflow: hidden;
-    white-space: nowrap;
-    border: 1px solid transparent;
-
-    &.appearance-dark {
-      background: rgba(255, 255, 255, 0.08);
-      border-color: rgba(255, 255, 255, 0.18);
-      color: rgba(255, 255, 255, 0.92);
-      &:hover { background: rgba(255, 255, 255, 0.14); }
-    }
-    &.appearance-light {
-      background: #fff;
-      border-color: #d1d5db;
-      color: #1b1c1d;
-      &:hover { background: #f3f4f6; }
-    }
-    /* Subtle teal outline so the user can tell their floating window is up
-       even when it's behind another tab or minimised offscreen. */
-    &.pinned-indicator { outline: 1.5px solid #0ea5b7; outline-offset: 1px; }
-
-    .dot { width: 8px; height: 8px; border-radius: 50%; background: #e53f4b; }
-    .spinner {
-      width: 12px; height: 12px; border-radius: 50%;
-      border: 2px solid currentColor; border-top-color: transparent;
-      animation: spin 0.9s linear infinite;
-    }
-    .progress {
-      position: absolute; left: 0; bottom: 0; height: 2px;
-      background: #98f600; transition: width 0.2s linear;
-    }
-    &.status-connected .dot { background: #98f600; }
-    &.status-connecting .dot { background: #ff4e00; }
-    &.status-flashing .dot { background: #00b8cc; }
-    &.status-error .dot { background: #e53f4b; }
+    border-radius: var(--cui-radius-full);
+    /* calliope-ui's base layer paints every [data-theme] subtree with the page
+       colour; the trigger sits on the host's own header instead. */
+    background: none;
   }
-  @keyframes spin { to { transform: rotate(360deg); } }
+  /* A brand-coloured ring so the user can tell their floating window is up
+     even when it's behind another tab or scrolled away. */
+  .connect-wrap.pinned-indicator {
+    outline: var(--cui-border-width-accent) solid var(--cui-brand-default);
+    outline-offset: var(--cui-border-width-hairline);
+  }
+
+  .pill-busy {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--cui-space-2);
+  }
 
   /* ---- Icon trigger (appearance="icon") ---------------------------------- */
 
   .conn-icon {
+    --_fill: transparent;
+    --_on: var(--cui-text-default);
+    --_border: var(--cui-border-control);
+
     position: relative;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     box-sizing: border-box;
-    width: 36px;
-    height: 36px;
+    width: var(--cui-size-control-m);
+    height: var(--cui-size-control-m);
     padding: 0;
-    border-radius: 50%;
-    border: 1px solid rgba(255, 255, 255, 0.18);
-    background: rgba(255, 255, 255, 0.08);
-    color: rgba(255, 255, 255, 0.92);
-    cursor: pointer;
     overflow: hidden;
+    border: var(--cui-border-width-hairline) solid var(--_border);
+    border-radius: var(--cui-radius-full);
+    background-color: var(--_fill);
+    color: var(--_on);
     white-space: nowrap;
-    transition: width 0.25s ease, border-radius 0.25s ease, background 0.15s, color 0.15s;
-
-    &:hover { filter: brightness(1.1); }
-    &.pinned-indicator { outline: 1.5px solid #0ea5b7; outline-offset: 1px; }
-
-    .calliope-icon {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      line-height: 0;
-    }
-
-    .spinner {
-      width: 18px; height: 18px; border-radius: 50%;
-      border: 2px solid currentColor; border-top-color: transparent;
-      animation: spin 0.9s linear infinite;
-    }
-
-    /* Status fills. White logo on the darker error/flash fills; a dark logo on
-       the bright lime "connected" fill so it stays legible. */
-    &.status-connected { background: #98f600; border-color: #98f600; color: #1b1c1d; }
-    &.status-error     { background: #e53f4b; border-color: #e53f4b; color: #fff; }
-    &.status-flashing  { background: #00b8cc; border-color: #00b8cc; color: #fff; }
-
-    /* Transferring: the circle stretches into a short pill that shows the
-       progress percentage (or a spinner during indeterminate phases). */
-    &.flashing {
-      width: auto;
-      min-width: 54px;
-      padding: 0 12px;
-      gap: 6px;
-      border-radius: 14px;
-    }
-
-    .pct {
-      font-size: 12px;
-      font-weight: 600;
-      font-variant-numeric: tabular-nums;
-      letter-spacing: 0.01em;
-    }
-
-    .progress {
-      position: absolute; left: 0; bottom: 0; height: 2px;
-      background: rgba(255, 255, 255, 0.85);
-      transition: width 0.2s linear;
-    }
+    cursor: pointer;
+    transition:
+      width var(--cui-duration-base) var(--cui-easing-standard),
+      background-color var(--cui-duration-fast) var(--cui-easing-standard),
+      color var(--cui-duration-fast) var(--cui-easing-standard);
+  }
+  .conn-icon:hover {
+    background-image: linear-gradient(var(--cui-action-hover), var(--cui-action-hover));
   }
 
-  .popover {
+  /* Status fills with their paired mark colour (calliope-ui status roles). */
+  .conn-icon[data-status='connected'] {
+    --_fill: var(--cui-status-success-fill);
+    --_on: var(--cui-status-success-on);
+    --_border: var(--cui-status-success-fill);
+  }
+  .conn-icon[data-status='error'] {
+    --_fill: var(--cui-status-error-fill);
+    --_on: var(--cui-status-error-on);
+    --_border: var(--cui-status-error-fill);
+  }
+  .conn-icon[data-status='flashing'] {
+    --_fill: var(--cui-status-info-fill);
+    --_on: var(--cui-status-info-on);
+    --_border: var(--cui-status-info-fill);
+  }
+
+  .calliope-mark {
+    width: 1.625rem;
+    height: 1.625rem;
+    background-color: currentColor;
+    -webkit-mask: var(--mark) center / contain no-repeat;
+    mask: var(--mark) center / contain no-repeat;
+  }
+
+  /* Transferring: the circle stretches into a short pill that shows the
+     progress percentage (or a spinner during indeterminate phases). */
+  .conn-icon.flashing {
+    width: auto;
+    min-width: 3.375rem;
+    gap: var(--cui-space-1);
+    padding: 0 var(--cui-space-3);
+  }
+  .pct {
+    font-family: var(--cui-typography-label-font-family);
+    font-size: var(--cui-typography-caption-font-size);
+    font-weight: var(--cui-font-weight-semibold);
+    font-variant-numeric: tabular-nums;
+  }
+  .progress {
     position: absolute;
-    top: calc(100% + 8px);
-    right: 0;
-    z-index: 1100;
-    width: 340px;
-    background: #1f2023;
-    color: #f3f4f6;
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 12px;
-    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
-  }
-  .popover-scrim {
-    position: fixed;
-    inset: 0;
-    background: transparent;
-    border: 0;
-    cursor: default;
-    z-index: 1099;
+    bottom: 0;
+    left: 0;
+    height: var(--cui-border-width-accent);
+    background-color: currentColor;
+    transition: width var(--cui-duration-base) var(--cui-easing-linear);
   }
 
   /* ---- Floating window ---------------------------------------------------- */
 
   .floating {
     position: fixed;
-    z-index: 1200;
-    min-width: 300px;
-    min-height: 320px;
-    background: #1f2023;
-    color: #f3f4f6;
-    border: 1px solid rgba(255, 255, 255, 0.14);
-    border-radius: 12px;
-    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.4);
+    z-index: var(--cui-z-index-overlay);
     display: flex;
     flex-direction: column;
+    box-sizing: border-box;
+    min-width: 300px;
+    min-height: 320px;
     overflow: hidden;
+    border: var(--cui-border-width-hairline) solid var(--cui-border-subtle);
+    border-radius: var(--cui-radius-xl);
+    background-color: var(--cui-surface-raised);
+    box-shadow: var(--cui-shadow-dialog);
+    color: var(--cui-text-default);
     /* No backdrop or scrim - the floating layout is meant to stay open while
        the user does other work in the editor. */
   }
@@ -494,19 +466,29 @@
       height: auto !important;
     }
   }
+  /* Resize grip in the bottom-right corner: three diagonal strokes. */
   .floating-resize {
     position: absolute;
-    right: 2px;
-    bottom: 2px;
-    width: 16px;
-    height: 16px;
-    cursor: nwse-resize;
-    color: #9ca3af;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    right: var(--cui-space-0-5);
+    bottom: var(--cui-space-0-5);
     z-index: 3;
+    width: var(--cui-size-icon-s);
+    height: var(--cui-size-icon-s);
+    color: var(--cui-text-muted);
+    background-image: linear-gradient(
+      135deg,
+      transparent 0 45%,
+      currentColor 45% 52%,
+      transparent 52% 64%,
+      currentColor 64% 71%,
+      transparent 71% 83%,
+      currentColor 83% 90%,
+      transparent 90%
+    );
+    cursor: nwse-resize;
     touch-action: none;
-    &:hover { color: #6b7280; }
+  }
+  .floating-resize:hover {
+    color: var(--cui-text-default);
   }
 </style>

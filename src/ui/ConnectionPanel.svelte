@@ -3,8 +3,8 @@
    * Rich connection panel — the dropdown contents inside `<ConnectButton>`,
    * also usable stand-alone.
    *
-   * Regular users get a minimal dark panel: the »Calliope mini Verbindung«
-   * headline, a USB badge, and a Bluetooth badge whose "Verbinden" button is
+   * Regular users get a minimal panel: the »Calliope mini Verbindung«
+   * headline, a USB card, and a Bluetooth card whose "Verbinden" button is
    * gated behind drawing the device's 5×5 name pattern. The drawn pattern
    * also filters the BLE chooser to that one `Calliope mini [name]`. When USB
    * is connected the pad is pre-filled with the connected device's pattern,
@@ -13,9 +13,14 @@
    * `advanced` (dev mode) reveals the device-info block + comms log and drops
    * the pattern filter, so any Calliope can be picked and BLE connects without
    * needing a pattern.
+   *
+   * Built from calliope-ui parts (Button, IconButton, StatusDot with a word
+   * per transport, ProgressBar while flashing) and coloured only through
+   * `--cui-*` tokens, so it follows the host's light or dark theme.
    */
   import { untrack } from 'svelte';
-  import { calliopeState } from '../state';
+  import { Badge, Button, Icon, IconButton, ProgressBar, StatusDot, type Status } from '@calliope-edu/ui';
+  import { calliopeState, type CalliopeStatus } from '../state';
   import { connectCalliope, disconnectAndForget, disconnectUsbKeepPermission } from '../connect';
   import { connectJLinkSerial } from '../web-serial';
   import { statusLabel } from '../connection-view';
@@ -28,6 +33,9 @@
 
   type Props = {
     labels?: Partial<ConnectLabels>;
+    /** Drop the panel's own surface and padding: set by `<ConnectButton>`,
+     *  whose Popover already brings both. */
+    embedded?: boolean;
     /** Called after the user clicks an action — useful to close a parent dropdown. */
     onaction?: () => void;
     /** When set, renders a pin / unpin toggle in the header. The host owns
@@ -49,6 +57,7 @@
   };
   let {
     labels: labelsProp,
+    embedded = false,
     onaction,
     pinned = false,
     onTogglePin,
@@ -206,10 +215,24 @@
   function doCancelBle() { fire(); void disconnectAndForget('ble'); }
   function doCancelUsb() { fire(); void disconnectAndForget('usb'); }
 
+  // One StatusDot + word per transport card.
+  function transportStatus(connected: boolean, status: CalliopeStatus): Status {
+    if (connected) return 'success';
+    if (status === 'connecting') return 'info';
+    if (status === 'error') return 'error';
+    return 'neutral';
+  }
+  function transportWord(connected: boolean, status: CalliopeStatus): string {
+    if (connected) return labels.connected;
+    if (status === 'connecting') return labels.connecting;
+    if (status === 'error') return labels.error;
+    return labels.notConnected;
+  }
+
   const PATTERN_HINT = 'Zeichne das Muster, das dein Calliope mini anzeigt.';
 </script>
 
-<div class="panel">
+<div class="panel" class:embedded>
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="panel-header"
@@ -220,30 +243,20 @@
     onpointercancel={onHeaderPointerUp}
   >
     <div class="panel-header-text">
-      <div class="title">{labels.panelTitle}</div>
+      <h2 class="title">{labels.panelTitle}</h2>
       {#if advanced}
         <div class="subtitle">{statusLabel(s, labels)}</div>
       {/if}
     </div>
     {#if onTogglePin}
-      <button
-        type="button"
-        class="header-btn"
-        class:active={pinned}
-        title={pinned ? 'Wieder anhängen' : 'Als Fenster anheften'}
-        aria-label={pinned ? 'Wieder anhängen' : 'Als Fenster anheften'}
+      <IconButton
+        icon={pinned ? 'collapse' : 'expand'}
+        label={pinned ? 'Wieder anhängen' : 'Als Fenster anheften'}
+        size="s"
+        tooltip={false}
+        pressed={pinned}
         onclick={onTogglePin}
-      >
-        {#if pinned}
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true">
-            <path d="M14 4l6 6-4 1-1 4-3-3-5 5-1-1 5-5-3-3 4-1z"/>
-          </svg>
-        {:else}
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M14 4l6 6-4 1-1 4-3-3-5 5-1-1 5-5-3-3 4-1z"/>
-          </svg>
-        {/if}
-      </button>
+      />
     {/if}
   </div>
 
@@ -255,11 +268,7 @@
         {#if friendly}
           <MiniNamePattern name={friendly} size={32} />
         {:else}
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect x="3" y="5" width="18" height="14" rx="2" />
-            <circle cx="8" cy="12" r="1" />
-            <circle cx="16" cy="12" r="1" />
-          </svg>
+          <span class="device-card-icon"><Icon name="device" /></span>
         {/if}
         <div class="device-card-name-stack">
           <span class="device-card-name">
@@ -288,6 +297,7 @@
             <div class="meta-row">
               <span class="meta-key">{labels.runtimeVersion}</span>
               <span class="meta-val" class:meta-warn={s.runtimeOutdated}>
+                {#if s.runtimeOutdated}<Icon name="warning" size="s" />{/if}
                 v{s.runtimeVersion}{#if s.runtimeOutdated} · {labels.outdated}{/if}
               </span>
             </div>
@@ -308,44 +318,45 @@
       {@const usbBusy = s.usbStatus === 'connecting' || s.flashTransport === 'usb'}
       <div class="badge">
         <div class="badge-head">
-          <span class="transport-name">{labels.usb}</span>
-          {#if usbConnected}
-            <button type="button" class="row-btn ghost" onclick={doDisconnectUsb} disabled={usbBusy}>
-              {labels.disconnect}
-            </button>
-          {:else if s.usbStatus === 'connecting'}
-            <!-- While trying to connect, the only action is cancel (cancel, then
-                 Verbinden re-appears, to retry manually). -->
-            <button type="button" class="row-btn ghost" onclick={doCancelUsb}>
-              {labels.cancel}
-            </button>
-          {:else if s.usbStatus === 'error'}
-            <!-- Failed: red cancel only (no retry button). Cancelling frees the
-                 picker and brings back the green Verbinden. -->
-            <button type="button" class="row-btn danger" onclick={doCancelUsb}>
-              {labels.cancel}
-            </button>
-          {:else}
-            <button type="button" class="row-btn connect" onclick={doConnectUsb} disabled={usbBusy}>
-              {labels.connect}
-            </button>
-          {/if}
+          <span class="transport-name">
+            <Icon name="usb" size="s" />
+            {labels.usb}
+          </span>
+          <StatusDot status={transportStatus(usbConnected, s.usbStatus)} label={transportWord(usbConnected, s.usbStatus)} size="s" />
+          <span class="badge-action">
+            {#if usbConnected}
+              <Button size="s" variant="secondary" onclick={doDisconnectUsb} disabled={usbBusy}>
+                {labels.disconnect}
+              </Button>
+            {:else if s.usbStatus === 'connecting' || s.usbStatus === 'error'}
+              <!-- While trying to connect, or after a failed attempt, the only
+                   action is cancel: it frees the picker and brings back
+                   Verbinden, to retry manually. -->
+              <Button size="s" variant="secondary" onclick={doCancelUsb}>
+                {labels.cancel}
+              </Button>
+            {:else}
+              <Button size="s" onclick={doConnectUsb} disabled={usbBusy}>
+                {labels.connect}
+              </Button>
+            {/if}
+          </span>
         </div>
 
         {#if s.jlinkSerialStatus === 'connecting'}
           <!-- The native Web Serial picker floats above this panel — tell the
                user what phase they're in and that cancelling is harmless. -->
-          <p class="usb-hint">
-            USB 1/2 verbunden — wähle jetzt noch „CDC – COM x“, um die
+          <p class="hint">
+            USB 1/2 verbunden. Wähle jetzt noch „CDC – COM x“, um die
             Datenverbindung (Serial) herzustellen. Abbrechen ist okay:
             Programme übertragen geht auch ohne.
           </p>
         {:else if mini2SerialMissing}
           <div class="usb-serial-add">
-            <span class="usb-hint">Übertragen bereit — Serial (Datenverbindung) fehlt noch.</span>
-            <button type="button" class="row-btn connect" onclick={doAddSerial} disabled={addingSerial || s.status === 'flashing'}>
-              {addingSerial ? 'Verbinde…' : 'Serial verbinden'}
-            </button>
+            <span class="hint">Übertragen bereit. Serial (Datenverbindung) fehlt noch.</span>
+            <Button size="s" variant="secondary" onclick={doAddSerial} loading={addingSerial} disabled={s.status === 'flashing'}>
+              Serial verbinden
+            </Button>
           </div>
         {/if}
       </div>
@@ -356,20 +367,22 @@
       <div class="badge">
         <div class="badge-head">
           <span class="transport-name">
+            <Icon name="bluetooth" size="s" />
             {labels.ble}
-            {#if bleConnected && s.bleSessionKind === 'dfu-bootloader'}
-              <span class="session-chip session-dfu-bootloader" title="Nordic DFU bootloader erkannt">
-                Bootloader
-              </span>
-            {/if}
           </span>
+          <StatusDot status={transportStatus(bleConnected, s.bleStatus)} label={transportWord(bleConnected, s.bleStatus)} size="s" />
+          {#if bleConnected && s.bleSessionKind === 'dfu-bootloader'}
+            <Badge size="s" tone="info" title="Nordic DFU bootloader erkannt">Bootloader</Badge>
+          {/if}
           {#if bleConnected}
             <!-- Just "Trennen": for BLE this forgets the device (harmless — no
                  stale-handle issue as on USB), so the next "Verbinden" opens the
                  picker and can switch minis. Two buttons only: Verbinden / Trennen. -->
-            <button type="button" class="row-btn ghost" onclick={doForgetBle} disabled={bleBusy}>
-              {labels.disconnect}
-            </button>
+            <span class="badge-action">
+              <Button size="s" variant="secondary" onclick={doForgetBle} disabled={bleBusy}>
+                {labels.disconnect}
+              </Button>
+            </span>
           {/if}
         </div>
 
@@ -386,7 +399,7 @@
             <div class="pattern-wrap">
               <PatternPad value={pattern} onchange={(g) => (pattern = g)} size={132} disabled={bleBusy} />
               {#if !advanced}
-                <p class="pattern-hint">{PATTERN_HINT}</p>
+                <p class="hint pattern-hint">{PATTERN_HINT}</p>
               {/if}
             </div>
           {/if}
@@ -394,23 +407,14 @@
 
         {#if !bleConnected}
           <div class="badge-foot">
-            {#if s.bleStatus === 'connecting'}
-              <button type="button" class="row-btn ghost" onclick={doCancelBle}>
+            {#if s.bleStatus === 'connecting' || s.bleStatus === 'error'}
+              <Button size="s" variant="secondary" onclick={doCancelBle}>
                 {labels.cancel}
-              </button>
-            {:else if s.bleStatus === 'error'}
-              <button type="button" class="row-btn danger" onclick={doCancelBle}>
-                {labels.cancel}
-              </button>
+              </Button>
             {:else}
-              <button
-                type="button"
-                class="row-btn connect"
-                onclick={doConnectBle}
-                disabled={bleBusy || !bleConnectEnabled}
-              >
+              <Button size="s" onclick={doConnectBle} disabled={bleBusy || !bleConnectEnabled}>
                 {labels.connect}
-              </button>
+              </Button>
             {/if}
           </div>
         {/if}
@@ -419,51 +423,42 @@
   </div>
 
   {#if anyConnected && transfer && s.status !== 'flashing'}
-    <button type="button" class="transfer-btn" onclick={runTransfer} disabled={transferring}>
-      {transferring ? 'Übertrage…' : (transfer.label ?? 'Programm übertragen')}
-    </button>
+    <div class="wide-action">
+      <Button fullWidth icon="upload" onclick={runTransfer} loading={transferring}>
+        {transfer.label ?? 'Programm übertragen'}
+      </Button>
+    </div>
   {/if}
 
   <!-- Dev-only "Re-arm inputs" escape hatch — not shown for regular users. -->
   {#if advanced && anyConnected && rearm && s.status !== 'flashing'}
-    <button type="button" class="rearm-btn" onclick={runRearm} disabled={rearming}>
-      {rearming ? 'Verbinde Eingänge neu…' : (rearm.label ?? 'Eingänge neu verbinden')}
-    </button>
+    <div class="wide-action">
+      <Button fullWidth variant="secondary" size="s" icon="retry" onclick={runRearm} loading={rearming}>
+        {rearm.label ?? 'Eingänge neu verbinden'}
+      </Button>
+    </div>
   {/if}
 
   {#if s.status === 'flashing'}
     {@const via = s.flashTransport ?? 'usb'}
     <div class="flash-block">
-      <div class="flash-via">{labels.flashVia(via)}</div>
-      {#if isIndeterminate}
-        <div class="flash-line indeterminate">
-          <span class="spinner-inline"></span>
-          {statusLabel(s, labels)}
-        </div>
-        <div class="flash-bar">
-          <div class="flash-bar-indeterminate"></div>
-        </div>
-      {:else}
-        <div class="flash-line">
-          {s.flashPartial ? labels.partialFlash : labels.fullFlash}
-          · {s.flashProgress ?? 0}%
-        </div>
-        <div class="flash-bar">
-          <div class="flash-bar-fill" style="width: {s.flashProgress ?? 0}%"></div>
-        </div>
-      {/if}
+      <ProgressBar
+        label={labels.flashVia(via)}
+        value={isIndeterminate ? null : (s.flashProgress ?? 0)}
+        hint={isIndeterminate ? statusLabel(s, labels) : (s.flashPartial ? labels.partialFlash : labels.fullFlash)}
+      />
     </div>
   {/if}
 
   {#if s.usbErrorMessage}
-    <div class="error">USB: {s.usbErrorMessage}</div>
+    <p class="error"><span class="error-disc"><Icon name="error" size="s" /></span>USB: {s.usbErrorMessage}</p>
   {/if}
   {#if s.bleErrorMessage}
-    <div class="error">BLE: {s.bleErrorMessage}</div>
+    <p class="error"><span class="error-disc"><Icon name="error" size="s" /></span>BLE: {s.bleErrorMessage}</p>
   {/if}
 
   {#if !s.usbSupported && !s.bleSupported}
-    <div class="hint">{labels.unsupportedHint}</div>
+    <p class="hint">{labels.unsupportedHint}</p>
   {/if}
 
   {#if advanced && s.lastFlashAt}
@@ -483,17 +478,30 @@
   {/if}
 </div>
 
-<style lang="scss">
+<style>
   .panel {
-    padding: 16px;
-    background: #1f2023;
-    color: #f3f4f6;
-    border-radius: 12px;
+    padding: var(--cui-space-4);
+    border-radius: var(--cui-radius-xl);
+    background-color: var(--cui-surface-raised);
+    color: var(--cui-text-default);
+    font-family: var(--cui-typography-body-font-family);
+    font-size: var(--cui-typography-label-font-size);
+    line-height: var(--cui-typography-body-line-height);
+  }
+  /* Inside the trigger's Popover, which already brings surface and padding. */
+  .panel.embedded {
+    /* The popover does not scroll itself; with the comms log the panel can be
+       taller than the window. */
+    max-height: calc(100dvh - 6rem);
+    overflow-y: auto;
+    padding: 0;
+    border-radius: 0;
+    background: none;
   }
   .comms-embed {
-    margin-top: 14px;
-    height: 280px;
     display: flex;
+    height: 280px;
+    margin-top: var(--cui-space-4);
   }
   .comms-embed > :global(.comms) {
     width: 100%;
@@ -501,200 +509,189 @@
   .panel-header {
     display: flex;
     align-items: center;
-    gap: 10px;
-    margin-bottom: 14px;
-    &.draggable {
-      cursor: move;
-      touch-action: none;
-      user-select: none;
-    }
+    gap: var(--cui-space-2);
+    margin-bottom: var(--cui-space-3);
   }
-  .panel-header-text { flex: 1; min-width: 0; }
-  .panel-header-text .title { font-weight: 700; font-size: 15px; color: #fff; }
-  .panel-header-text .subtitle { font-size: 12px; color: #9ca3af; }
-  .header-btn {
-    border: 0;
-    background: transparent;
-    color: #9ca3af;
-    padding: 4px 6px;
-    border-radius: 4px;
-    cursor: pointer;
-    line-height: 0;
-    flex-shrink: 0;
-    &:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
-    &.active { color: #38bdf8; }
+  .panel-header.draggable {
+    cursor: move;
+    touch-action: none;
+    user-select: none;
+  }
+  .panel-header-text {
+    flex: 1;
+    min-width: 0;
+  }
+  .title {
+    margin: 0;
+    font-family: var(--cui-typography-h3-font-family);
+    font-size: var(--cui-typography-h3-font-size);
+    font-weight: var(--cui-typography-h3-font-weight);
+    line-height: var(--cui-typography-h3-line-height);
+  }
+  .subtitle {
+    color: var(--cui-text-muted);
+    font-size: var(--cui-typography-caption-font-size);
   }
 
   /* ---- dev-only device card --------------------------------------------- */
   .device-card {
-    background: #2a2b2e;
-    border-radius: 8px;
-    padding: 8px 10px;
-    margin-bottom: 12px;
+    margin-bottom: var(--cui-space-3);
+    padding: var(--cui-space-2) var(--cui-space-3);
+    border-radius: var(--cui-radius-lg);
+    background-color: var(--cui-action-hover);
   }
   .device-card-head {
-    display: flex; align-items: center; gap: 10px;
-    color: #fff; font-weight: 600; font-size: 13px; margin-bottom: 4px;
-    svg { color: #9ca3af; flex-shrink: 0; }
+    display: flex;
+    align-items: center;
+    gap: var(--cui-space-3);
+    margin-bottom: var(--cui-space-1);
+    font-weight: var(--cui-font-weight-semibold);
   }
-  .device-card-name-stack { display: flex; flex-direction: column; min-width: 0; }
-  .device-card-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .device-card-icon {
+    display: inline-grid;
+    color: var(--cui-text-muted);
+  }
+  .device-card-name-stack {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .device-card-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .device-card-friendly {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-weight: 500; font-size: 11px; color: #9ca3af;
-    letter-spacing: 0.05em; text-transform: lowercase;
+    color: var(--cui-text-muted);
+    font-family: var(--cui-typography-code-font-family);
+    font-size: var(--cui-typography-caption-font-size);
+    font-weight: var(--cui-font-weight-medium);
+    letter-spacing: var(--cui-font-tracking-caps);
+    text-transform: lowercase;
   }
 
   /* ---- transport badges ------------------------------------------------- */
-  .transports { display: flex; flex-direction: column; gap: 10px; }
-  // Neutral grey for every card — the state lives in the button, not the
-  // background tint (no green/blue/red card highlight).
+  .transports {
+    display: flex;
+    flex-direction: column;
+    gap: var(--cui-space-3);
+  }
+  /* Neutral for every card: the state lives in the StatusDot and the button,
+     not in a tinted background. surface.default sets the card off the raised
+     panel in both themes (white on white with a border, ink on graphite). */
   .badge {
-    border-radius: 10px;
-    padding: 12px;
-    background: #2a2b2e;
+    padding: var(--cui-space-3);
+    border: var(--cui-border-width-hairline) solid var(--cui-border-subtle);
+    border-radius: var(--cui-radius-lg);
+    background-color: var(--cui-surface-default);
   }
-  .badge-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .badge-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--cui-space-2);
+  }
   .transport-name {
-    font-size: 14px; font-weight: 600; color: #fff;
-    display: inline-flex; align-items: center; gap: 6px;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--cui-space-1);
+    font-weight: var(--cui-font-weight-semibold);
   }
-  .session-chip {
-    font-size: 10px; font-weight: 600; text-transform: none;
-    padding: 1px 6px; border-radius: 10px;
-    background: #0b3a52; color: #7dd3fc;
-    letter-spacing: 0.01em; vertical-align: 1px;
+  .badge-action {
+    margin-left: auto;
   }
 
   .pattern-wrap {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 8px;
-    margin: 12px 0 4px;
+    gap: var(--cui-space-2);
+    margin: var(--cui-space-3) 0 var(--cui-space-1);
+  }
+  .badge-foot {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--cui-space-2);
+    margin-top: var(--cui-space-3);
+  }
+
+  .hint {
+    margin: var(--cui-space-3) 0 0;
+    color: var(--cui-text-muted);
+    font-size: var(--cui-typography-caption-font-size);
+    line-height: var(--cui-typography-prose-line-height);
   }
   .pattern-hint {
     margin: 0;
-    font-size: 11.5px;
-    color: #9ca3af;
     text-align: center;
-    line-height: 1.4;
   }
-
-  .badge-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
-
-  // Mini 2: CDC-picker phase hint + "add serial" affordance inside the USB badge.
-  .usb-hint {
-    margin: 10px 0 0;
-    font-size: 11.5px;
-    color: #9ca3af;
-    line-height: 1.4;
-  }
+  /* Mini 2: "add serial" affordance inside the USB badge. */
   .usb-serial-add {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 10px;
-    margin-top: 10px;
-    .usb-hint { margin: 0; flex: 1; min-width: 0; }
+    gap: var(--cui-space-3);
+    margin-top: var(--cui-space-3);
+  }
+  .usb-serial-add .hint {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
   }
 
-  // "Verbinden" / "Erneut verbinden" are always green; cancel / disconnect are a
-  // decent (ghost) outline. State is conveyed by which buttons show + the error
-  // text, not by tinting the button red.
-  .row-btn {
-    padding: 7px 16px; border-radius: 8px; border: 1px solid transparent;
-    font-size: 13px; font-weight: 600; cursor: pointer;
-    flex-shrink: 0;
-    transition: background 0.15s, color 0.15s, opacity 0.15s;
-    &.connect {
-      background: #98f600; color: #1b1c1d;
-      &:hover:not(:disabled) { background: #aaff1f; }
-      &:disabled { opacity: 0.4; cursor: default; }
-    }
-    // Cancel in the error state — red, to signal something went wrong.
-    &.danger {
-      background: #e53f4b; color: #fff;
-      &:hover:not(:disabled) { background: #cf3742; }
-      &:disabled { opacity: 0.4; cursor: default; }
-    }
-    &.ghost {
-      background: transparent; border-color: rgba(255, 255, 255, 0.22); color: #e5e7eb;
-      &:hover:not(:disabled) { background: rgba(255, 255, 255, 0.08); }
-      &:disabled { opacity: 0.4; cursor: default; }
-    }
+  .wide-action {
+    margin-top: var(--cui-space-3);
   }
 
-  // "Programm übertragen" — full-width, in the flash/transfer accent (cyan),
-  // matching the flash progress shown while it runs.
-  .transfer-btn {
-    width: 100%;
-    margin-top: 12px;
-    padding: 10px 16px;
-    border: 0;
-    border-radius: 8px;
-    background: #00b8cc;
-    color: #fff;
-    font-size: 13px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: background 0.15s, opacity 0.15s;
-    &:hover:not(:disabled) { background: #00a3b5; }
-    &:disabled { opacity: 0.5; cursor: default; }
+  .meta-row {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--cui-space-3);
+    padding: var(--cui-space-1) 0;
+    font-size: var(--cui-typography-caption-font-size);
+  }
+  .meta-row.muted {
+    margin-top: var(--cui-space-2);
+  }
+  .meta-key {
+    color: var(--cui-text-muted);
+  }
+  .meta-val {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--cui-space-1);
+  }
+  .meta-warn {
+    font-weight: var(--cui-font-weight-semibold);
   }
 
-  // Dev-only "Re-arm inputs" — secondary ghost button so it reads as a tool,
-  // not a primary action.
-  .rearm-btn {
-    width: 100%;
-    margin-top: 8px;
-    padding: 8px 16px;
-    border: 1px solid rgba(255, 255, 255, 0.22);
-    border-radius: 8px;
-    background: transparent;
-    color: #e5e7eb;
-    font-size: 12.5px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: background 0.15s, opacity 0.15s;
-    &:hover:not(:disabled) { background: rgba(255, 255, 255, 0.08); }
-    &:disabled { opacity: 0.5; cursor: default; }
+  .flash-block {
+    margin: var(--cui-space-4) 0 var(--cui-space-1);
   }
 
-  .meta-row { display: flex; justify-content: space-between; font-size: 12px; padding: 4px 0; }
-  .meta-row.muted { color: #9ca3af; margin-top: 6px; }
-  .meta-key { color: #9ca3af; }
-  .meta-val { color: #e5e7eb; }
-  .meta-warn { color: #fbbf24; font-weight: 600; }
-
-  .flash-block { margin: 14px 0 4px; }
-  .flash-via { font-size: 12px; font-weight: 600; color: #fff; margin-bottom: 4px; }
-  .flash-line {
-    font-size: 12px; color: #cbd5e1; margin-bottom: 6px;
-    &.indeterminate { display: flex; align-items: center; gap: 6px; }
-  }
-  .spinner-inline {
-    display: inline-block; width: 10px; height: 10px; border-radius: 50%;
-    border: 2px solid rgba(0, 184, 204, 0.25); border-top-color: #00b8cc;
-    animation: spin 0.7s linear infinite; flex-shrink: 0;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  @keyframes indeterminate {
-    0% { left: -40%; width: 40%; }
-    60% { left: 100%; width: 40%; }
-    100% { left: 100%; width: 40%; }
-  }
-  .flash-bar { height: 6px; background: rgba(255, 255, 255, 0.12); border-radius: 3px; overflow: hidden; position: relative; }
-  .flash-bar-fill { height: 100%; background: #00b8cc; transition: width 0.15s; }
-  .flash-bar-indeterminate {
-    position: absolute; height: 100%; background: #00b8cc; border-radius: 3px;
-    animation: indeterminate 1.4s ease-in-out infinite;
-  }
-
+  /* Errors: the red goes to the icon disc, the text stays in the error text
+     colour (calliope-ui's rule for red on light surfaces). */
   .error {
-    margin-top: 10px; padding: 8px 10px;
-    background: #3a2526; color: #fca5a5; border-radius: 6px;
-    font-size: 12px; word-break: break-word;
+    display: flex;
+    align-items: flex-start;
+    gap: var(--cui-space-2);
+    margin: var(--cui-space-3) 0 0;
+    padding: var(--cui-space-2) var(--cui-space-3);
+    border-left: 4px solid var(--cui-status-error-fill);
+    border-radius: var(--cui-radius-md);
+    background-color: var(--cui-action-hover);
+    color: var(--cui-text-error);
+    font-size: var(--cui-typography-caption-font-size);
+    overflow-wrap: anywhere;
   }
-  .hint { font-size: 12px; color: #9ca3af; line-height: 1.4; }
+  .error-disc {
+    display: inline-grid;
+    flex: none;
+    place-items: center;
+    width: var(--cui-size-icon-m);
+    height: var(--cui-size-icon-m);
+    border-radius: var(--cui-radius-full);
+    background-color: var(--cui-status-error-fill);
+    color: var(--cui-status-error-on);
+  }
 </style>

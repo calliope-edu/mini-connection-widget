@@ -13,6 +13,9 @@ importers:
 
   .:
     dependencies:
+      '@microbit/makecode-embed':
+        specifier: '*'
+        version: 0.7.5(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@types/w3c-web-usb':
         specifier: ^1.0.14
         version: 1.0.14
@@ -22,10 +25,10 @@ importers:
       nrf-intel-hex:
         specifier: ^1.4.0
         version: 1.4.0
-      svelte:
-        specifier: ^5.0.0
-        version: 5.55.7
     devDependencies:
+      '@calliope-edu/ui':
+        specifier: github:calliope-edu/calliope-ui#e5c6cb82dceadf73078a0442bc5beb99f7605453
+        version: https://codeload.github.com/calliope-edu/calliope-ui/tar.gz/e5c6cb82dceadf73078a0442bc5beb99f7605453(@internationalized/date@3.12.4)(svelte@5.55.7)
       '@capacitor-community/bluetooth-le':
         specifier: ^7.3.0
         version: 7.3.2(@capacitor/core@7.6.2)
@@ -41,11 +44,21 @@ importers:
       '@microbit/microbit-connection':
         specifier: 1.0.0-beta.1
         version: 1.0.0-beta.1(patch_hash=93b1318c660131471ae96f5a74877b6216f54995c9d843f26aeb5ed231bb5da9)(@capacitor-community/bluetooth-le@7.3.2(@capacitor/core@7.6.2))(@capacitor/core@7.6.2)(@capacitor/filesystem@7.1.8(@capacitor/core@7.6.2))(@microbit/capacitor-community-nordic-dfu@7.0.0-microbit.4(@capacitor/core@7.6.2))(tslib@2.8.1)
+      svelte:
+        specifier: ^5.41.0
+        version: 5.55.7
       typescript:
         specifier: ^5.6.0
         version: 5.9.3
 
 packages:
+
+  '@calliope-edu/ui@https://codeload.github.com/calliope-edu/calliope-ui/tar.gz/e5c6cb82dceadf73078a0442bc5beb99f7605453':
+    resolution: {tarball: https://codeload.github.com/calliope-edu/calliope-ui/tar.gz/e5c6cb82dceadf73078a0442bc5beb99f7605453}
+    version: 0.0.1
+    engines: {node: '>=22', pnpm: '>=10'}
+    peerDependencies:
+      svelte: ^5.0.0
 
   '@capacitor-community/bluetooth-le@7.3.2':
     resolution: {integrity: sha512-7dgtglFXGmyS849XtIZ62iA997aE3yqNsq7XsC8yjR8dqe/agh852+nW1Zk/8QlG58dPu/K5fxVzlWZvZFb80g==}
@@ -62,6 +75,18 @@ packages:
 
   '@capacitor/synapse@1.0.4':
     resolution: {integrity: sha512-/C1FUo8/OkKuAT4nCIu/34ny9siNHr9qtFezu4kxm6GY1wNFxrCFWjfYx5C1tUhVGz3fxBABegupkpjXvjCHrw==}
+
+  '@floating-ui/core@1.8.0':
+    resolution: {integrity: sha512-0CIZ5itps/8x7BG8dEIhs53BvCUH2PCoogtakwRTut+Arm58sJooJ0AuZhLw2HJYIR5cMLNPBSS728sPho2khQ==}
+
+  '@floating-ui/dom@1.8.0':
+    resolution: {integrity: sha512-yXSrzeHZBTZadLOlfyhCkJHNeLJnHRnRInwdZ40L7ZiaAtrBwoYlsDrX3v5zB1Utk7CLfzcOVnVVWoXEky7Ceg==}
+
+  '@floating-ui/utils@0.2.12':
+    resolution: {integrity: sha512-HpCo8tmWzLVad5s2d19EhAz5zqrrQ6s69qd6moPMQvkOuSwDT1YgRfWSVuc4ennqrgv3OHppiOGMQ7oC13yIww==}
+
+  '@internationalized/date@3.12.4':
+    resolution: {integrity: sha512-M1dEn4c1U1HsSlaVR8upZtSqvXrTkHDfv18H01uCSJyjVLDxnBR38v/fMxecmlwXKR4i9HeZcmgQAPE6A+aGJQ==}
 
   '@jridgewell/gen-mapping@0.3.13':
     resolution: {integrity: sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA==}
@@ -85,6 +110,12 @@ packages:
     peerDependencies:
       '@capacitor/core': ^7.0.0
 
+  '@microbit/makecode-embed@0.7.5':
+    resolution: {integrity: sha512-G9jm+I4AWuz/VwaQxMJIBa9UedbM+cMCoSSkHK6etGbr6yywC+lWcbPDGM1SZZoDvkfYq4Lh2pzL6d3rU+Eb9w==}
+    peerDependencies:
+      react: '>=17.0.2'
+      react-dom: '>=17.0.2'
+
   '@microbit/microbit-connection@1.0.0-beta.1':
     resolution: {integrity: sha512-mD0UakRjwYgXHbQd2XOF55EX2dWWoNCr401zpLNDP9BBAoSe5egwh/lkOhy2/65SbQkk5YfmmeMPAa+pl04dEw==}
     peerDependencies:
@@ -103,6 +134,9 @@ packages:
     resolution: {integrity: sha512-lVJX6qEgs/4DOcRTpo56tmKzVPtoWAaVbL4hfO7t7NVwl9AAXzQR6cihesW1BmNMPl+bK6dreu2sOKBP2Q9CIA==}
     peerDependencies:
       acorn: ^8.9.0
+
+  '@swc/helpers@0.5.24':
+    resolution: {integrity: sha512-6tcXo4kA8HgGO7AVmawB57RYi/piBPYVHVcO6dXjX+SZw8GoHmi262sp4v2Ha2kNP9Cx84qei27yT+fjS1lxgg==}
 
   '@types/estree@1.0.9':
     resolution: {integrity: sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg==}
@@ -132,8 +166,19 @@ packages:
     resolution: {integrity: sha512-qIj0G9wZbMGNLjLmg1PT6v2mE9AH2zlnADJD/2tC6E00hgmhUOfEB6greHPAfLRSufHqROIUTkw6E+M3lH0PTQ==}
     engines: {node: '>= 0.4'}
 
+  bits-ui@2.21.0:
+    resolution: {integrity: sha512-kfJonux4r+XOnqGCBQaqFfhRUvDbuZQgyjXADfk0/QJGc8LlQchkrGc6rCd+ldo1EixCJEXlM7znKVIUtuf7OQ==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      '@internationalized/date': ^3.8.1
+      svelte: ^5.33.0
+
   clsx@2.1.1:
     resolution: {integrity: sha512-eYm0QWBtUrBWZWG0d386OGAw16Z995PiOVo2B7bjWSbHedGl5e0ZWaq65kOGgUSNesEIDkB9ISbTg/JK9dhCZA==}
+    engines: {node: '>=6'}
+
+  dequal@2.0.3:
+    resolution: {integrity: sha512-0je+qPKHEMohvfRTCEo3CrPG6cAzAYgmzKyxRiYSSDkS6eGJdyVJm7WaYA5ECaAD9wLB2T4EEeymA5aFVcYXCA==}
     engines: {node: '>=6'}
 
   devalue@5.8.1:
@@ -150,11 +195,18 @@ packages:
       '@typescript-eslint/types':
         optional: true
 
+  inline-style-parser@0.2.7:
+    resolution: {integrity: sha512-Nb2ctOyNR8DqQoR0OwRG95uNWIC0C1lCgf5Naz5H6Ji72KZ8OcFZLz2P5sNgwlyoJ8Yif11oMuYs5pBQa86csA==}
+
   is-reference@3.0.3:
     resolution: {integrity: sha512-ixkJoqQvAP88E6wLydLGGqCJsrFUnqoH6HnaczB8XmDH1oaWU+xxdptvikTgaEhtZ53Ky6YXiBuUI2WXLMCwjw==}
 
   locate-character@3.0.0:
     resolution: {integrity: sha512-SW13ws7BjaeJ6p7Q6CO2nchbYEc3X3J6WrmTTDto7yMPqVSZTUyY5Tjbid+Ab8gLnATtygYtiDIJGQRRn2ZOiA==}
+
+  lz-string@1.5.0:
+    resolution: {integrity: sha512-h5bgJWpxJNswbU7qCrV0tIKQCaS3blPDrqKWx+QxzuzL1zGUzij9XCWLrSLsJPu5t+eWA/ycetzYAO5IOMcWAQ==}
+    hasBin: true
 
   magic-string@0.30.21:
     resolution: {integrity: sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ==}
@@ -163,9 +215,47 @@ packages:
     resolution: {integrity: sha512-q3+GGRIpe0VvCjUP1zaqW5rk6IpCZzhD0lu7Sguo1bgWwFcA9kZRjsaKUb0jBQMnefyOl5o0BBGAxvqMqYx8Sg==}
     engines: {node: '>=6.0.0'}
 
+  react-dom@19.3.1:
+    resolution: {integrity: sha512-Y0bARz53lhEC1NMCASs0/j+faB/zqt3R8hpvg1e8+61ZVJ4UL0UdC4cBbXfZMcIuhrfgeILTLe+ZeBCavQPtKQ==}
+    peerDependencies:
+      react: ^19.3.1
+
+  react@19.3.1:
+    resolution: {integrity: sha512-QNhWdt7nrgVWWQG58QuGsAR3jv3Hbe4mb4vz7w2csnHavciZJgda1CPNaldF6eVxv90ud3jUXpKlHL69gO38yw==}
+    engines: {node: '>=0.10.0'}
+
+  runed@0.35.1:
+    resolution: {integrity: sha512-2F4Q/FZzbeJTFdIS/PuOoPRSm92sA2LhzTnv6FXhCoENb3huf5+fDuNOg1LNvGOouy3u/225qxmuJvcV3IZK5Q==}
+    peerDependencies:
+      '@sveltejs/kit': ^2.21.0
+      svelte: ^5.7.0
+    peerDependenciesMeta:
+      '@sveltejs/kit':
+        optional: true
+
+  scheduler@0.28.0:
+    resolution: {integrity: sha512-juorfCmIkIw8tT+p5BXSm6PJjQF/ycEYmKyzURCIt/RaZIhL+PulbQ9Yu2z1HdOJDdqDTlxA1+xKBmHXJsczAw==}
+
+  style-to-object@1.0.14:
+    resolution: {integrity: sha512-LIN7rULI0jBscWQYaSswptyderlarFkjQ+t79nzty8tcIAceVomEVlLzH5VP4Cmsv6MtKhs7qaAiwlcp+Mgaxw==}
+
+  svelte-sonner@1.2.3:
+    resolution: {integrity: sha512-SjQaDI/k6L/ordD2w84XOkGv3kaZwyGRsJzR+lHW097/aJCaydvp63VblMTFsrakm58BxRjUSySK/BWH9jdY1Q==}
+    peerDependencies:
+      svelte: ^5.0.0
+
+  svelte-toolbelt@0.10.7:
+    resolution: {integrity: sha512-gjuUVEEpo38UJCeI1ssE3NxG31tYENczPTcTGTXf4338qAQNdR9I1oAEbQY0KQFmbdUojNIhHuRNix7ThwFNxQ==}
+    engines: {node: '>=18', pnpm: '>=8.7.0'}
+    peerDependencies:
+      svelte: ^5.30.2
+
   svelte@5.55.7:
     resolution: {integrity: sha512-ymI5ykLPwIHW839E053FQbI1G+jnRFJEw3Kv5Y4njixVWywQBx+NUFpkkKyk5LIb36Fg9DVXSYpqiGekLD0hyw==}
     engines: {node: '>=18'}
+
+  tabbable@6.5.2:
+    resolution: {integrity: sha512-XgdnB1nGU6KU4VgMnZPaZCx7M1hBrLyEiZYau2G2gq9UT0d7d4FUBlNX7vvPlm/B1vk1PjrzJBx9Lbv4fsqS9g==}
 
   tslib@2.8.1:
     resolution: {integrity: sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==}
@@ -179,6 +269,15 @@ packages:
     resolution: {integrity: sha512-B58NGBEoc8Y9MWWCQGl/gq9xBCe4IiKM0a2x7GZdQKOW5Exr8S1W24J6OgM1njK8xCRGvAJIL/MxXHf6SkmQKQ==}
 
 snapshots:
+
+  '@calliope-edu/ui@https://codeload.github.com/calliope-edu/calliope-ui/tar.gz/e5c6cb82dceadf73078a0442bc5beb99f7605453(@internationalized/date@3.12.4)(svelte@5.55.7)':
+    dependencies:
+      bits-ui: 2.21.0(@internationalized/date@3.12.4)(svelte@5.55.7)
+      svelte: 5.55.7
+      svelte-sonner: 1.2.3(svelte@5.55.7)
+    transitivePeerDependencies:
+      - '@internationalized/date'
+      - '@sveltejs/kit'
 
   '@capacitor-community/bluetooth-le@7.3.2(@capacitor/core@7.6.2)':
     dependencies:
@@ -195,6 +294,21 @@ snapshots:
       '@capacitor/synapse': 1.0.4
 
   '@capacitor/synapse@1.0.4': {}
+
+  '@floating-ui/core@1.8.0':
+    dependencies:
+      '@floating-ui/utils': 0.2.12
+
+  '@floating-ui/dom@1.8.0':
+    dependencies:
+      '@floating-ui/core': 1.8.0
+      '@floating-ui/utils': 0.2.12
+
+  '@floating-ui/utils@0.2.12': {}
+
+  '@internationalized/date@3.12.4':
+    dependencies:
+      '@swc/helpers': 0.5.24
 
   '@jridgewell/gen-mapping@0.3.13':
     dependencies:
@@ -219,6 +333,12 @@ snapshots:
     dependencies:
       '@capacitor/core': 7.6.2
 
+  '@microbit/makecode-embed@0.7.5(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
+    dependencies:
+      react: 19.3.1
+      react-dom: 19.3.1(react@19.3.1)
+      tslib: 2.8.1
+
   '@microbit/microbit-connection@1.0.0-beta.1(patch_hash=93b1318c660131471ae96f5a74877b6216f54995c9d843f26aeb5ed231bb5da9)(@capacitor-community/bluetooth-le@7.3.2(@capacitor/core@7.6.2))(@capacitor/core@7.6.2)(@capacitor/filesystem@7.1.8(@capacitor/core@7.6.2))(@microbit/capacitor-community-nordic-dfu@7.0.0-microbit.4(@capacitor/core@7.6.2))(tslib@2.8.1)':
     dependencies:
       '@capacitor-community/bluetooth-le': 7.3.2(@capacitor/core@7.6.2)
@@ -240,6 +360,8 @@ snapshots:
     dependencies:
       acorn: 8.16.0
 
+  '@swc/helpers@0.5.24': {}
+
   '@types/estree@1.0.9': {}
 
   '@types/trusted-types@2.0.7': {}
@@ -256,7 +378,22 @@ snapshots:
 
   axobject-query@4.1.0: {}
 
+  bits-ui@2.21.0(@internationalized/date@3.12.4)(svelte@5.55.7):
+    dependencies:
+      '@floating-ui/core': 1.8.0
+      '@floating-ui/dom': 1.8.0
+      '@internationalized/date': 3.12.4
+      esm-env: 1.2.2
+      runed: 0.35.1(svelte@5.55.7)
+      svelte: 5.55.7
+      svelte-toolbelt: 0.10.7(svelte@5.55.7)
+      tabbable: 6.5.2
+    transitivePeerDependencies:
+      - '@sveltejs/kit'
+
   clsx@2.1.1: {}
+
+  dequal@2.0.3: {}
 
   devalue@5.8.1: {}
 
@@ -266,17 +403,54 @@ snapshots:
     dependencies:
       '@jridgewell/sourcemap-codec': 1.5.5
 
+  inline-style-parser@0.2.7: {}
+
   is-reference@3.0.3:
     dependencies:
       '@types/estree': 1.0.9
 
   locate-character@3.0.0: {}
 
+  lz-string@1.5.0: {}
+
   magic-string@0.30.21:
     dependencies:
       '@jridgewell/sourcemap-codec': 1.5.5
 
   nrf-intel-hex@1.4.0: {}
+
+  react-dom@19.3.1(react@19.3.1):
+    dependencies:
+      react: 19.3.1
+      scheduler: 0.28.0
+
+  react@19.3.1: {}
+
+  runed@0.35.1(svelte@5.55.7):
+    dependencies:
+      dequal: 2.0.3
+      esm-env: 1.2.2
+      lz-string: 1.5.0
+      svelte: 5.55.7
+
+  scheduler@0.28.0: {}
+
+  style-to-object@1.0.14:
+    dependencies:
+      inline-style-parser: 0.2.7
+
+  svelte-sonner@1.2.3(svelte@5.55.7):
+    dependencies:
+      svelte: 5.55.7
+
+  svelte-toolbelt@0.10.7(svelte@5.55.7):
+    dependencies:
+      clsx: 2.1.1
+      runed: 0.35.1(svelte@5.55.7)
+      style-to-object: 1.0.14
+      svelte: 5.55.7
+    transitivePeerDependencies:
+      - '@sveltejs/kit'
 
   svelte@5.55.7:
     dependencies:
@@ -298,6 +472,8 @@ snapshots:
       zimmerframe: 1.1.4
     transitivePeerDependencies:
       - '@typescript-eslint/types'
+
+  tabbable@6.5.2: {}
 
   tslib@2.8.1: {}
 
