@@ -35,6 +35,7 @@
     showShare = true,
     sharing = false,
     theme = 'inherit',
+    modeSwitch = 'pill',
     labels: labelOverrides,
     onModeChange,
     onVersionChange,
@@ -51,6 +52,9 @@
     sharing?: boolean;
     /** calliope-ui theme of the bar (`data-theme`); `inherit` follows the page. */
     theme?: 'light' | 'dark' | 'inherit';
+    /** Look of the mode switch (calliope-ui SegmentedControl variant): `pill`,
+     *  Campus' view switch (the default), or `frame`. */
+    modeSwitch?: 'pill' | 'frame';
     labels?: Partial<MakeCodeLabels>;
     onModeChange: (mode: MakeCodeMode) => void;
     onVersionChange?: (version: CalliopeHardwareVersion) => void;
@@ -134,6 +138,7 @@
   <div class="bar-center">
     <SegmentedControl
       label={l.programmingMode}
+      variant={modeSwitch}
       size="s"
       options={modeOptions}
       value={currentMode}

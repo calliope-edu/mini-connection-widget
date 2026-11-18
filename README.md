@@ -49,9 +49,10 @@ local checkout (`link:`), or a vendored copy. With pnpm:
     "@calliope-edu/mini-connection-widget":
       "github:calliope-edu/mini-connection-widget#<full-sha>",
     // The Svelte UI is built from calliope-ui. Pin the sha this repo's
-    // package.json names as peer dependency (or a newer one).
+    // package.json names under devDependencies (or a newer one): the peer
+    // range is `*`, since pnpm only accepts semver ranges there.
     "@calliope-edu/ui":
-      "github:calliope-edu/calliope-ui#e5c6cb82dceadf73078a0442bc5beb99f7605453",
+      "github:calliope-edu/calliope-ui#4f985edd2075ada9d761418a7d480a68413fca80",
     "@capacitor-community/bluetooth-le": "^7.3.0",
     "@capacitor/core": "^7.4.4",
     "@capacitor/filesystem": "^7.1.6",
