@@ -88,7 +88,8 @@ Without the tokens the components render unstyled (no colours, no spacing).
 The UI follows calliope-ui's `data-theme`: light by default, dark inside any
 `data-theme="dark"` subtree. `ConnectButton` draws its trigger in the dark
 theme by default (it sits in dark headers; `theme="light"` or `"inherit"`
-changes that), while its dropdown, the dialogs and the banner follow the page.
+changes that), and its panel too (`panelTheme`; `ConnectionPanel` alone takes
+`theme`). The dialogs and the banner follow the page.
 
 ### Vite setup
 
