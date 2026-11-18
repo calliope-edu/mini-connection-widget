@@ -36,6 +36,7 @@
     sharing = false,
     theme = 'inherit',
     modeSwitch = 'pill',
+    buttons = 'bar',
     labels: labelOverrides,
     onModeChange,
     onVersionChange,
@@ -55,6 +56,9 @@
     /** Look of the mode switch (calliope-ui SegmentedControl variant): `pill`,
      *  Campus' view switch (the default), or `frame`. */
     modeSwitch?: 'pill' | 'frame';
+    /** Look of Share, extensions and revision: `bar`, Campus' editor-bar
+     *  buttons (the default), or `outline`, calliope-ui's secondary buttons. */
+    buttons?: 'bar' | 'outline';
     labels?: Partial<MakeCodeLabels>;
     onModeChange: (mode: MakeCodeMode) => void;
     onVersionChange?: (version: CalliopeHardwareVersion) => void;
@@ -70,6 +74,8 @@
   const l = $derived(mergeMakeCodeLabels(labelOverrides));
   const extensionsCount = $derived(extensions?.length ?? 0);
   const dataTheme = $derived(theme === 'inherit' ? undefined : theme);
+  const buttonVariant = $derived(buttons === 'bar' ? 'bar' : 'secondary');
+  const buttonSize = $derived(buttons === 'bar' ? 'm' : 's');
   const modeOptions = $derived<SegmentedOption[]>([
     { value: 'blocks', label: l.modeBlocks },
     { value: 'javascript', label: l.modeJavaScript },
@@ -152,8 +158,8 @@
       <IconButton
         icon="share"
         label={sharing ? l.sharingInProgress : l.shareProgram}
-        variant="secondary"
-        size="s"
+        variant={buttonVariant}
+        size={buttonSize}
         loading={sharing}
         onclick={() => onShare?.()}
       />
@@ -162,7 +168,7 @@
     {#if showExtensions}
       <Popover title={l.extensions} side="bottom" align="end" size="l">
         {#snippet trigger({ props })}
-          <Button {...props} variant="secondary" size="s" iconEnd="chevron-down" title={l.extensions}>
+          <Button {...props} variant={buttonVariant} size={buttonSize} iconEnd="chevron-down" title={l.extensions}>
             {l.extensionsCount(extensionsCount)}
           </Button>
         {/snippet}
@@ -213,7 +219,7 @@
     {#if showVersionSelector}
       <Menu align="end">
         {#snippet trigger({ props })}
-          <Button {...props} variant="secondary" size="s" iconEnd="chevron-down" title={l.calliopeMiniVersion}>
+          <Button {...props} variant={buttonVariant} size={buttonSize} iconEnd="chevron-down" title={l.calliopeMiniVersion}>
             {l.calliopeMiniVersionLabel(currentVersion)}
           </Button>
         {/snippet}

@@ -52,7 +52,7 @@ local checkout (`link:`), or a vendored copy. With pnpm:
     // package.json names under devDependencies (or a newer one): the peer
     // range is `*`, since pnpm only accepts semver ranges there.
     "@calliope-edu/ui":
-      "github:calliope-edu/calliope-ui#4f985edd2075ada9d761418a7d480a68413fca80",
+      "github:calliope-edu/calliope-ui#5547dd80e0fe2768f204d2080b20b4b4935dc2eb",
     "@capacitor-community/bluetooth-le": "^7.3.0",
     "@capacitor/core": "^7.4.4",
     "@capacitor/filesystem": "^7.1.6",
@@ -86,6 +86,9 @@ import '@calliope-edu/ui/styles.css'; // brings tokens.css with it
 ```
 
 Without the tokens the components render unstyled (no colours, no spacing).
+The host's calliope-ui must be at least the sha pinned here: the widget uses
+library variants (the pill switch, the bar buttons) whose tokens only newer
+`tokens.css` files carry, and an older one leaves those parts without colour.
 The UI follows calliope-ui's `data-theme`: light by default, dark inside any
 `data-theme="dark"` subtree. `ConnectButton` draws its trigger in the dark
 theme by default (it sits in dark headers; `theme="light"` or `"inherit"`
@@ -277,7 +280,7 @@ import {
 | `project` | Pure pxt.json helpers: Calliope headers, extension list/remove, `v1`/`v2`/`v3` board revision, structural validation. |
 | `serial-bridge` | Device serial → the editor's serial monitor, as the same `{type:'serial'}` message pxt's own reader posts. Declares `setSerialConsumer` so a flash-only mini 2 gets the widget's serial offer, and pauses while the Blocks LIVE runtime owns the link. |
 | `jacdac-host` | Jacdac frames between the device and pxt's Jacdac message simulator. |
-| `ui/` | `MakeCodeToolbar` + `MakeCodeShareModal`, built from calliope-ui and translated through `MakeCodeLabels`. The toolbar follows the surrounding theme; `theme="light"` / `"dark"` pins it. (The `--mkc-*` custom properties are gone, and so is the old `Popover` / `closeAllPopovers` export.) |
+| `ui/` | `MakeCodeToolbar` + `MakeCodeShareModal`, built from calliope-ui and translated through `MakeCodeLabels`. The toolbar follows the surrounding theme; `theme="light"` / `"dark"` pins it. By default it looks like Campus' editor bar (pill switch, bar buttons); `modeSwitch="frame"` and `buttons="outline"` give calliope-ui's framed switch and outlined buttons. (The `--mkc-*` custom properties are gone, and so is the old `Popover` / `closeAllPopovers` export.) |
 
 The host still owns program storage, workspace-sync policy and program
 switching — those differ per app and deliberately stay in the app.

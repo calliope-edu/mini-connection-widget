@@ -37,7 +37,7 @@
     "@microbit/makecode-embed": { "optional": true }
   },
   "devDependencies": {
-    "@calliope-edu/ui": "github:calliope-edu/calliope-ui#4f985edd2075ada9d761418a7d480a68413fca80",
+    "@calliope-edu/ui": "github:calliope-edu/calliope-ui#5547dd80e0fe2768f204d2080b20b4b4935dc2eb",
     "@capacitor-community/bluetooth-le": "^7.3.0",
     "@capacitor/core": "^7.4.4",
     "@capacitor/filesystem": "^7.1.6",
