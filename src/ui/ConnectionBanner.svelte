@@ -38,10 +38,12 @@
    * Once a transport is connected we never nudge for the other one (goal 4):
    * the only thing shown on a healthy connection is editor `extra` content.
    *
-   * Look: calliope-ui `Banner` (status colour as a left stripe and an icon
-   * disc, never as a tinted background), rebuilt here because the leading
-   * slot also shows a spinner, the target mini's LED pattern or the replug
-   * illustration, and the banner keeps its own fixed / portaled positioning.
+   * Look: built from calliope-ui parts and tokens. A heading row holds an
+   * optional status icon (a disc in the status colour, a spinner while busy,
+   * or the target mini's LED pattern), the headline and the X; the message
+   * row below holds the text with its buttons centred on it. No side stripe
+   * and no tinted background. The banner keeps its own fixed / portaled
+   * positioning.
    * Transports carry no colour of their own: green and blue are status
    * colours in calliope-ui, so USB and Bluetooth buttons are neutral with an
    * icon.
@@ -249,6 +251,48 @@
     warning: 'warning',
     error: 'error',
   };
+  // Info needs no icon: the headline says it. Success, warning and error
+  // carry their status disc.
+  const showToneIcon = $derived(tone !== 'info');
+  const illustrated = $derived(kind === 'recovery' && recovery === 'replug');
+
+  const title = $derived.by<string>(() => {
+    switch (kind) {
+      case 'success': return successLabel;
+      case 'flashing': return 'Programm wird übertragen…';
+      case 'recovery':
+        if (recovery === 'reconnecting') return 'Verbinde mit dem Calliope mini…';
+        if (recovery === 'replug') return 'Calliope mini neu verbinden.';
+        return 'Das hat nicht geholfen.';
+      case 'jlink-serial-pick': return 'USB verbunden (1/2)';
+      case 'connecting': return connectingLabel;
+      case 'no-connection': return 'Kein Calliope mini verbunden.';
+      case 'unsupported': return 'Verbindung nicht möglich.';
+      case 'extra': return extra?.title ?? '';
+      default: return '';
+    }
+  });
+  const detail = $derived.by<string | undefined>(() => {
+    switch (kind) {
+      case 'recovery':
+        if (recovery === 'replug') return 'Zieh den Calliope mini einmal vom USB-Kabel ab und steck ihn wieder ein. Schließe ggf. andere Tabs, die ihn nutzen. Klicke dann auf „Erneut verbinden“.';
+        if (recovery === 'reload') return 'Lade die Seite neu, um die USB-Verbindung zurückzusetzen. Dein Calliope mini bleibt verbunden.';
+        return undefined;
+      case 'jlink-serial-pick': return 'Wähle jetzt noch „CDC – COM x“, um die Datenverbindung (Serial) herzustellen. Abbrechen ist okay: Programme übertragen geht auch ohne.';
+      case 'connecting': return targetName ? `Calliope mini ${targetName}` : undefined;
+      case 'no-connection': return 'Verbinde deinen Calliope mini per USB-Kabel oder Bluetooth, um zu starten.';
+      case 'unsupported': return 'In diesem Browser ist weder USB noch Bluetooth verfügbar. Bitte einen Chromium-Browser (Chrome, Edge, Opera, Brave) verwenden.';
+      case 'extra': return extra?.detail;
+      default: return undefined;
+    }
+  });
+  const hasActions = $derived(
+    (kind === 'recovery' && (recovery === 'replug' || recovery === 'reload'))
+    || (kind === 'connecting' && !view.nativeMode)
+    || (kind === 'no-connection' && (view.usb.supported || view.ble.supported))
+    || (kind === 'extra' && !!(extra?.action || extra?.secondaryAction)),
+  );
+
   // Extra actions name their transport only when the editor says so.
   function actionIcon(variant: 'usb' | 'ble' | undefined): IconName | undefined {
     return variant === 'ble' ? 'bluetooth' : variant === 'usb' ? 'usb' : undefined;
@@ -331,125 +375,104 @@
   <div
     class="banner"
     data-tone={tone}
-    class:illustrated={kind === 'recovery' && recovery === 'replug'}
     class:portaled={!!container}
     use:portal={container}
     role="status"
     aria-live="polite"
   >
-    <span class="lead" aria-hidden="true">
+    <!-- Heading row: an optional status icon, the headline, the X. -->
+    <div class="head">
       {#if kind === 'connecting' && targetName}
-        <!-- Show the target mini's LED name-pattern so the user can confirm which
+        <!-- The target mini's LED name-pattern, so the user can confirm which
              device is being connected. -->
-        <MiniNamePattern name={targetName} size={28} />
-      {:else if neutral}
-        <Spinner size="m" />
-      {:else if kind === 'recovery' && recovery === 'replug'}
-        <!-- Show the unplug/replug motion right where the icon would be, so
-             the instruction and the illustration read as one unit. -->
-        <img class="reconnect-gif" src={reconnectGif} alt="" />
-      {:else}
-        <span class="disc"><Icon name={toneIcon[tone]} size="s" /></span>
+        <span class="lead" aria-hidden="true"><MiniNamePattern name={targetName} size={20} /></span>
+      {:else if neutral && kind !== 'flashing'}
+        <span class="lead" aria-hidden="true"><Spinner size="s" /></span>
+      {:else if showToneIcon}
+        <span class="lead disc" aria-hidden="true"><Icon name={toneIcon[tone]} size="s" /></span>
       {/if}
-    </span>
-
-    <div class="text">
-      {#if kind === 'success'}
-        <strong>{successLabel}</strong>
-      {:else if kind === 'flashing'}
-        <ProgressBar
-          label="Programm wird übertragen…"
-          value={flashIndeterminate ? null : flashPct}
-          hint={flashIndeterminate ? flashPhaseLabel : undefined}
-        />
-      {:else if kind === 'recovery'}
-        {#if recovery === 'reconnecting'}
-          <strong>Verbinde mit dem Calliope mini…</strong>
-        {:else if recovery === 'replug'}
-          <strong>Calliope mini neu verbinden.</strong>
-          <span>Zieh den Calliope mini einmal vom USB-Kabel ab und steck ihn wieder ein. Schließe ggf. andere Tabs, die ihn nutzen. Klicke dann auf „Erneut verbinden“.</span>
-        {:else}
-          <strong>Das hat nicht geholfen.</strong>
-          <span>Lade die Seite neu, um die USB-Verbindung zurückzusetzen. Dein Calliope mini bleibt verbunden.</span>
-        {/if}
-      {:else if kind === 'jlink-serial-pick'}
-        <strong>USB verbunden (1/2)</strong>
-        <span>Wähle jetzt noch „CDC – COM x“, um die Datenverbindung (Serial) herzustellen. Abbrechen ist okay: Programme übertragen geht auch ohne.</span>
-      {:else if kind === 'connecting'}
-        <strong>{connectingLabel}</strong>
-        {#if targetName}<span>Calliope mini {targetName}</span>{/if}
-      {:else if kind === 'no-connection'}
-        <strong>Kein Calliope mini verbunden.</strong>
-        <span>Verbinde deinen Calliope mini per USB-Kabel oder Bluetooth, um zu starten.</span>
-      {:else if kind === 'unsupported'}
-        <strong>Verbindung nicht möglich.</strong>
-        <span>In diesem Browser ist weder USB noch Bluetooth verfügbar. Bitte einen Chromium-Browser (Chrome, Edge, Opera, Brave) verwenden.</span>
-      {:else if kind === 'extra' && extra}
-        <strong>{extra.title}</strong>
-        {#if extra.detail}<span>{extra.detail}</span>{/if}
-      {/if}
+      <strong class="title">{title}</strong>
+      <span class="close">
+        <IconButton icon="close" label="Ausblenden" size="s" onclick={dismiss} />
+      </span>
     </div>
 
-    {#if kind === 'recovery' || (kind === 'connecting' && !view.nativeMode) || kind === 'no-connection' || (kind === 'extra' && (extra?.action || extra?.secondaryAction))}
-      <div class="actions">
-        {#if kind === 'recovery'}
-          {#if recovery === 'replug'}
-            <Button size="s" variant="secondary" icon="retry" onclick={confirmAndRetry} loading={connecting}>
-              Erneut verbinden
-            </Button>
-          {:else if recovery === 'reload'}
-            <Button size="s" variant="secondary" icon="retry" onclick={reloadForUsbReconnect}>Seite neu laden</Button>
+    {#if detail || kind === 'flashing' || hasActions || illustrated}
+      <!-- Text row: the message, with its buttons centred on it. -->
+      <div class="row">
+        {#if illustrated}
+          <!-- The unplug/replug motion beside the instruction, so the two read
+               as one unit. -->
+          <img class="reconnect-gif" src={reconnectGif} alt="" aria-hidden="true" />
+        {/if}
+        <div class="text">
+          {#if kind === 'flashing'}
+            <ProgressBar
+              label={flashIndeterminate ? flashPhaseLabel : 'Übertragung'}
+              value={flashIndeterminate ? null : flashPct}
+            />
+          {:else if detail}
+            {detail}
           {/if}
-        {:else if kind === 'connecting'}
-          <!-- Abort an in-flight BLE connect. Forgets the device so the NEXT
-               "Verbinden" opens a fresh picker (switch minis) instead of silently
-               resuming the same one.
-               Native (app) mode has no such button: the host app owns the
-               connection, so there is nothing here to cancel — only the X to
-               hide the banner. -->
-          <Button size="s" variant="secondary" onclick={cancelConnecting}>Abbrechen</Button>
-        {:else if kind === 'no-connection'}
-          {#if view.usb.supported}
-            <Button size="s" variant="secondary" icon="usb" onclick={() => connect('usb')} disabled={connecting}>
-              USB verbinden
-            </Button>
-          {/if}
-          {#if view.ble.supported}
-            <Button size="s" variant="secondary" icon="bluetooth" onclick={() => connect('ble')} disabled={connecting}>
-              Bluetooth verbinden
-            </Button>
-          {/if}
-        {:else if extra}
-          {#if extra.action}
-            <Button
-              size="s"
-              variant="secondary"
-              icon={actionIcon(extra.action.variant)}
-              onclick={runExtra}
-              disabled={extraBusy || extraSecondaryBusy}
-            >
-              {extraBusy ? (extra.action.busyLabel ?? 'Bitte warten…') : extra.action.label}
-            </Button>
-          {/if}
-          {#if extra.secondaryAction}
-            <Button
-              size="s"
-              variant="secondary"
-              icon={actionIcon(extra.secondaryAction.variant)}
-              onclick={runExtraSecondary}
-              disabled={extraBusy || extraSecondaryBusy}
-            >
-              {extraSecondaryBusy ? (extra.secondaryAction.busyLabel ?? 'Bitte warten…') : extra.secondaryAction.label}
-            </Button>
-          {/if}
+        </div>
+
+        {#if hasActions}
+          <div class="actions">
+            {#if kind === 'recovery'}
+              {#if recovery === 'replug'}
+                <Button size="s" variant="secondary" icon="retry" onclick={confirmAndRetry} loading={connecting}>
+                  Erneut verbinden
+                </Button>
+              {:else if recovery === 'reload'}
+                <Button size="s" variant="secondary" icon="retry" onclick={reloadForUsbReconnect}>Seite neu laden</Button>
+              {/if}
+            {:else if kind === 'connecting'}
+              <!-- Abort an in-flight BLE connect. Forgets the device so the NEXT
+                   "Verbinden" opens a fresh picker (switch minis) instead of silently
+                   resuming the same one.
+                   Native (app) mode has no such button: the host app owns the
+                   connection, so there is nothing here to cancel — only the X to
+                   hide the banner. -->
+              <Button size="s" variant="secondary" onclick={cancelConnecting}>Abbrechen</Button>
+            {:else if kind === 'no-connection'}
+              {#if view.usb.supported}
+                <Button size="s" variant="secondary" icon="usb" onclick={() => connect('usb')} disabled={connecting}>
+                  USB verbinden
+                </Button>
+              {/if}
+              {#if view.ble.supported}
+                <Button size="s" variant="secondary" icon="bluetooth" onclick={() => connect('ble')} disabled={connecting}>
+                  Bluetooth verbinden
+                </Button>
+              {/if}
+            {:else if extra}
+              {#if extra.action}
+                <Button
+                  size="s"
+                  variant="secondary"
+                  icon={actionIcon(extra.action.variant)}
+                  onclick={runExtra}
+                  disabled={extraBusy || extraSecondaryBusy}
+                >
+                  {extraBusy ? (extra.action.busyLabel ?? 'Bitte warten…') : extra.action.label}
+                </Button>
+              {/if}
+              {#if extra.secondaryAction}
+                <Button
+                  size="s"
+                  variant="secondary"
+                  icon={actionIcon(extra.secondaryAction.variant)}
+                  onclick={runExtraSecondary}
+                  disabled={extraBusy || extraSecondaryBusy}
+                >
+                  {extraSecondaryBusy ? (extra.secondaryAction.busyLabel ?? 'Bitte warten…') : extra.secondaryAction.label}
+                </Button>
+              {/if}
+            {/if}
+          </div>
         {/if}
       </div>
     {/if}
-
-    <!-- Always offer a quiet way to hide the banner. -->
-    <div class="close">
-      <IconButton icon="close" label="Ausblenden" size="s" onclick={dismiss} />
-    </div>
   </div>
 {/if}
 
@@ -466,13 +489,12 @@
     z-index: var(--cui-z-index-overlay);
     box-sizing: border-box;
     display: flex;
-    align-items: center;
-    gap: var(--cui-space-3);
+    flex-direction: column;
+    gap: var(--cui-space-1);
     width: max-content;
     max-width: min(45rem, calc(100vw - 2 * var(--cui-space-4)));
-    padding: var(--cui-space-3) var(--cui-space-3) var(--cui-space-3) var(--cui-space-4);
+    padding: var(--cui-space-2) var(--cui-space-2) var(--cui-space-3) var(--cui-space-4);
     border: var(--cui-border-width-hairline) solid var(--cui-border-subtle);
-    border-left: 4px solid var(--_fill);
     border-radius: var(--cui-radius-lg);
     background-color: var(--cui-surface-raised);
     box-shadow: var(--cui-shadow-menu);
@@ -501,79 +523,78 @@
     --_on: var(--cui-status-error-on);
   }
 
+  .head {
+    display: flex;
+    align-items: center;
+    gap: var(--cui-space-2);
+    min-height: var(--cui-size-control-s);
+  }
+  .title {
+    flex: 1;
+    min-width: 0;
+    font-weight: var(--cui-font-weight-semibold);
+  }
   .lead {
     display: inline-grid;
     flex: none;
     place-items: center;
   }
-  /* 24px disc with the paired mark colour, as in calliope-ui Banner. */
+  /* 20px disc with the paired mark colour: the status lives in the icon, not
+     in a stripe or a tinted background. */
   .disc {
-    display: inline-grid;
-    place-items: center;
-    width: var(--cui-size-icon-l);
-    height: var(--cui-size-icon-l);
+    width: var(--cui-size-icon-m);
+    height: var(--cui-size-icon-m);
     border-radius: var(--cui-radius-full);
     background-color: var(--_fill);
     color: var(--_on);
   }
-  /* The replug illustration takes the leading slot. The source gif is large
-     (≈991×920), so cap it to a small square box (6.5rem), keeping the toast
-     well-proportioned. No frame/background: the artwork sits on the banner. */
-  .reconnect-gif {
-    width: 6.5rem;
-    height: 6.5rem;
-    object-fit: contain;
+  .close {
+    flex: none;
   }
 
-  .text {
+  /* The message row sits under the heading; its buttons are centred on the
+     message, so they stay clear of the heading row and the X. */
+  .row {
     display: flex;
+    align-items: center;
+    gap: var(--cui-space-3);
+    padding-right: var(--cui-space-2);
+  }
+  .text {
     flex: 1;
-    flex-direction: column;
-    gap: var(--cui-space-0-5);
     min-width: 0;
-  }
-  .text strong {
-    font-weight: var(--cui-font-weight-semibold);
-  }
-  .text span {
     color: var(--cui-text-muted);
   }
   .text :global(.cui-progress-bar) {
     min-width: 18rem;
   }
-
+  /* The source gif is large (≈991×920): a small square keeps the toast
+     well-proportioned. No frame: the artwork sits on the banner. */
+  .reconnect-gif {
+    flex: none;
+    width: 6.5rem;
+    height: 6.5rem;
+    object-fit: contain;
+  }
   .actions {
     display: flex;
     flex: none;
     flex-wrap: wrap;
     gap: var(--cui-space-2);
   }
-  .close {
-    flex: none;
-    align-self: flex-start;
-  }
 
-  /* Narrow toast: the illustration + button + text don't fit on one row, so
-     stack them (illustration → text → full-width button). Only the
-     illustrated (replug) banner is affected; every other state stays a row. */
+  /* Narrow toast: stack the message and its buttons (and the illustration)
+     instead of squeezing them into one row. */
   @media (max-width: 520px) {
-    .banner.illustrated {
+    .row {
       flex-direction: column;
       align-items: flex-start;
-      gap: var(--cui-space-2);
     }
-    .banner.illustrated .actions {
+    .actions {
       align-self: stretch;
     }
-    .banner.illustrated .actions > :global(*) {
+    .actions > :global(*) {
       flex: 1;
-    }
-    /* Keep the hide affordance out of the flow so it stays pinned top-right
-       instead of dropping to a lonely row of its own. */
-    .banner.illustrated .close {
-      position: absolute;
-      top: var(--cui-space-2);
-      right: var(--cui-space-2);
     }
   }
 </style>

@@ -52,16 +52,25 @@
      * Which calliope-ui theme the trigger is drawn in (`data-theme`). Defaults
      * to `light` for `appearance="light"` and `dark` otherwise (the pill and
      * icon triggers sit in dark headers); `inherit` follows the surrounding
-     * `data-theme`. The dropdown panel follows the page, not the trigger.
+     * `data-theme`. The panel has its own `panelTheme`.
      */
     theme?: 'light' | 'dark' | 'inherit';
+    /** Theme of the dropdown panel and the floating window: dark by default,
+     *  as the panel has always looked; `inherit` follows the page. */
+    panelTheme?: 'light' | 'dark' | 'inherit';
     /** Translation overrides; defaults are German. */
     labels?: Partial<ConnectLabels>;
     /** Expose the pin / drag floating window + comms log (off by default). */
     advanced?: boolean;
   };
 
-  let { appearance = 'dark', theme, labels: labelsProp, advanced = false }: Props = $props();
+  let {
+    appearance = 'dark',
+    theme,
+    panelTheme = 'dark',
+    labels: labelsProp,
+    advanced = false,
+  }: Props = $props();
   const labels = $derived(mergeLabels(labelsProp));
   const dataTheme = $derived.by(() => {
     const t = theme ?? (appearance === 'light' ? 'light' : 'dark');
@@ -284,6 +293,7 @@
       {/snippet}
       <ConnectionPanel
         labels={labelsProp}
+        theme={panelTheme}
         embedded
         onaction={() => (open = false)}
         pinned={effectivePinned}
@@ -297,6 +307,7 @@
 {#if open && effectivePinned}
   <div
     class="floating"
+    data-theme={panelTheme === 'inherit' ? undefined : panelTheme}
     role="dialog"
     aria-label={labels.panelTitle}
     style:left="{pos.x}px"
@@ -307,6 +318,7 @@
     <div class="floating-body">
       <ConnectionPanel
         labels={labelsProp}
+        theme={panelTheme}
         pinned={effectivePinned}
         onTogglePin={togglePin}
         {advanced}
@@ -456,6 +468,7 @@
        built-in 280px height. */
     :global(.panel) {
       height: 100%;
+      border-radius: 0;
       box-sizing: border-box;
       display: flex;
       flex-direction: column;

@@ -33,9 +33,13 @@
 
   type Props = {
     labels?: Partial<ConnectLabels>;
-    /** Drop the panel's own surface and padding: set by `<ConnectButton>`,
-     *  whose Popover already brings both. */
+    /** Set by `<ConnectButton>`: the panel covers its Popover's own surface
+     *  (so the panel's theme shows edge to edge) and scrolls when too tall. */
     embedded?: boolean;
+    /** calliope-ui theme of the panel (`data-theme`). Dark by default, the
+     *  look the panel has always had in Campus and Teachable; `inherit`
+     *  follows the surrounding theme. */
+    theme?: 'light' | 'dark' | 'inherit';
     /** Called after the user clicks an action — useful to close a parent dropdown. */
     onaction?: () => void;
     /** When set, renders a pin / unpin toggle in the header. The host owns
@@ -58,6 +62,7 @@
   let {
     labels: labelsProp,
     embedded = false,
+    theme = 'dark',
     onaction,
     pinned = false,
     onTogglePin,
@@ -68,6 +73,7 @@
   }: Props = $props();
 
   const labels = $derived(mergeLabels(labelsProp));
+  const dataTheme = $derived(theme === 'inherit' ? undefined : theme);
   const s = $derived($calliopeState);
 
   const isIndeterminate = $derived(
@@ -232,7 +238,7 @@
   const PATTERN_HINT = 'Zeichne das Muster, das dein Calliope mini anzeigt.';
 </script>
 
-<div class="panel" class:embedded>
+<div class="panel" class:embedded data-theme={dataTheme}>
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="panel-header"
@@ -336,7 +342,7 @@
                 {labels.cancel}
               </Button>
             {:else}
-              <Button size="s" onclick={doConnectUsb} disabled={usbBusy}>
+              <Button size="s" tone="positive" onclick={doConnectUsb} disabled={usbBusy}>
                 {labels.connect}
               </Button>
             {/if}
@@ -412,7 +418,7 @@
                 {labels.cancel}
               </Button>
             {:else}
-              <Button size="s" onclick={doConnectBle} disabled={bleBusy || !bleConnectEnabled}>
+              <Button size="s" tone="positive" onclick={doConnectBle} disabled={bleBusy || !bleConnectEnabled}>
                 {labels.connect}
               </Button>
             {/if}
@@ -482,21 +488,21 @@
   .panel {
     padding: var(--cui-space-4);
     border-radius: var(--cui-radius-xl);
-    background-color: var(--cui-surface-raised);
+    background-color: var(--cui-surface-default);
     color: var(--cui-text-default);
     font-family: var(--cui-typography-body-font-family);
     font-size: var(--cui-typography-label-font-size);
     line-height: var(--cui-typography-body-line-height);
   }
-  /* Inside the trigger's Popover, which already brings surface and padding. */
+  /* Inside the trigger's Popover: cover its padding and surface, so the
+     panel's own theme fills the popover to its rounded edge. The popover does
+     not scroll itself; with the comms log the panel can be taller than the
+     window. */
   .panel.embedded {
-    /* The popover does not scroll itself; with the comms log the panel can be
-       taller than the window. */
     max-height: calc(100dvh - 6rem);
     overflow-y: auto;
-    padding: 0;
-    border-radius: 0;
-    background: none;
+    margin: calc(-1 * var(--cui-space-4));
+    border-radius: var(--cui-radius-lg);
   }
   .comms-embed {
     display: flex;
@@ -523,10 +529,9 @@
   }
   .title {
     margin: 0;
-    font-family: var(--cui-typography-h3-font-family);
-    font-size: var(--cui-typography-h3-font-size);
-    font-weight: var(--cui-typography-h3-font-weight);
-    line-height: var(--cui-typography-h3-line-height);
+    font-size: var(--cui-typography-body-font-size);
+    font-weight: var(--cui-font-weight-bold);
+    line-height: var(--cui-font-line-height-tight);
   }
   .subtitle {
     color: var(--cui-text-muted);
@@ -538,7 +543,7 @@
     margin-bottom: var(--cui-space-3);
     padding: var(--cui-space-2) var(--cui-space-3);
     border-radius: var(--cui-radius-lg);
-    background-color: var(--cui-action-hover);
+    background-color: var(--cui-surface-subtle);
   }
   .device-card-head {
     display: flex;
@@ -576,14 +581,13 @@
     flex-direction: column;
     gap: var(--cui-space-3);
   }
-  /* Neutral for every card: the state lives in the StatusDot and the button,
-     not in a tinted background. surface.default sets the card off the raised
-     panel in both themes (white on white with a border, ink on graphite). */
+  /* Filled cards as in Campus (graphite on ink in the dark theme, mist on
+     white in the light one). Neutral for every card: the state lives in the
+     StatusDot and the button, not in a tinted background. */
   .badge {
     padding: var(--cui-space-3);
-    border: var(--cui-border-width-hairline) solid var(--cui-border-subtle);
     border-radius: var(--cui-radius-lg);
-    background-color: var(--cui-surface-default);
+    background-color: var(--cui-surface-subtle);
   }
   .badge-head {
     display: flex;

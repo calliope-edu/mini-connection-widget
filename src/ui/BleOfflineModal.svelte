@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Button, Dialog } from '@calliope-edu/ui';
+  import { Button, ChoiceItem, ChoiceList, Dialog } from '@calliope-edu/ui';
   import { calliopeBleOfflineInfo, dismissBleOfflineInfo } from '../ble-offline-info';
   import { calliopeState } from '../state';
   import { connectCalliope, disconnectAndForget } from '../connect';
@@ -62,61 +62,49 @@
   <Dialog
     open
     title="Bluetooth ist auf deinem Calliope gerade aus"
-    description={`Wahrscheinlich läuft ein Programm ohne Bluetooth. ${native ? 'So geht es weiter:' : isMac ? 'Drei mögliche Ursachen:' : 'Zwei Wege zurück:'}`}
+    description={native
+      ? 'Wahrscheinlich läuft ein Programm ohne Bluetooth. So geht es weiter:'
+      : 'Wahrscheinlich läuft ein Programm ohne Bluetooth. Wähle einen der beiden Wege zurück:'}
     onOpenChange={(open) => { if (!open) dismissBleOfflineInfo(); }}
   >
-    <ol class="steps">
-      <li>
-        <span class="num" aria-hidden="true">1</span>
-        <div class="step-body">
-          <div class="step-title">A + B halten und Reset drücken</div>
-          <div class="step-hint">
-            {#if native}
-              Der Calliope startet in den Bluetooth-Modus. Wir verbinden uns
-              dann automatisch neu und übertragen dein Programm.
-            {:else}
-              Der Calliope startet in den DFU-Modus
-              (Display zeigt z.&nbsp;B. ein Plus „+“). Dann unten auf
-              <em>„Erneut verbinden“</em> klicken: Wir übertragen ein
-              BLE-fähiges Programm.
-            {/if}
-          </div>
-        </div>
-      </li>
-      {#if !native}
-      <li>
-        <span class="num" aria-hidden="true">2</span>
-        <div class="step-body">
-          <div class="step-title">USB-Kabel anschließen</div>
-          <div class="step-hint">
-            Funktioniert immer, auch ohne Bluetooth auf dem Calliope,
-            und ist deutlich schneller als BLE.
-          </div>
-        </div>
-      </li>
+    {#if native}
+      <!-- The host app owns the radio: nothing to choose, one instruction. -->
+      <p class="instruction">
+        <strong>A + B halten und Reset drücken.</strong>
+        Der Calliope startet in den Bluetooth-Modus. Wir verbinden uns dann
+        automatisch neu und übertragen dein Programm.
+      </p>
+    {:else}
+      <!-- Two alternatives, not steps: a click on either is the choice. -->
+      <ChoiceList>
+        <ChoiceItem
+          icon="bluetooth"
+          title="Erneut per Bluetooth verbinden"
+          detail="Vorher A + B halten und Reset drücken: Der Calliope startet in den DFU-Modus (Display zeigt z. B. ein Plus „+“). Wir übertragen dann ein BLE-fähiges Programm."
+          disabled={retrying}
+          onclick={retryBle}
+        />
+        <ChoiceItem
+          icon="usb"
+          title="USB-Kabel nehmen"
+          detail="Funktioniert immer, auch ohne Bluetooth auf dem Calliope, und ist deutlich schneller als BLE."
+          onclick={useUsbInstead}
+        />
+      </ChoiceList>
+      {#if isMac}
+        <p class="mac-hint">
+          <strong>Klappt beides nicht?</strong> macOS speichert manchmal eine veraltete
+          Bluetooth-Verbindung, die den Aufbau blockiert. Öffne
+          <em>Systemeinstellungen → Bluetooth</em>, suche „Calliope mini“ in der
+          Geräteliste, klicke auf das „×“ daneben und verbinde dann erneut über
+          diese Seite.
+        </p>
       {/if}
-      {#if isMac && !native}
-      <li>
-        <span class="num" aria-hidden="true">3</span>
-        <div class="step-body">
-          <div class="step-title">Calliope aus macOS-Bluetooth entfernen</div>
-          <div class="step-hint">
-            macOS speichert manchmal eine veraltete Bluetooth-Verbindung, die
-            den Aufbau blockiert. Öffne
-            <em>Systemeinstellungen → Bluetooth</em>, suche „Calliope mini“
-            in der Geräteliste, klicke auf das „×“ daneben und verbinde dann
-            erneut über diese Seite.
-          </div>
-        </div>
-      </li>
-      {/if}
-    </ol>
+    {/if}
 
     {#snippet actions()}
       {#if !native}
-        <Button variant="ghost" onclick={cancelConnection}>Verbindung abbrechen</Button>
-        <Button variant="secondary" onclick={useUsbInstead}>USB nehmen</Button>
-        <Button onclick={retryBle} loading={retrying}>Erneut verbinden</Button>
+        <Button variant="secondary" onclick={cancelConnection}>Verbindung abbrechen</Button>
       {:else}
         <Button variant="secondary" onclick={() => dismissBleOfflineInfo()}>Schließen</Button>
       {/if}
@@ -125,54 +113,19 @@
 {/if}
 
 <style>
-  .steps {
-    display: flex;
-    flex-direction: column;
-    gap: var(--cui-space-2);
+  .instruction,
+  .mac-hint {
     margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-  .steps li {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--cui-space-3);
-    padding: var(--cui-space-3);
-    border-radius: var(--cui-radius-lg);
-    /* A tint rather than surface.subtle, which equals the raised dialog
-       surface in the dark theme. */
-    background-color: var(--cui-action-hover);
-  }
-  .num {
-    display: inline-grid;
-    flex: none;
-    place-items: center;
-    width: var(--cui-size-icon-l);
-    height: var(--cui-size-icon-l);
-    border-radius: var(--cui-radius-full);
-    background-color: var(--cui-surface-inverse);
-    color: var(--cui-text-inverse);
-    font-size: var(--cui-typography-caption-font-size);
-    font-weight: var(--cui-font-weight-bold);
-  }
-  .step-body {
-    display: flex;
-    flex: 1;
-    flex-direction: column;
-    gap: var(--cui-space-1);
-    min-width: 0;
-  }
-  .step-title {
-    font-weight: var(--cui-font-weight-semibold);
-  }
-  .step-hint {
-    color: var(--cui-text-muted);
-    font-size: var(--cui-typography-label-font-size);
     line-height: var(--cui-typography-prose-line-height);
   }
-  .step-hint em {
+  .mac-hint {
+    margin-top: var(--cui-space-3);
+    color: var(--cui-text-muted);
+    font-size: var(--cui-typography-label-font-size);
+  }
+  .mac-hint strong,
+  .mac-hint em {
     color: var(--cui-text-default);
     font-style: normal;
-    font-weight: var(--cui-font-weight-semibold);
   }
 </style>
