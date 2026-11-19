@@ -27,8 +27,8 @@ importers:
         version: 1.4.0
     devDependencies:
       '@calliope-edu/ui':
-        specifier: github:calliope-edu/calliope-ui#5547dd80e0fe2768f204d2080b20b4b4935dc2eb
-        version: https://codeload.github.com/calliope-edu/calliope-ui/tar.gz/5547dd80e0fe2768f204d2080b20b4b4935dc2eb(@internationalized/date@3.12.4)(svelte@5.55.7)
+        specifier: github:calliope-edu/calliope-ui#fe0bde5e7ad6b64805af8a015c0c13be48dc1cb3
+        version: https://codeload.github.com/calliope-edu/calliope-ui/tar.gz/fe0bde5e7ad6b64805af8a015c0c13be48dc1cb3(@internationalized/date@3.12.4)(svelte@5.55.7)
       '@capacitor-community/bluetooth-le':
         specifier: ^7.3.0
         version: 7.3.2(@capacitor/core@7.6.2)
@@ -53,8 +53,8 @@ importers:
 
 packages:
 
-  '@calliope-edu/ui@https://codeload.github.com/calliope-edu/calliope-ui/tar.gz/5547dd80e0fe2768f204d2080b20b4b4935dc2eb':
-    resolution: {tarball: https://codeload.github.com/calliope-edu/calliope-ui/tar.gz/5547dd80e0fe2768f204d2080b20b4b4935dc2eb}
+  '@calliope-edu/ui@https://codeload.github.com/calliope-edu/calliope-ui/tar.gz/fe0bde5e7ad6b64805af8a015c0c13be48dc1cb3':
+    resolution: {tarball: https://codeload.github.com/calliope-edu/calliope-ui/tar.gz/fe0bde5e7ad6b64805af8a015c0c13be48dc1cb3}
     version: 0.0.1
     engines: {node: '>=22', pnpm: '>=10'}
     peerDependencies:
@@ -270,7 +270,7 @@ packages:
 
 snapshots:
 
-  '@calliope-edu/ui@https://codeload.github.com/calliope-edu/calliope-ui/tar.gz/5547dd80e0fe2768f204d2080b20b4b4935dc2eb(@internationalized/date@3.12.4)(svelte@5.55.7)':
+  '@calliope-edu/ui@https://codeload.github.com/calliope-edu/calliope-ui/tar.gz/fe0bde5e7ad6b64805af8a015c0c13be48dc1cb3(@internationalized/date@3.12.4)(svelte@5.55.7)':
     dependencies:
       bits-ui: 2.21.0(@internationalized/date@3.12.4)(svelte@5.55.7)
       svelte: 5.55.7

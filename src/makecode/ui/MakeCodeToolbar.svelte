@@ -54,8 +54,9 @@
     /** calliope-ui theme of the bar (`data-theme`); `inherit` follows the page. */
     theme?: 'light' | 'dark' | 'inherit';
     /** Look of the mode switch (calliope-ui SegmentedControl variant): `pill`,
-     *  Campus' view switch (the default), or `frame`. */
-    modeSwitch?: 'pill' | 'frame';
+     *  Campus' view switch (the default), `frame`, or `bar` (in the bar
+     *  buttons' fill). */
+    modeSwitch?: 'pill' | 'frame' | 'bar';
     /** Look of Share, extensions and revision: `bar`, Campus' editor-bar
      *  buttons (the default), or `outline`, calliope-ui's secondary buttons. */
     buttons?: 'bar' | 'outline';
@@ -137,7 +138,9 @@
   }
 </script>
 
-<div class="makecode-toolbar" data-theme={dataTheme}>
+<!-- data-surface: the bar paints surface.subtle, so calliope-ui's bar buttons
+     stand off it (white on the grey bar, ink on the dark grey one). -->
+<div class="makecode-toolbar" data-theme={dataTheme} data-surface="subtle">
   <div class="bar-left"></div>
 
   <!-- Center: segmented mode toggle -->

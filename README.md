@@ -52,7 +52,7 @@ local checkout (`link:`), or a vendored copy. With pnpm:
     // package.json names under devDependencies (or a newer one): the peer
     // range is `*`, since pnpm only accepts semver ranges there.
     "@calliope-edu/ui":
-      "github:calliope-edu/calliope-ui#5547dd80e0fe2768f204d2080b20b4b4935dc2eb",
+      "github:calliope-edu/calliope-ui#fe0bde5e7ad6b64805af8a015c0c13be48dc1cb3",
     "@capacitor-community/bluetooth-le": "^7.3.0",
     "@capacitor/core": "^7.4.4",
     "@capacitor/filesystem": "^7.1.6",
@@ -89,6 +89,9 @@ Without the tokens the components render unstyled (no colours, no spacing).
 The host's calliope-ui must be at least the sha pinned here: the widget uses
 library variants (the pill switch, the bar buttons) whose tokens only newer
 `tokens.css` files carry, and an older one leaves those parts without colour.
+Load `styles.css`, not only `tokens.css`: the toolbar marks its bar with
+`data-surface="subtle"`, and the rule that makes the bar buttons stand off it
+(white on the grey bar, ink on the dark grey one) lives in `styles.css`.
 The UI follows calliope-ui's `data-theme`: light by default, dark inside any
 `data-theme="dark"` subtree. `ConnectButton` draws its trigger in the dark
 theme by default (it sits in dark headers; `theme="light"` or `"inherit"`
