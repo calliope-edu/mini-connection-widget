@@ -35,7 +35,8 @@
     showShare = true,
     sharing = false,
     theme = 'inherit',
-    modeSwitch = 'pill',
+    modeSwitch = 'bar',
+    surface = 'subtle',
     buttons = 'bar',
     labels: labelOverrides,
     onModeChange,
@@ -53,10 +54,15 @@
     sharing?: boolean;
     /** calliope-ui theme of the bar (`data-theme`); `inherit` follows the page. */
     theme?: 'light' | 'dark' | 'inherit';
-    /** Look of the mode switch (calliope-ui SegmentedControl variant): `pill`,
-     *  Campus' view switch (the default), `frame`, or `bar` (in the bar
-     *  buttons' fill). */
+    /** Look of the mode switch (calliope-ui SegmentedControl variant): `bar`
+     *  (the default; in the bar buttons' fill, so it stands off the bar like
+     *  them), `pill` (Campus' black view switch) or `frame`. */
     modeSwitch?: 'pill' | 'frame' | 'bar';
+    /** The surface the bar paints (calliope-ui `data-surface`): `subtle` (grey
+     *  in the light theme, dark grey in the dark one; the default) or
+     *  `default` (white / black). The bar controls take the other neutral:
+     *  white on grey, grey on white, black on dark grey, dark grey on black. */
+    surface?: 'subtle' | 'default';
     /** Look of Share, extensions and revision: `bar`, Campus' editor-bar
      *  buttons (the default), or `outline`, calliope-ui's secondary buttons. */
     buttons?: 'bar' | 'outline';
@@ -138,9 +144,9 @@
   }
 </script>
 
-<!-- data-surface: the bar paints surface.subtle, so calliope-ui's bar buttons
-     stand off it (white on the grey bar, ink on the dark grey one). -->
-<div class="makecode-toolbar" data-theme={dataTheme} data-surface="subtle">
+<!-- data-surface tells calliope-ui's bar controls which surface the bar
+     paints, so they stand off it. -->
+<div class="makecode-toolbar" data-theme={dataTheme} data-surface={surface}>
   <div class="bar-left"></div>
 
   <!-- Center: segmented mode toggle -->
@@ -245,6 +251,10 @@
 </div>
 
 <style>
+  .makecode-toolbar[data-surface='default'] {
+    background-color: var(--cui-surface-default);
+  }
+
   .makecode-toolbar {
     display: flex;
     flex-shrink: 0;

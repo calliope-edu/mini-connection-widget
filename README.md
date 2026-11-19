@@ -283,7 +283,7 @@ import {
 | `project` | Pure pxt.json helpers: Calliope headers, extension list/remove, `v1`/`v2`/`v3` board revision, structural validation. |
 | `serial-bridge` | Device serial → the editor's serial monitor, as the same `{type:'serial'}` message pxt's own reader posts. Declares `setSerialConsumer` so a flash-only mini 2 gets the widget's serial offer, and pauses while the Blocks LIVE runtime owns the link. |
 | `jacdac-host` | Jacdac frames between the device and pxt's Jacdac message simulator. |
-| `ui/` | `MakeCodeToolbar` + `MakeCodeShareModal`, built from calliope-ui and translated through `MakeCodeLabels`. The toolbar follows the surrounding theme; `theme="light"` / `"dark"` pins it. By default it looks like Campus' editor bar (pill switch, bar buttons); `modeSwitch="frame"` and `buttons="outline"` give calliope-ui's framed switch and outlined buttons. (The `--mkc-*` custom properties are gone, and so is the old `Popover` / `closeAllPopovers` export.) |
+| `ui/` | `MakeCodeToolbar` + `MakeCodeShareModal`, built from calliope-ui and translated through `MakeCodeLabels`. The toolbar follows the surrounding theme; `theme="light"` / `"dark"` pins it. Its switch and buttons use calliope-ui's bar variants, which stand off the bar: white on grey, grey on white, black on dark grey, dark grey on black (`surface="subtle"`, the default, or `"default"` picks the bar's surface). `modeSwitch="pill"` / `"frame"` and `buttons="outline"` give the other looks. (The `--mkc-*` custom properties are gone, and so is the old `Popover` / `closeAllPopovers` export.) |
 
 The host still owns program storage, workspace-sync policy and program
 switching — those differ per app and deliberately stay in the app.
