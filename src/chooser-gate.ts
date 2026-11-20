@@ -86,3 +86,35 @@ function installUsbChooserGuard(): void {
 }
 // Install eagerly so a background USB reconnect can never reach a real chooser.
 installUsbChooserGuard();
+
+/**
+ * Take the WebUSB chooser away from an upstream `MicrobitUSBConnection`.
+ *
+ * Every `connect()`/`flash()` on that connection runs the lib's
+ * `connectInternal`, which falls through to its private `chooseDevice()` —
+ * i.e. `navigator.usb.requestDevice` — whenever it has no `usbDevice`. An
+ * unplug wipes `usbDevice` (the lib's `usb.disconnect` handler), so any
+ * connect the widget fires after an unplug without a click (the post-reset
+ * silent resume, the post-flash reboot bounce, the flash transfer retry, a
+ * pending-flash resume) would open the OS picker if a stray transient
+ * activation is still around. Gating each of those call sites with
+ * `withChooserBlocked` is whack-a-mole, so the lib simply never gets to pick:
+ * the widget's own `requestCalliopeUsbDevice()` is the only USB picker, and it
+ * is called only from explicit user actions (Verbinden, the hybrid flash's
+ * plug confirm). Once it has granted a device, the lib's `UseAnyAllowed`
+ * connect finds it via `getDevices()` and never needs `chooseDevice()`.
+ *
+ * Without a device the lib's connect now rejects with the same "user gesture"
+ * error as a gesture-less `requestDevice`, which `classifyUsbError` maps to
+ * the "erneut verbinden" recovery state.
+ */
+export function disableLibraryUsbChooser(connection: object): void {
+  (connection as { chooseDevice: () => Promise<never> }).chooseDevice = async () => {
+    throw new DOMException(
+      'Must be handling a user gesture to show a permission request. ' +
+        '(mini-connection-widget: the USB connection never opens the chooser on its own — ' +
+        'no permitted device present)',
+      'NotAllowedError',
+    );
+  };
+}

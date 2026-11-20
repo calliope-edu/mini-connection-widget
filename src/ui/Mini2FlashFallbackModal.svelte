@@ -7,8 +7,11 @@
    */
   import { Button, ChoiceItem, ChoiceList, Dialog } from '@calliope-edu/ui';
   import { mini2FlashFallbackRequest } from '../mini2-flash-fallback';
+  import { connectLabels, labelParts } from './labels';
+  import LabelText from './LabelText.svelte';
 
   const req = $derived($mini2FlashFallbackRequest);
+  const labels = $derived($connectLabels);
 </script>
 
 {#if req}
@@ -16,35 +19,52 @@
     <Dialog
       open
       size="s"
-      title="USB-Übertragung fehlgeschlagen"
-      description={`„${req.fileName}“ konnte nicht auf den Calliope mini 2 übertragen werden (${req.attempts} Versuche). Du kannst es erneut versuchen oder die .hex-Datei herunterladen und selbst auf das Laufwerk „MINI“ ziehen, das klappt immer.`}
+      title={labels.mini2FallbackTitle}
+      closeLabel={labels.close}
       onOpenChange={(open) => { if (!open) req.choose('cancel'); }}
     >
+      <p class="lead">
+        <LabelText
+          parts={labelParts(
+            labels.mini2FallbackText,
+            { fileName: req.fileName, attempts: req.attempts, drive: 'MINI' },
+            ['fileName', 'drive'],
+          )}
+        />
+      </p>
       <ChoiceList>
         <ChoiceItem
           icon="retry"
-          title="Nochmal versuchen"
-          detail="Übertragung über USB erneut starten."
+          title={labels.mini2FallbackRetry}
+          detail={labels.mini2FallbackRetryDetail}
           onclick={() => req.choose('retry')}
         />
         <ChoiceItem
           icon="download"
-          title="Als Datei herunterladen"
-          detail="Im Datei-Explorer auf das Laufwerk „MINI“ ziehen."
+          title={labels.downloadFile}
+          detail={labels.mini2FallbackDownloadDetail}
           onclick={() => req.choose('download')}
         />
       </ChoiceList>
       {#if req.errorDetail}
-        <p class="error-detail" title={req.errorDetail}>Details: {req.errorDetail}</p>
+        <p class="error-detail" title={req.errorDetail}>{labels.details}: {req.errorDetail}</p>
       {/if}
       {#snippet actions()}
-        <Button variant="secondary" onclick={() => req.choose('cancel')}>Abbrechen</Button>
+        <Button variant="secondary" onclick={() => req.choose('cancel')}>{labels.cancel}</Button>
       {/snippet}
     </Dialog>
   {/key}
 {/if}
 
 <style>
+  .lead {
+    margin: 0 0 var(--cui-space-4);
+    color: var(--cui-text-muted);
+    line-height: var(--cui-typography-prose-line-height);
+  }
+  .lead :global(strong) {
+    color: var(--cui-text-default);
+  }
   .error-detail {
     margin: var(--cui-space-3) 0 0;
     color: var(--cui-text-muted);

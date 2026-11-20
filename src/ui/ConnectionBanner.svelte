@@ -15,6 +15,7 @@
   import { deriveConnectionView, isIndeterminateFlash } from '../connection-view';
   import { extractFriendlyName } from '../friendly-name';
   import MiniNamePattern from './MiniNamePattern.svelte';
+  import { connectLabels } from './labels';
 
   // Animated illustration of the unplug → replug action, shown only on the
   // `replug` rung. Resolved via `import.meta.url` so it survives being bundled
@@ -64,6 +65,7 @@
   const view = $derived(deriveConnectionView(s, recovery));
   const extra = $derived($connectionBannerExtra);
   const uiActive = $derived($connectionUiActive);
+  const labels = $derived($connectLabels);
 
   let connecting = $state(false);
   let extraBusy = $state(false);
@@ -111,17 +113,17 @@
   // Transport-aware copy for the connecting + success states. (The `connecting`
   // kind only fires for BLE or native — USB connects show via the recovery
   // ladder — so this is Bluetooth/native.)
-  const connectingLabel = $derived(view.nativeMode ? 'Verbinde über App…' : 'Verbinde per Bluetooth…');
+  const connectingLabel = $derived(view.nativeMode ? labels.bannerConnectingApp : labels.bannerConnectingBle);
   // The mini being connected: the drawn-pattern target, else a captured friendly
   // name, else one parsed from the advertised BLE name. Drives the name + LED
   // pattern shown in the connecting banner. MiniNamePattern renders nothing for
   // a non-CVCVC name, so unknown-name connects safely fall back to the spinner.
   const targetName = $derived(s.connectTargetName ?? s.friendlyName ?? extractFriendlyName(s.bleDeviceName));
   const successLabel = $derived(
-    view.usb.connected && view.ble.connected ? 'USB + Bluetooth verbunden'
-    : view.usb.connected ? 'USB verbunden'
-    : view.ble.connected ? 'Bluetooth verbunden'
-    : 'Calliope mini verbunden',
+    view.usb.connected && view.ble.connected ? labels.bannerConnectedBoth
+    : view.usb.connected ? labels.bannerConnectedUsb
+    : view.ble.connected ? labels.bannerConnectedBle
+    : labels.bannerConnectedAny,
   );
   // The exact banner content the user dismissed (a content signature — see
   // `bannerKey`). Cleared whenever the banner would otherwise be hidden, so a
@@ -139,15 +141,15 @@
 
   type BannerKind = 'hidden' | 'flashing' | 'recovery' | 'jlink-serial-pick' | 'connecting' | 'no-connection' | 'unsupported' | 'extra' | 'success';
 
-  // Flash phase → German label / progress.
+  // Flash phase → label / progress.
   const flashIndeterminate = $derived(isIndeterminateFlash(s));
   const flashPct = $derived(s.flashProgress ?? 0);
   const flashPhaseLabel = $derived.by<string>(() => {
     switch (s.flashPhase) {
-      case 'check': return 'Wird geprüft…';
-      case 'reboot': return 'Neustart…';
-      case 'prepare': return 'Wird vorbereitet…';
-      case 'finalising': return 'Wird abgeschlossen…';
+      case 'check': return labels.bannerPhaseCheck;
+      case 'reboot': return labels.bannerPhaseReboot;
+      case 'prepare': return labels.bannerPhasePrepare;
+      case 'finalising': return labels.bannerPhaseFinalising;
       default: return `${flashPct}%`;
     }
   });
@@ -259,15 +261,15 @@
   const title = $derived.by<string>(() => {
     switch (kind) {
       case 'success': return successLabel;
-      case 'flashing': return 'Programm wird übertragen…';
+      case 'flashing': return labels.bannerFlashing;
       case 'recovery':
-        if (recovery === 'reconnecting') return 'Verbinde mit dem Calliope mini…';
-        if (recovery === 'replug') return 'Calliope mini neu verbinden.';
-        return 'Das hat nicht geholfen.';
-      case 'jlink-serial-pick': return 'USB verbunden (1/2)';
+        if (recovery === 'reconnecting') return labels.bannerReconnecting;
+        if (recovery === 'replug') return labels.bannerReplugTitle;
+        return labels.bannerReloadTitle;
+      case 'jlink-serial-pick': return labels.bannerSerialPickTitle;
       case 'connecting': return connectingLabel;
-      case 'no-connection': return 'Kein Calliope mini verbunden.';
-      case 'unsupported': return 'Verbindung nicht möglich.';
+      case 'no-connection': return labels.bannerNoConnectionTitle;
+      case 'unsupported': return labels.bannerUnsupportedTitle;
       case 'extra': return extra?.title ?? '';
       default: return '';
     }
@@ -275,13 +277,13 @@
   const detail = $derived.by<string | undefined>(() => {
     switch (kind) {
       case 'recovery':
-        if (recovery === 'replug') return 'Zieh den Calliope mini einmal vom USB-Kabel ab und steck ihn wieder ein. Schließe ggf. andere Tabs, die ihn nutzen. Klicke dann auf „Erneut verbinden“.';
-        if (recovery === 'reload') return 'Lade die Seite neu, um die USB-Verbindung zurückzusetzen. Dein Calliope mini bleibt verbunden.';
+        if (recovery === 'replug') return labels.bannerReplugText;
+        if (recovery === 'reload') return labels.bannerReloadText;
         return undefined;
-      case 'jlink-serial-pick': return 'Wähle jetzt noch „CDC – COM x“, um die Datenverbindung (Serial) herzustellen. Abbrechen ist okay: Programme übertragen geht auch ohne.';
+      case 'jlink-serial-pick': return labels.bannerSerialPickText;
       case 'connecting': return targetName ? `Calliope mini ${targetName}` : undefined;
-      case 'no-connection': return 'Verbinde deinen Calliope mini per USB-Kabel oder Bluetooth, um zu starten.';
-      case 'unsupported': return 'In diesem Browser ist weder USB noch Bluetooth verfügbar. Bitte einen Chromium-Browser (Chrome, Edge, Opera, Brave) verwenden.';
+      case 'no-connection': return labels.bannerNoConnectionText;
+      case 'unsupported': return labels.unsupportedHint;
       case 'extra': return extra?.detail;
       default: return undefined;
     }
@@ -393,7 +395,7 @@
       {/if}
       <strong class="title">{title}</strong>
       <span class="close">
-        <IconButton icon="close" label="Ausblenden" size="s" onclick={dismiss} />
+        <IconButton icon="close" label={labels.dismiss} size="s" onclick={dismiss} />
       </span>
     </div>
 
@@ -408,7 +410,7 @@
         <div class="text">
           {#if kind === 'flashing'}
             <ProgressBar
-              label={flashIndeterminate ? flashPhaseLabel : 'Übertragung'}
+              label={flashIndeterminate ? flashPhaseLabel : labels.flashing}
               value={flashIndeterminate ? null : flashPct}
             />
           {:else if detail}
@@ -421,10 +423,10 @@
             {#if kind === 'recovery'}
               {#if recovery === 'replug'}
                 <Button size="s" variant="secondary" icon="retry" onclick={confirmAndRetry} loading={connecting}>
-                  Erneut verbinden
+                  {labels.reconnect}
                 </Button>
               {:else if recovery === 'reload'}
-                <Button size="s" variant="secondary" icon="retry" onclick={reloadForUsbReconnect}>Seite neu laden</Button>
+                <Button size="s" variant="secondary" icon="retry" onclick={reloadForUsbReconnect}>{labels.bannerReloadButton}</Button>
               {/if}
             {:else if kind === 'connecting'}
               <!-- Abort an in-flight BLE connect. Forgets the device so the NEXT
@@ -433,16 +435,16 @@
                    Native (app) mode has no such button: the host app owns the
                    connection, so there is nothing here to cancel — only the X to
                    hide the banner. -->
-              <Button size="s" variant="secondary" onclick={cancelConnecting}>Abbrechen</Button>
+              <Button size="s" variant="secondary" onclick={cancelConnecting}>{labels.cancel}</Button>
             {:else if kind === 'no-connection'}
               {#if view.usb.supported}
                 <Button size="s" variant="secondary" icon="usb" onclick={() => connect('usb')} disabled={connecting}>
-                  USB verbinden
+                  {labels.bannerConnectUsb}
                 </Button>
               {/if}
               {#if view.ble.supported}
                 <Button size="s" variant="secondary" icon="bluetooth" onclick={() => connect('ble')} disabled={connecting}>
-                  Bluetooth verbinden
+                  {labels.bannerConnectBle}
                 </Button>
               {/if}
             {:else if extra}
@@ -454,7 +456,7 @@
                   onclick={runExtra}
                   disabled={extraBusy || extraSecondaryBusy}
                 >
-                  {extraBusy ? (extra.action.busyLabel ?? 'Bitte warten…') : extra.action.label}
+                  {extraBusy ? (extra.action.busyLabel ?? labels.pleaseWait) : extra.action.label}
                 </Button>
               {/if}
               {#if extra.secondaryAction}
@@ -465,7 +467,7 @@
                   onclick={runExtraSecondary}
                   disabled={extraBusy || extraSecondaryBusy}
                 >
-                  {extraSecondaryBusy ? (extra.secondaryAction.busyLabel ?? 'Bitte warten…') : extra.secondaryAction.label}
+                  {extraSecondaryBusy ? (extra.secondaryAction.busyLabel ?? labels.pleaseWait) : extra.secondaryAction.label}
                 </Button>
               {/if}
             {/if}

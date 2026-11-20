@@ -6,8 +6,10 @@
    */
   import { Button, Dialog } from '@calliope-edu/ui';
   import { calliopeUsbPlugRequest } from '../usb-plug';
+  import { connectLabels } from './labels';
 
   const req = $derived($calliopeUsbPlugRequest);
+  const labels = $derived($connectLabels);
 </script>
 
 {#if req}
@@ -15,16 +17,17 @@
     <Dialog
       open
       size="s"
-      title="Calliope per USB anschließen"
+      title={labels.usbPlugTitle}
+      closeLabel={labels.close}
       onOpenChange={(open) => { if (!open) req.cancel(); }}
     >
       <ol class="steps">
-        <li>USB-Kabel mit dem Calliope verbinden.</li>
-        <li>Auf „Übertragen“ klicken. Beim allerersten Mal den Calliope im Browser-Dialog auswählen.</li>
+        <li>{labels.usbPlugStep1}</li>
+        <li>{labels.usbPlugStep2}</li>
       </ol>
       {#snippet actions()}
-        <Button variant="secondary" onclick={() => req.cancel()}>Abbrechen</Button>
-        <Button icon="usb" onclick={() => req.confirm()}>Übertragen</Button>
+        <Button variant="secondary" onclick={() => req.cancel()}>{labels.cancel}</Button>
+        <Button icon="usb" onclick={() => req.confirm()}>{labels.usbPlugConfirm}</Button>
       {/snippet}
     </Dialog>
   {/key}

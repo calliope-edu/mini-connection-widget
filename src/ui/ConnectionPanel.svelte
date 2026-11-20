@@ -25,7 +25,7 @@
   import { connectJLinkSerial } from '../web-serial';
   import { statusLabel } from '../connection-view';
   import { connectionTransferProgram, connectionRearmInputs } from '../connection-banner-extra';
-  import { mergeLabels, type ConnectLabels } from './labels';
+  import { connectLabels, connectionErrorText, mergeLabels, type ConnectLabels } from './labels';
   import { extractFriendlyName, friendlyNameToPattern, patternToFriendlyName } from '../friendly-name';
   import MiniNamePattern from './MiniNamePattern.svelte';
   import PatternPad from './PatternPad.svelte';
@@ -72,7 +72,7 @@
     onHeaderPointerUp,
   }: Props = $props();
 
-  const labels = $derived(mergeLabels(labelsProp));
+  const labels = $derived(mergeLabels(labelsProp, $connectLabels));
   const dataTheme = $derived(theme === 'inherit' ? undefined : theme);
   const s = $derived($calliopeState);
 
@@ -235,7 +235,6 @@
     return labels.notConnected;
   }
 
-  const PATTERN_HINT = 'Zeichne das Muster, das dein Calliope mini anzeigt.';
 </script>
 
 <div class="panel" class:embedded data-theme={dataTheme}>
@@ -257,7 +256,7 @@
     {#if onTogglePin}
       <IconButton
         icon={pinned ? 'collapse' : 'expand'}
-        label={pinned ? 'Wieder anhängen' : 'Als Fenster anheften'}
+        label={pinned ? labels.unpin : labels.pin}
         size="s"
         tooltip={false}
         pressed={pinned}
@@ -272,7 +271,7 @@
     <div class="device-card">
       <div class="device-card-head">
         {#if friendly}
-          <MiniNamePattern name={friendly} size={32} />
+          <MiniNamePattern name={friendly} size={32} labels={labelsProp} />
         {:else}
           <span class="device-card-icon"><Icon name="device" /></span>
         {/if}
@@ -289,8 +288,8 @@
         {#if s.calliopeVersion || s.boardVersion}
           <div class="meta-row">
             <span class="meta-key">{labels.version}</span>
-            <!-- Over BLE, Mini 1 und Mini 2 sind nicht unterscheidbar — zeige
-                 die Unschärfe statt einer falschen Gewissheit. -->
+            <!-- Over BLE a mini 1 and a mini 2 look the same — show the
+                 ambiguity rather than a false certainty. -->
             <span class="meta-val">{s.versionAmbiguous ? 'V1/V2' : (s.calliopeVersion ?? s.boardVersion)}</span>
           </div>
         {/if}
@@ -352,16 +351,12 @@
         {#if s.jlinkSerialStatus === 'connecting'}
           <!-- The native Web Serial picker floats above this panel — tell the
                user what phase they're in and that cancelling is harmless. -->
-          <p class="hint">
-            USB 1/2 verbunden. Wähle jetzt noch „CDC – COM x“, um die
-            Datenverbindung (Serial) herzustellen. Abbrechen ist okay:
-            Programme übertragen geht auch ohne.
-          </p>
+          <p class="hint">{labels.serialPickHint}</p>
         {:else if mini2SerialMissing}
           <div class="usb-serial-add">
-            <span class="hint">Übertragen bereit. Serial (Datenverbindung) fehlt noch.</span>
+            <span class="hint">{labels.serialMissing}</span>
             <Button size="s" variant="secondary" onclick={doAddSerial} loading={addingSerial} disabled={s.status === 'flashing'}>
-              Serial verbinden
+              {labels.serialConnect}
             </Button>
           </div>
         {/if}
@@ -378,7 +373,7 @@
           </span>
           <StatusDot status={transportStatus(bleConnected, s.bleStatus)} label={transportWord(bleConnected, s.bleStatus)} size="s" />
           {#if bleConnected && s.bleSessionKind === 'dfu-bootloader'}
-            <Badge size="s" tone="info" title="Nordic DFU bootloader erkannt">Bootloader</Badge>
+            <Badge size="s" tone="info" title={labels.bootloaderTitle}>{labels.bootloader}</Badge>
           {/if}
           {#if bleConnected}
             <!-- Just "Trennen": for BLE this forgets the device (harmless — no
@@ -398,14 +393,14 @@
             {@const connectedName = s.friendlyName ?? extractFriendlyName(s.bleDeviceName)}
             {#if connectedName}
               <div class="pattern-wrap">
-                <PatternPad value={friendlyNameToPattern(connectedName) ?? emptyPattern()} size={132} disabled />
+                <PatternPad value={friendlyNameToPattern(connectedName) ?? emptyPattern()} size={132} disabled labels={labelsProp} />
               </div>
             {/if}
           {:else}
             <div class="pattern-wrap">
-              <PatternPad value={pattern} onchange={(g) => (pattern = g)} size={132} disabled={bleBusy} />
+              <PatternPad value={pattern} onchange={(g) => (pattern = g)} size={132} disabled={bleBusy} labels={labelsProp} />
               {#if !advanced}
-                <p class="hint pattern-hint">{PATTERN_HINT}</p>
+                <p class="hint pattern-hint">{labels.patternHint}</p>
               {/if}
             </div>
           {/if}
@@ -431,7 +426,7 @@
   {#if anyConnected && transfer && s.status !== 'flashing'}
     <div class="wide-action">
       <Button fullWidth icon="upload" onclick={runTransfer} loading={transferring}>
-        {transfer.label ?? 'Programm übertragen'}
+        {transfer.label ?? labels.transferProgram}
       </Button>
     </div>
   {/if}
@@ -440,7 +435,7 @@
   {#if advanced && anyConnected && rearm && s.status !== 'flashing'}
     <div class="wide-action">
       <Button fullWidth variant="secondary" size="s" icon="retry" onclick={runRearm} loading={rearming}>
-        {rearm.label ?? 'Eingänge neu verbinden'}
+        {rearm.label ?? labels.rearmInputs}
       </Button>
     </div>
   {/if}
@@ -456,11 +451,11 @@
     </div>
   {/if}
 
-  {#if s.usbErrorMessage}
-    <p class="error"><span class="error-disc"><Icon name="error" size="s" /></span>USB: {s.usbErrorMessage}</p>
+  {#if s.usbError}
+    <p class="error"><span class="error-disc"><Icon name="error" size="s" /></span>USB: {connectionErrorText(labels, s.usbError)}</p>
   {/if}
-  {#if s.bleErrorMessage}
-    <p class="error"><span class="error-disc"><Icon name="error" size="s" /></span>BLE: {s.bleErrorMessage}</p>
+  {#if s.bleError}
+    <p class="error"><span class="error-disc"><Icon name="error" size="s" /></span>BLE: {connectionErrorText(labels, s.bleError)}</p>
   {/if}
 
   {#if !s.usbSupported && !s.bleSupported}
@@ -479,7 +474,7 @@
 
   {#if advanced && (s.status === 'connected' || s.status === 'flashing')}
     <div class="comms-embed">
-      <CommsPanel />
+      <CommsPanel labels={labelsProp} />
     </div>
   {/if}
 </div>

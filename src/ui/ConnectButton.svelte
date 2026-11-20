@@ -31,7 +31,7 @@
   import { calliopeUsbRecovery } from '../usb-recovery';
   import { deriveConnectionView, statusLabel } from '../connection-view';
   import ConnectionPanel from './ConnectionPanel.svelte';
-  import { mergeLabels, type ConnectLabels } from './labels';
+  import { connectLabels, mergeLabels, type ConnectLabels } from './labels';
   import { onMount } from 'svelte';
 
   import { calliopeMiniMark as calliopeMark } from '../assets/calliope-mini';
@@ -58,7 +58,7 @@
     /** Theme of the dropdown panel and the floating window: dark by default,
      *  as the panel has always looked; `inherit` follows the page. */
     panelTheme?: 'light' | 'dark' | 'inherit';
-    /** Translation overrides; defaults are German. */
+    /** Translation overrides for this instance; win over `setConnectLabels`. */
     labels?: Partial<ConnectLabels>;
     /** Expose the pin / drag floating window + comms log (off by default). */
     advanced?: boolean;
@@ -71,7 +71,7 @@
     labels: labelsProp,
     advanced = false,
   }: Props = $props();
-  const labels = $derived(mergeLabels(labelsProp));
+  const labels = $derived(mergeLabels(labelsProp, $connectLabels));
   const dataTheme = $derived.by(() => {
     const t = theme ?? (appearance === 'light' ? 'light' : 'dark');
     return t === 'inherit' ? undefined : t;
@@ -234,7 +234,7 @@
     }
   });
   const pillTitle = $derived(
-    effectivePinned ? labels.triggerTitle + ' (Fenster offen)' : labels.triggerTitle,
+    effectivePinned ? `${labels.triggerTitle} (${labels.triggerPinned})` : labels.triggerTitle,
   );
 
   // Native (app) mode: the host app owns the connection, so the trigger — and
@@ -330,7 +330,7 @@
     <div
       class="floating-resize"
       role="presentation"
-      title="Größe ändern"
+      title={labels.resize}
       onpointerdown={onResizePointerDown}
       onpointermove={onResizePointerMove}
       onpointerup={onResizePointerUp}

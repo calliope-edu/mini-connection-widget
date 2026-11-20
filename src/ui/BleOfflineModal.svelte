@@ -1,16 +1,18 @@
 <script lang="ts">
-  import { Button, ChoiceItem, ChoiceList, Dialog } from '@calliope-edu/ui';
+  import { Button, Dialog } from '@calliope-edu/ui';
   import { calliopeBleOfflineInfo, dismissBleOfflineInfo } from '../ble-offline-info';
   import { calliopeState } from '../state';
   import { connectCalliope, disconnectAndForget } from '../connect';
   import { isNativeMode } from '../native-bridge';
+  import { connectLabels } from './labels';
 
   const visible = $derived($calliopeBleOfflineInfo);
+  const labels = $derived($connectLabels);
 
   // In native (iOS/Android bridge) mode the host owns the radio: it auto-
   // reconnects and flashes once the mini is back in Bluetooth mode, and the
   // USB / "retry BLE" web actions don't map to anything there. So the modal is
-  // purely an A+B+Reset instruction — hide the web-only steps and buttons.
+  // purely a Triple Reset instruction — hide the web-only steps and buttons.
   const native = isNativeMode();
 
   // "Connection attempt failed" is CoreBluetooth error 6 (CBErrorConnectionFailed),
@@ -23,7 +25,7 @@
   let retrying = $state(false);
 
   // Auto-dismiss as soon as either transport becomes connected — the
-  // recovery worked (whether via AB+Reset → DfuTarg or via USB cable),
+  // recovery worked (whether via Triple Reset → DfuTarg or via USB cable),
   // there's nothing more to do.
   $effect(() => {
     if (!visible) return;
@@ -61,71 +63,101 @@
 {#if visible}
   <Dialog
     open
-    title="Bluetooth ist auf deinem Calliope gerade aus"
-    description={native
-      ? 'Wahrscheinlich läuft ein Programm ohne Bluetooth. So geht es weiter:'
-      : 'Wahrscheinlich läuft ein Programm ohne Bluetooth. Wähle einen der beiden Wege zurück:'}
+    title={labels.bleOfflineTitle}
+    description={`${labels.bleOfflineLead} ${native ? labels.bleOfflineStepsNative : labels.bleOfflineStepsWeb}`}
+    closeLabel={labels.close}
     onOpenChange={(open) => { if (!open) dismissBleOfflineInfo(); }}
   >
-    {#if native}
-      <!-- The host app owns the radio: nothing to choose, one instruction. -->
-      <p class="instruction">
-        <strong>A + B halten und Reset drücken.</strong>
-        Der Calliope startet in den Bluetooth-Modus. Wir verbinden uns dann
-        automatisch neu und übertragen dein Programm.
-      </p>
-    {:else}
-      <!-- Two alternatives, not steps: a click on either is the choice. -->
-      <ChoiceList>
-        <ChoiceItem
-          icon="bluetooth"
-          title="Erneut per Bluetooth verbinden"
-          detail="Vorher A + B halten und Reset drücken: Der Calliope startet in den DFU-Modus (Display zeigt z. B. ein Plus „+“). Wir übertragen dann ein BLE-fähiges Programm."
-          disabled={retrying}
-          onclick={retryBle}
-        />
-        <ChoiceItem
-          icon="usb"
-          title="USB-Kabel nehmen"
-          detail="Funktioniert immer, auch ohne Bluetooth auf dem Calliope, und ist deutlich schneller als BLE."
-          onclick={useUsbInstead}
-        />
-      </ChoiceList>
-      {#if isMac}
-        <p class="mac-hint">
-          <strong>Klappt beides nicht?</strong> macOS speichert manchmal eine veraltete
-          Bluetooth-Verbindung, die den Aufbau blockiert. Öffne
-          <em>Systemeinstellungen → Bluetooth</em>, suche „Calliope mini“ in der
-          Geräteliste, klicke auf das „×“ daneben und verbinde dann erneut über
-          diese Seite.
-        </p>
+    <!-- The ways back are alternatives, not a sequence: each is a card of
+         its own with its own button, an "oder" between them, no numbers. -->
+    <div class="ways">
+      <section class="way">
+        <h3 class="way-title">{labels.bleOfflineResetTitle}</h3>
+        <p class="way-hint">{native ? labels.bleOfflineResetHintNative : labels.bleOfflineResetHint}</p>
+        {#if isMac && !native}
+          <p class="way-extra">
+            <strong>{labels.bleOfflineMacTitle}</strong>
+            {labels.bleOfflineMacHint}
+          </p>
+        {/if}
+        {#if !native}
+          <div class="way-action">
+            <Button icon="bluetooth" onclick={retryBle} loading={retrying}>{labels.reconnect}</Button>
+          </div>
+        {/if}
+      </section>
+      {#if !native}
+        <div class="or" aria-hidden="true"><span>{labels.bleOfflineOr}</span></div>
+        <section class="way">
+          <h3 class="way-title">{labels.bleOfflineUsbTitle}</h3>
+          <p class="way-hint">{labels.bleOfflineUsbHint}</p>
+          <div class="way-action">
+            <Button variant="secondary" icon="usb" onclick={useUsbInstead}>{labels.bleOfflineUseUsb}</Button>
+          </div>
+        </section>
       {/if}
-    {/if}
+    </div>
 
     {#snippet actions()}
       {#if !native}
-        <Button variant="secondary" onclick={cancelConnection}>Verbindung abbrechen</Button>
+        <Button variant="ghost" onclick={cancelConnection}>{labels.bleOfflineAbort}</Button>
       {:else}
-        <Button variant="secondary" onclick={() => dismissBleOfflineInfo()}>Schließen</Button>
+        <Button variant="secondary" onclick={() => dismissBleOfflineInfo()}>{labels.close}</Button>
       {/if}
     {/snippet}
   </Dialog>
 {/if}
 
 <style>
-  .instruction,
-  .mac-hint {
-    margin: 0;
-    line-height: var(--cui-typography-prose-line-height);
+  .ways {
+    display: flex;
+    flex-direction: column;
+    gap: var(--cui-space-2);
   }
-  .mac-hint {
-    margin-top: var(--cui-space-3);
+  .way {
+    display: flex;
+    flex-direction: column;
+    gap: var(--cui-space-1);
+    padding: var(--cui-space-3) var(--cui-space-4);
+    border: var(--cui-border-width-hairline) solid var(--cui-border-control);
+    border-radius: var(--cui-radius-lg);
+  }
+  .way-title {
+    margin: 0;
+    font-size: var(--cui-typography-body-font-size);
+    font-weight: var(--cui-font-weight-bold);
+  }
+  .way-hint,
+  .way-extra {
+    margin: 0;
     color: var(--cui-text-muted);
     font-size: var(--cui-typography-label-font-size);
+    line-height: var(--cui-typography-prose-line-height);
   }
-  .mac-hint strong,
-  .mac-hint em {
+  .way-extra strong {
     color: var(--cui-text-default);
-    font-style: normal;
+  }
+  .way-action {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: var(--cui-space-2);
+  }
+  /* "oder" on a hairline between the two ways. */
+  .or {
+    display: flex;
+    align-items: center;
+    gap: var(--cui-space-3);
+    color: var(--cui-text-muted);
+    font-size: var(--cui-typography-caption-font-size);
+    font-weight: var(--cui-font-weight-semibold);
+    letter-spacing: var(--cui-font-tracking-caps);
+    text-transform: uppercase;
+  }
+  .or::before,
+  .or::after {
+    content: '';
+    flex: 1;
+    height: var(--cui-border-width-hairline);
+    background-color: var(--cui-border-subtle);
   }
 </style>

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { friendlyNameToPattern } from '../friendly-name';
+  import { connectLabels, mergeLabels, type ConnectLabels } from './labels';
 
   interface Props {
     /** 5-letter Calliope/micro:bit friendly name (CVCVC). */
@@ -10,9 +11,18 @@
     color?: string;
     /** Pixel color when off (any CSS colour; default: the hover tint token, readable on light and dark surfaces). */
     offColor?: string;
+    /** Translation overrides, passed down from the panel's `labels` prop. */
+    labels?: Partial<ConnectLabels>;
   }
 
-  let { name, size = 36, color = 'var(--cui-palette-orange)', offColor = 'var(--cui-action-hover)' }: Props = $props();
+  let {
+    name,
+    size = 36,
+    color = 'var(--cui-palette-orange)',
+    offColor = 'var(--cui-action-hover)',
+    labels: labelsProp,
+  }: Props = $props();
+  const labels = $derived(mergeLabels(labelsProp, $connectLabels));
 
   const grid = $derived(friendlyNameToPattern(name));
   const cell = $derived(size / 5);
@@ -25,7 +35,7 @@
     width={size}
     height={size}
     role="img"
-    aria-label={`Calliope-Muster ${name}`}
+    aria-label={labels.namePattern({ name: name ?? '' })}
   >
     {#each grid as row, r}
       {#each row as on, c}

@@ -7,8 +7,10 @@
    */
   import { Button, Dialog } from '@calliope-edu/ui';
   import { mini2SerialOfferRequest } from '../mini2-serial';
+  import { connectLabels } from './labels';
 
   const req = $derived($mini2SerialOfferRequest);
+  const labels = $derived($connectLabels);
   let busy = $state(false);
   async function accept(): Promise<void> {
     if (!req || busy) return;
@@ -26,17 +28,14 @@
     <Dialog
       open
       size="s"
-      title="Serial verbinden?"
+      title={labels.mini2SerialTitle}
+      closeLabel={labels.close}
       onOpenChange={(open) => { if (!open) req.decline(); }}
     >
-      <p>
-        Dieser Editor kann mit dem Calliope mini kommunizieren (Serial). Dein
-        Calliope mini 2 ist bisher nur zum Übertragen verbunden. Wähle im
-        nächsten Dialog „CDC – COM x“, um die Datenverbindung herzustellen.
-      </p>
+      <p>{labels.mini2SerialText}</p>
       {#snippet actions()}
-        <Button variant="secondary" onclick={() => req.decline()} disabled={busy}>Später</Button>
-        <Button icon="usb" onclick={accept} loading={busy}>Serial verbinden</Button>
+        <Button variant="secondary" onclick={() => req.decline()} disabled={busy}>{labels.later}</Button>
+        <Button icon="usb" onclick={accept} loading={busy}>{labels.serialConnect}</Button>
       {/snippet}
     </Dialog>
   {/key}

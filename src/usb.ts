@@ -22,9 +22,10 @@ import { awaitMini2FlashChoice } from './mini2-flash-fallback';
 import { connectJLinkSerial } from './web-serial';
 import { friendlyNameFromDeviceId } from './friendly-name';
 import { startHeartbeat, stopHeartbeat } from './serial';
-import { classifyUsbError, isExpectedRebootWindow, markExpectedReboot, SEGGER_JLINK_VENDOR_ID, MINI2_JLINK_USB_HINT } from './connection-errors';
+import { classifyUsbError, isExpectedRebootWindow, markExpectedReboot, SEGGER_JLINK_VENDOR_ID, connectionError, connectionErrorMessage } from './connection-errors';
 import { flashViaJLinkMsdImage, SEGGER_USB_FILTERS } from './segger-jlink';
 import { escalateUsbRecovery } from './usb-recovery';
+import { disableLibraryUsbChooser } from './chooser-gate';
 import { pauseJacdacExchange, resumeJacdacExchange, stopJacdacExchange } from './jacdac';
 import { forgetExchangeSightings } from './ram-scan';
 import { pauseBlocksDapExchange, resumeBlocksDapExchange, stopBlocksDapExchange, reinitBlocksDapAfterFlash } from './blocks-dap';
@@ -230,6 +231,10 @@ export async function getUsbConnection(): Promise<MicrobitUSBConnection> {
   }
   usbInitPromise = (async () => {
     const c = createUSBConnection({ deviceSelectionMode: DeviceSelectionMode.UseAnyAllowed });
+    // The lib must never open the WebUSB picker by itself — after an unplug
+    // its connect() would otherwise pop it from a background retry. The only
+    // picker is requestCalliopeUsbDevice(), run from explicit user actions.
+    disableLibraryUsbChooser(c);
     await c.initialize();
     // Exclude SEGGER J-Link OB (Calliope Mini 2 interface chip, VID 0x1366)
     // from the WebUSB picker AND the auto-attempt-on-load: the CMSIS-DAP /
@@ -278,7 +283,7 @@ export async function getUsbConnection(): Promise<MicrobitUSBConnection> {
           usbDeviceName: mapped === 'connected'
             ? (pn ?? s.usbDeviceName ?? 'Calliope mini (USB)')
             : s.usbDeviceName,
-          usbErrorMessage: mapped === 'connected' ? undefined : s.usbErrorMessage,
+          usbError: mapped === 'connected' ? undefined : s.usbError,
           calliopeVersion: cv ?? s.calliopeVersion,
           // A USB-side verdict is definitive — clears any BLE "Mini 1 or 2?" guess.
           versionAmbiguous: cv ? false : s.versionAmbiguous,
@@ -314,7 +319,7 @@ export async function getUsbConnection(): Promise<MicrobitUSBConnection> {
       updateState((s) => ({
         ...s,
         usbStatus: 'error',
-        usbErrorMessage: classified.userMessage,
+        usbError: classified.error,
         flashProgress: s.flashTransport === 'usb' ? undefined : s.flashProgress,
       }));
       appendLog({ direction: 'error', text: msg });
@@ -490,7 +495,7 @@ export function setJlinkUsbConnected(): void {
       usbDeviceName: dapActive ? s.usbDeviceName : 'Calliope mini 2 (USB)',
       calliopeVersion: dapActive ? s.calliopeVersion : 'V2',
       versionAmbiguous: dapActive ? s.versionAmbiguous : false,
-      usbErrorMessage: undefined,
+      usbError: undefined,
       userDisconnectedUsb: false,
       connectedAt: s.connectedAt ?? Date.now(),
     };
@@ -562,7 +567,7 @@ async function flashJLinkDevice(device: any, hex: string, name: string): Promise
     flashPhase: 'flashing',
     flashProgress: 0,
     flashPartial: false,
-    usbErrorMessage: undefined,
+    usbError: undefined,
     lastFlashName: name,
   }));
   const leaveFlashState = () => updateState((s) => ({
@@ -608,7 +613,7 @@ async function flashJLinkDevice(device: any, hex: string, name: string): Promise
         downloadHexFile(hex, name);
         return 'aborted';
       }
-      updateState((s) => ({ ...s, usbErrorMessage: MINI2_JLINK_USB_HINT }));
+      updateState((s) => ({ ...s, usbError: connectionError('usb-mini2-jlink') }));
       return 'aborted';
     }
   }
@@ -675,14 +680,14 @@ export interface UsbFlashOptions {
 
 export async function flashCalliopeViaUsb(hex: string, name: string, opts: UsbFlashOptions = {}): Promise<UsbFlashOutcome> {
   if (!SUPPORT.usb) {
-    updateState((s) => ({ ...s, usbStatus: 'error', usbErrorMessage: 'WebUSB not supported — flashing requires USB' }));
+    updateState((s) => ({ ...s, usbStatus: 'error', usbError: connectionError('usb-unsupported') }));
     return 'unsupported';
   }
   let c: MicrobitUSBConnection;
   try {
     c = await getUsbConnection();
   } catch (err) {
-    updateState((s) => ({ ...s, usbStatus: 'error', usbErrorMessage: (err as Error).message }));
+    updateState((s) => ({ ...s, usbStatus: 'error', usbError: connectionErrorMessage('usb', (err as Error).message) ?? connectionError('usb-unknown') }));
     return 'aborted';
   }
   if (c.status !== ConnectionStatus.Connected) {
@@ -701,7 +706,7 @@ export async function flashCalliopeViaUsb(hex: string, name: string, opts: UsbFl
         updateState((s) => ({ ...s, usbStatus: 'disconnected' }));
         return 'aborted';
       }
-      updateState((s) => ({ ...s, usbStatus: 'error', usbErrorMessage: classified.userMessage }));
+      updateState((s) => ({ ...s, usbStatus: 'error', usbError: classified.error }));
       if (classified.kind === 'device-in-use' || classified.kind === 'device-disconnected') {
         // A cable/lock hiccup (common right after plugging in, before the OS
         // releases the DAPLink endpoint). The recovery ladder is now armed —
@@ -724,7 +729,7 @@ export async function flashCalliopeViaUsb(hex: string, name: string, opts: UsbFl
     flashProgress: 0,
     flashPhase: 'check',
     flashPartial: undefined,
-    usbErrorMessage: undefined,
+    usbError: undefined,
     lastFlashName: name,
   }));
 
@@ -792,7 +797,7 @@ export async function flashCalliopeViaUsb(hex: string, name: string, opts: UsbFl
           flashProgress: undefined,
           flashPhase: undefined,
           flashPartial: undefined,
-          usbErrorMessage: undefined,
+          usbError: undefined,
           lastFlashAt: Date.now(),
         }));
         appendLog({ direction: 'info', text: `Flash finished: ${name}` });
@@ -807,7 +812,7 @@ export async function flashCalliopeViaUsb(hex: string, name: string, opts: UsbFl
       ...s,
       flashTransport: undefined,
       usbStatus: 'error',
-      usbErrorMessage: classified.userMessage,
+      usbError: classified.error,
       flashProgress: undefined,
       flashPhase: undefined,
     }));
@@ -989,6 +994,9 @@ async function recoverUsbAfterFlashReboot(c: MicrobitUSBConnection, name: string
   const settleMs = [1200, 1200, 1800, 2500];
   for (const settle of settleMs) {
     await new Promise((r) => setTimeout(r, settle));
+    // Unplugged during the reboot — nothing to bounce; reconnecting needs the
+    // device back (daemon) or a click.
+    if (!c.getDevice()) return false;
     try { await c.disconnect(); } catch { /* transport already closed by the failed reinit — ignore */ }
     try {
       await c.connect();
@@ -1033,6 +1041,14 @@ async function attemptSilentDaplinkResume(c: MicrobitUSBConnection): Promise<voi
     for (const settle of settleMs) {
       await new Promise((r) => setTimeout(r, settle));
       if (getState().userDisconnectedUsb) return;
+      // An unplug breaks the serial loop too, so `serialreset` can fire just
+      // before the lib's usb.disconnect wipes the device. Then this was no
+      // target reset: leave the drop to the reconnect daemon (getDevices only)
+      // and the "erneut verbinden" banner instead of bouncing a gone device.
+      if (!c.getDevice()) {
+        appendLog({ direction: 'info', text: 'USB device gone (unplugged) — not resuming; waiting for re-plug or "Verbinden"' });
+        return;
+      }
       try { await c.disconnect(); } catch { /* already down — about to reconnect */ }
       try {
         await c.connect();

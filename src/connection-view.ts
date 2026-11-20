@@ -17,6 +17,7 @@
 import type { CalliopeState, CalliopeStatus, CalliopeTransport } from './state';
 import type { UsbRecoveryRung } from './usb-recovery';
 import type { ConnectLabels } from './ui/labels';
+import type { ConnectionError } from './connection-errors';
 
 /** Per-transport projection — what a transport card / choice button needs. */
 export interface TransportView {
@@ -29,7 +30,8 @@ export interface TransportView {
   /** Connecting or flashing on this transport — disable connect/forget. */
   busy: boolean;
   error: boolean;
-  errorMessage?: string;
+  /** Word it with `connectionErrorText`. */
+  errorDetail?: ConnectionError;
   deviceName?: string;
 }
 
@@ -58,7 +60,7 @@ function transportView(
   status: CalliopeStatus,
   flashTransport: CalliopeTransport | undefined,
   mine: CalliopeTransport,
-  errorMessage: string | undefined,
+  errorDetail: ConnectionError | undefined,
   deviceName: string | undefined,
 ): TransportView {
   const connected = status === 'connected';
@@ -72,7 +74,7 @@ function transportView(
     flashingThis,
     busy: connecting || flashingThis,
     error: status === 'error',
-    errorMessage,
+    errorDetail,
     deviceName,
   };
 }
@@ -90,8 +92,8 @@ export function deriveConnectionView(s: CalliopeState, recovery: UsbRecoveryRung
     : s.usbStatus === 'connecting' || s.jlinkSerialStatus === 'connecting' || s.jlinkUsbStatus === 'connecting' ? 'connecting'
     : s.usbStatus === 'error' || s.jlinkSerialStatus === 'error' || s.jlinkUsbStatus === 'error' ? 'error'
     : s.usbStatus;
-  const usb = transportView(s.usbSupported, usbStatusForView, s.flashTransport, 'usb', s.usbErrorMessage, s.usbDeviceName);
-  const ble = transportView(s.bleSupported, s.bleStatus, s.flashTransport, 'ble', s.bleErrorMessage, s.bleDeviceName);
+  const usb = transportView(s.usbSupported, usbStatusForView, s.flashTransport, 'usb', s.usbError, s.usbDeviceName);
+  const ble = transportView(s.bleSupported, s.bleStatus, s.flashTransport, 'ble', s.bleError, s.bleDeviceName);
   const anyConnected = usb.connected || ble.connected;
   const bothConnected = usb.connected && ble.connected;
   // Prefer USB as the "primary" when exactly one is connected; undefined when
