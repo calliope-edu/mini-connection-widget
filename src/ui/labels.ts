@@ -230,6 +230,8 @@ export interface ConnectLabels {
   mini12Mini1Detail: string;
 
   // ---- Comms log (CommsPanel, advanced mode) ------------------------------
+  /** Accessible name of the comms panel's tab list. */
+  commsViews: string;
   commsStream: string;
   commsRows: string;
   commsGraph: string;
@@ -453,6 +455,7 @@ export const DEFAULT_LABELS: ConnectLabels = {
   mini12Mini2Detail: '32 KB RAM — Übertragung startet.',
   mini12Mini1Detail: '16 KB RAM — dieses Programm kann darauf nicht laufen.',
 
+  commsViews: 'Kommunikation mit dem Calliope mini',
   commsStream: 'Stream',
   commsRows: 'Zeilen',
   commsGraph: 'Graph',

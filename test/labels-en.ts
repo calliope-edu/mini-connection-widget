@@ -198,6 +198,7 @@ export const EN_LABELS: ConnectLabels = {
   mini12Mini2Detail: '32 KB RAM — the transfer starts.',
   mini12Mini1Detail: '16 KB RAM — this program cannot run on it.',
 
+  commsViews: 'Communication with the Calliope mini',
   commsStream: 'Stream',
   commsRows: 'Rows',
   commsGraph: 'Graph',

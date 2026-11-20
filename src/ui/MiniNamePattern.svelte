@@ -7,15 +7,21 @@
     name: string | undefined;
     /** Pixel size of the rendered grid; the 5×5 fills `size`×`size`. */
     size?: number;
-    /** Pixel color when lit. */
+    /** Pixel color when lit (any CSS colour; default: the Calliope LED orange). */
     color?: string;
-    /** Pixel color when off. */
+    /** Pixel color when off (any CSS colour; default: the hover tint token, readable on light and dark surfaces). */
     offColor?: string;
     /** Translation overrides, passed down from the panel's `labels` prop. */
     labels?: Partial<ConnectLabels>;
   }
 
-  let { name, size = 36, color = '#ff4e00', offColor = 'rgba(0,0,0,0.08)', labels: labelsProp }: Props = $props();
+  let {
+    name,
+    size = 36,
+    color = 'var(--cui-palette-orange)',
+    offColor = 'var(--cui-action-hover)',
+    labels: labelsProp,
+  }: Props = $props();
   const labels = $derived(mergeLabels(labelsProp, $connectLabels));
 
   const grid = $derived(friendlyNameToPattern(name));
@@ -39,7 +45,7 @@
           width={cell * 0.8}
           height={cell * 0.8}
           rx={cell * 0.15}
-          fill={on ? color : offColor}
+          style:fill={on ? color : offColor}
         />
       {/each}
     {/each}

@@ -59,7 +59,6 @@ export {
 
 export { default as MakeCodeToolbar } from './ui/MakeCodeToolbar.svelte';
 export { default as MakeCodeShareModal } from './ui/MakeCodeShareModal.svelte';
-export { default as Popover, closeAllPopovers } from './ui/Popover.svelte';
 
 export {
   DEFAULT_MAKECODE_LABELS,

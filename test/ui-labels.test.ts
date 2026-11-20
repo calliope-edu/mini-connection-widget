@@ -135,9 +135,11 @@ test('BleOfflineModal shows the English set', () => {
   try {
     shows(
       text(BleOfflineModal),
-      ['Bluetooth is off on your Calliope right now', 'Two ways back:', 'Press the reset button three times quickly', 'Plug in the USB cable', 'Use USB', 'Reconnect', 'Cancel connection', 'Close'],
+      ['Bluetooth is off on your Calliope right now', 'Two ways back:', 'Press the reset button three times quickly', 'Plug in the USB cable', 'Use USB', 'Reconnect', 'Cancel connection'],
       ['Bluetooth ist auf deinem Calliope gerade aus', 'Zwei Wege zurück', 'USB nehmen', 'Erneut verbinden', 'Schließen'],
     );
+    // Closing is the dialog's X, named by the close label.
+    assert.match(html(BleOfflineModal), /aria-label="Close"/);
   } finally {
     dismissBleOfflineInfo();
   }

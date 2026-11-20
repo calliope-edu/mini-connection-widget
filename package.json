@@ -1,7 +1,7 @@
 {
   "name": "@calliope-edu/mini-connection-widget",
   "version": "0.2.1",
-  "description": "High-level Calliope mini connection orchestration on top of @microbit/microbit-connection — simultaneous USB+BLE tracking, smart picker recovery, stale-bond detection, automatic flash routing, and a framework-agnostic store. UI widget arrives in a future release.",
+  "description": "High-level Calliope mini connection orchestration on top of @microbit/microbit-connection — simultaneous USB+BLE tracking, smart picker recovery, stale-bond detection, automatic flash routing, and a framework-agnostic store, plus Svelte UI components built on @calliope-edu/ui.",
   "type": "module",
   "license": "MIT",
   "packageManager": "pnpm@10.11.1",
@@ -27,20 +27,24 @@
     "test": "node --experimental-transform-types --import ./test/register-hooks.mjs --test test/*.test.ts"
   },
   "peerDependencies": {
+    "@calliope-edu/ui": "*",
     "@microbit/makecode-embed": "*",
     "@microbit/microbit-connection": "1.0.0-beta.1",
     "svelte": "^5.0.0"
   },
   "peerDependenciesMeta": {
     "svelte": { "optional": true },
+    "@calliope-edu/ui": { "optional": true },
     "@microbit/makecode-embed": { "optional": true }
   },
   "devDependencies": {
+    "@calliope-edu/ui": "github:calliope-edu/calliope-ui#fe0bde5e7ad6b64805af8a015c0c13be48dc1cb3",
     "@capacitor-community/bluetooth-le": "^7.3.0",
     "@capacitor/core": "^7.4.4",
     "@capacitor/filesystem": "^7.1.6",
     "@microbit/capacitor-community-nordic-dfu": "v7.0.0-microbit.4",
     "@microbit/microbit-connection": "1.0.0-beta.1",
+    "svelte": "^5.41.0",
     "typescript": "^5.6.0"
   },
   "publishConfig": {
