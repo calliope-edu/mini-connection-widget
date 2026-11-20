@@ -102,6 +102,8 @@ export interface ConnectLabels {
   connectedSince: string;
   program: string;
   programBlocks: string;
+  /** The ml-trainer's ML data program, recognised over USB. */
+  programMlData: string;
   runtimeVersion: string;
   outdated: string;
 
@@ -323,6 +325,7 @@ export const DEFAULT_LABELS: ConnectLabels = {
   connectedSince: 'Verbunden seit',
   program: 'Programm',
   programBlocks: 'Blocks-Runtime',
+  programMlData: 'KI-Training-Datenprogramm',
   runtimeVersion: 'Blocks-Version',
   outdated: 'veraltet',
 

@@ -293,6 +293,12 @@
             <span class="meta-val">{s.versionAmbiguous ? 'V1/V2' : (s.calliopeVersion ?? s.boardVersion)}</span>
           </div>
         {/if}
+        {#if s.programType === 'ml-data'}
+          <div class="meta-row">
+            <span class="meta-key">{labels.program}</span>
+            <span class="meta-val">{labels.programMlData}</span>
+          </div>
+        {/if}
         {#if s.programType === 'blocks'}
           <div class="meta-row">
             <span class="meta-key">{labels.program}</span>

@@ -30,6 +30,7 @@ import { pauseJacdacExchange, resumeJacdacExchange, stopJacdacExchange } from '.
 import { forgetExchangeSightings } from './ram-scan';
 import { pauseBlocksDapExchange, resumeBlocksDapExchange, stopBlocksDapExchange, reinitBlocksDapAfterFlash } from './blocks-dap';
 import { pauseIotExchange, resumeIotExchange, stopIotExchange, reinitIotAfterFlash } from './iot-dap';
+import { feedMlUsb, setMlUsbReopener } from './ml-usb';
 
 let usbConn: MicrobitUSBConnection | null = null;
 let usbInitPromise: Promise<MicrobitUSBConnection> | null = null;
@@ -165,6 +166,28 @@ export function resumeSerialDataPolling(): void {
     try { usbConn.addEventListener('serialdata', h); } catch { /* ignore */ }
   }
 }
+
+/**
+ * Stop and restart upstream's serial polling by detaching and re-attaching
+ * every registered handler — the DAPLink counterpart of reopening the mini 2's
+ * CDC port. ml-usb.ts calls it when the ML data program's stream went silent.
+ * A no-op while a flash holds the bus.
+ */
+async function restartSerialDataPolling(): Promise<boolean> {
+  const c = usbConn;
+  if (!c || serialPaused) return false;
+  for (const h of serialListeners) {
+    try { c.removeEventListener('serialdata', h); } catch { /* ignore */ }
+  }
+  await new Promise((r) => setTimeout(r, 150));
+  if (usbConn !== c || serialPaused) return false;
+  for (const h of serialListeners) {
+    try { c.addEventListener('serialdata', h); } catch { /* ignore */ }
+  }
+  appendLog({ direction: 'info', text: 'USB serial polling restarted' });
+  return true;
+}
+setMlUsbReopener('daplink', restartSerialDataPolling);
 
 /** Map upstream's PascalCase status enum onto our lowercase API. */
 function mapStatus(s: ConnectionStatus): CalliopeStatus {
@@ -349,6 +372,10 @@ export async function getUsbConnection(): Promise<MicrobitUSBConnection> {
         if (line) appendLog({ direction: 'rx', text: line });
       }
     });
+    // The ml-trainer's ML data program streams binary frames over this
+    // serial port; ml-usb.ts recognises and relays them. Registered per
+    // connection, like the line parser above, so it survives clearUsbConn().
+    registerSerialDataListener((data) => feedMlUsb('daplink', data.data));
     return c;
   })();
   return usbInitPromise;
