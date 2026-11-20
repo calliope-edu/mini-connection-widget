@@ -49,7 +49,7 @@ export interface EnsureBlocksRuntimeResult {
   /** Whether a flash actually took place. */
   flashed: boolean;
   /** What `getRunningProgramType` reported before any flash. */
-  detected: 'blocks' | 'unknown' | 'disconnected';
+  detected: 'blocks' | 'ml-data' | 'unknown' | 'disconnected';
 }
 
 /**

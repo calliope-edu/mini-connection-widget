@@ -16,6 +16,10 @@
  *      over USB actually flows. Two SFD+RES pairs within `timeoutMs`
  *      confirm.
  *
+ * The ml-trainer's ML data program (ml-usb.ts) speaks the same serial framing
+ * on channels 0x02xx. Its ML_INFO frame (0x0200, data[1] == 0x4D) reports it as
+ * 'ml-data'; none of its frames counts as Blocks traffic.
+ *
  * Returns 'disconnected' when neither transport is connected. Returns
  * 'unknown' if both probes fail to identify blocks within `timeoutMs`.
  */
@@ -35,9 +39,12 @@ import {
 import { detectBlocksDap } from './blocks-dap';
 import { getBlocksLiveness, isBlocksAlive, noteBlocksVersion, resetBlocksLiveness } from './blocks-liveness';
 import { isNativeMode } from './native-bridge';
+import { isMlChannel, parseMlInfo, type MlDataInfo } from './ml-frame';
+import { getMlDataInfo, isMlDataRunning } from './ml-usb';
 import { nativeGattRead, nativeGattWrite } from './native-mode';
 
-export type CalliopeProgramType = 'blocks' | 'unknown' | 'disconnected';
+/** 'ml-data': the ml-trainer's ML data program, recognised over USB only. */
+export type CalliopeProgramType = 'blocks' | 'ml-data' | 'unknown' | 'disconnected';
 
 export interface CalliopeProgramInfo {
   type: CalliopeProgramType;
@@ -57,6 +64,13 @@ export interface CalliopeProgramInfo {
   /** Blocks runtime (hex) version — COMMAND payload byte[3]. Lets hosts run
    *  their outdated-check without a live editor connection. */
   runtimeVersion?: number;
+  /** Only set with type 'ml-data': its latest ML_INFO. */
+  ml?: MlDataInfo;
+}
+
+/** The answer for an ML_INFO frame. */
+function mlDataResult(ml: MlDataInfo): CalliopeProgramInfo {
+  return { type: 'ml-data', via: 'usb', ml };
 }
 
 // ---- BLE constants --------------------------------------------------------
@@ -231,6 +245,11 @@ function probeUsb(timeoutMs: number): Promise<CalliopeProgramInfo | null> {
       const bytes = new Uint8Array(s.length);
       for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i) & 0xff;
       for (const f of parser.push(bytes)) {
+        // The ML data program: its ML_INFO identifies it, and none of its
+        // frames may count towards the Blocks fallback below.
+        const ml = parseMlInfo(f);
+        if (ml) { finish(mlDataResult(ml)); return; }
+        if (isMlChannel(f.channel)) continue;
         validFrames++;
         if (f.type === BLOCKS_RES.READ && f.channel === 0x0100 && f.data.length >= 2) {
           // The direct, checksum-valid reply to our REQ_READ handshake is
@@ -332,6 +351,13 @@ function probeJlinkSerial(timeoutMs: number): Promise<CalliopeProgramInfo | null
       const bytes = new Uint8Array(chunk.length);
       for (let i = 0; i < chunk.length; i++) bytes[i] = chunk.charCodeAt(i) & 0xff;
       for (const f of parser.push(bytes)) {
+        const ml = parseMlInfo(f);
+        if (ml) {
+          appendLog({ direction: 'info', text: `Program probe (mini 2 serial): ML data program, hw=${ml.hardware}` });
+          finish(mlDataResult(ml));
+          return;
+        }
+        if (isMlChannel(f.channel)) continue;
         validFrames++;
         // The direct answer to our REQ_READ — definitive on its own.
         if (f.type === BLOCKS_RES.READ && f.channel === 0x0100 && f.data.length >= 2) {
@@ -388,6 +414,13 @@ export async function getRunningProgramType(
   // `flashInProgress` clears. Report 'unknown' so a stale result isn't latched.
   if (getState().flashInProgress) return { type: 'unknown' };
 
+  // The ML data program announces itself every second over USB, and ml-usb.ts
+  // watches every USB chunk: while it streams, that is the answer.
+  if (isMlDataRunning()) {
+    const ml = getMlDataInfo();
+    if (ml) return mlDataResult(ml);
+  }
+
   // Passive fast-path: live Blocks traffic (the DAP exchange loop, a recent
   // probe or COMMAND read) is definitive on its own — answer instantly
   // instead of racing a fresh probe against the busy transport. Previously
@@ -412,7 +445,7 @@ export async function getRunningProgramType(
   if (usbOn) probes.push(probeUsb(timeoutMs));
   if (jlinkSerialOn) probes.push(probeJlinkSerial(timeoutMs));
 
-  // Resolve on first positive 'blocks' hit; otherwise collect ALL results and
+  // Resolve on first positive hit ('blocks' or 'ml-data'); otherwise collect ALL results and
   // decide. If every attempted probe reported comms-unavailable (transport up
   // but GATT handshake never completed), the honest answer is "can't reach it
   // yet", NOT "not blocks" — so a consumer keeps trying instead of latching a
@@ -426,7 +459,11 @@ export async function getRunningProgramType(
     for (const p of probes) {
       p.then((res) => {
         collected.push(res);
-        if (res?.type === 'blocks' && !settled) { settled = true; resolve([res]); return; }
+        if ((res?.type === 'blocks' || res?.type === 'ml-data') && !settled) {
+          settled = true;
+          resolve([res]);
+          return;
+        }
         if (--remaining === 0 && !settled) { settled = true; resolve(collected); }
       }).catch(() => {
         collected.push(null);
@@ -435,7 +472,7 @@ export async function getRunningProgramType(
     }
   });
 
-  const hit = results.find((r) => r?.type === 'blocks');
+  const hit = results.find((r) => r?.type === 'blocks' || r?.type === 'ml-data');
   if (hit) return hit;
   if (results.length > 0 && results.every((r) => r?.reason === 'comms-unavailable')) {
     return { type: 'unknown', reason: 'comms-unavailable' };

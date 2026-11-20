@@ -24,6 +24,8 @@ import { pushRx } from './comms';
 import { SEGGER_JLINK_VENDOR_ID, connectionError } from './connection-errors';
 import { BlocksFrameParser } from './blocks-frame';
 import { noteBlocksFrame } from './blocks-liveness';
+import { isMlChannel } from './ml-frame';
+import { feedMlUsb, setMlUsbReopener } from './ml-usb';
 
 /** Calliope's serial runs at 115200 (same as the CODAL/DAL default). */
 const JLINK_BAUD_RATE = 115200;
@@ -171,8 +173,13 @@ async function startReadLoop(): Promise<void> {
       if (value && value.length) {
         const chunk = decodeLatin1(value as Uint8Array);
         for (const cb of rawSubs) { try { cb(chunk); } catch { /* ignore */ } }
-        // Feed the passive liveness latch (version + "blocks is alive").
-        for (const f of livenessParser.push(value as Uint8Array)) noteBlocksFrame(f);
+        // Feed the passive liveness latch (version + "blocks is alive"). The
+        // ML data program's 0x02xx frames share the framing but are no Blocks
+        // traffic; they go to ml-usb.ts instead.
+        for (const f of livenessParser.push(value as Uint8Array)) {
+          if (!isMlChannel(f.channel)) noteBlocksFrame(f);
+        }
+        feedMlUsb('jlink', value as Uint8Array);
         pushRx('usb', chunk);
       }
     }
@@ -220,6 +227,49 @@ async function attemptSilentJlinkResume(): Promise<void> {
     resumeBurstActive = false;
   }
 }
+
+/**
+ * Close and reopen the open port in place, keeping `jlinkSerialStatus`
+ * 'connected' throughout (no drop for the rest of the app to react to). The
+ * J-Link OB's CDC bridge now and then stops delivering on the PC side while the
+ * mini keeps sending; a reopen brings the stream back at once. Called by
+ * ml-usb.ts when the ML data program's stream went silent. Falls back to the
+ * drop + silent resume path when the port won't open again.
+ */
+let reopenInFlight = false;
+async function reopenJlinkSerial(): Promise<boolean> {
+  const p = port;
+  if (!p || reopenInFlight || connectInFlight) return false;
+  reopenInFlight = true;
+  const settle = (task: Promise<unknown> | null | undefined, ms: number) =>
+    Promise.race([Promise.resolve(task).catch(() => {}), new Promise((r) => setTimeout(r, ms))]);
+  try {
+    readLoopAbort = true;
+    await settle(reader?.cancel(), 1_000);
+    await settle(readLoopDone, 1_000);
+    readLoopDone = null;
+    try { writer?.releaseLock(); } catch { /* ignore */ }
+    writer = null;
+    await settle(p.close(), 1_000);
+    if (port !== p) return false; // disconnected meanwhile
+    try {
+      await p.open({ baudRate: JLINK_BAUD_RATE });
+    } catch (err) {
+      appendLog({ direction: 'info', text: `mini 2 serial reopen failed: ${(err as Error)?.message ?? err}` });
+      port = null;
+      updateState((s) => ({ ...s, jlinkSerialStatus: 'disconnected' }));
+      void attemptSilentJlinkResume();
+      return false;
+    }
+    try { writer = p.writable ? p.writable.getWriter() : null; } catch { writer = null; }
+    readLoopDone = startReadLoop();
+    appendLog({ direction: 'info', text: 'mini 2 serial reopened' });
+    return true;
+  } finally {
+    reopenInFlight = false;
+  }
+}
+setMlUsbReopener('jlink', reopenJlinkSerial);
 
 /** Write raw bytes to the mini 2. Accepts the same Latin-1 Uint8Array the USB
  *  path uses, so serial.ts can route to either transport identically. */

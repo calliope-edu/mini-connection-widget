@@ -101,6 +101,19 @@ export {
 export { getConnectedBleDevice } from './ble';
 export { getRunningProgramType } from './program-type';
 export type { CalliopeProgramType, CalliopeProgramInfo } from './program-type';
+// The ml-trainer's ML data program over USB (programType 'ml-data'): its
+// MOTION (50 per second) and BUTTON frames, one by one, for hosts that relay
+// them to the trainer.
+export { onMlDataFrame, isMlDataRunning, getMlDataInfo } from './ml-usb';
+export {
+  ML_CHANNEL,
+  ML_PROGRAM_ID,
+  isMlChannel,
+  parseMlInfo,
+  parseMlMotion,
+  parseMlButton,
+} from './ml-frame';
+export type { MlDataInfo, MlMotion, MlButton } from './ml-frame';
 export { inspectHex, detectHexRamClass } from './hex-inspect';
 export type { HexFlavor, HexInspection, HexRamClass } from './hex-inspect';
 // Save a hex to the user's downloads folder. The widget's own "Download .hex"
