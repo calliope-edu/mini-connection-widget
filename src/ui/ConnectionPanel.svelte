@@ -14,13 +14,13 @@
    * the pattern filter, so any Calliope can be picked and BLE connects without
    * needing a pattern.
    *
-   * Built from calliope-ui parts (Button, IconButton, StatusDot with a word
-   * per transport, ProgressBar while flashing) and coloured only through
+   * Built from calliope-ui parts (Button, IconButton, ProgressBar while
+   * flashing) and coloured only through
    * `--cui-*` tokens, so it follows the host's light or dark theme.
    */
   import { untrack } from 'svelte';
-  import { Badge, Button, Icon, IconButton, ProgressBar, StatusDot, type Status } from '@calliope-edu/ui';
-  import { calliopeState, type CalliopeStatus } from '../state';
+  import { Badge, Button, Icon, IconButton, ProgressBar } from '@calliope-edu/ui';
+  import { calliopeState } from '../state';
   import { connectCalliope, disconnectAndForget, disconnectUsbKeepPermission } from '../connect';
   import { connectJLinkSerial } from '../web-serial';
   import { statusLabel } from '../connection-view';
@@ -221,20 +221,6 @@
   function doCancelBle() { fire(); void disconnectAndForget('ble'); }
   function doCancelUsb() { fire(); void disconnectAndForget('usb'); }
 
-  // One StatusDot + word per transport card.
-  function transportStatus(connected: boolean, status: CalliopeStatus): Status {
-    if (connected) return 'success';
-    if (status === 'connecting') return 'info';
-    if (status === 'error') return 'error';
-    return 'neutral';
-  }
-  function transportWord(connected: boolean, status: CalliopeStatus): string {
-    if (connected) return labels.connected;
-    if (status === 'connecting') return labels.connecting;
-    if (status === 'error') return labels.error;
-    return labels.notConnected;
-  }
-
 </script>
 
 <div class="panel" class:embedded data-theme={dataTheme}>
@@ -333,7 +319,6 @@
             <Icon name="usb" size="s" />
             {labels.usb}
           </span>
-          <StatusDot status={transportStatus(usbConnected, s.usbStatus)} label={transportWord(usbConnected, s.usbStatus)} size="s" />
           <span class="badge-action">
             {#if usbConnected}
               <Button size="s" variant="secondary" onclick={doDisconnectUsb} disabled={usbBusy}>
@@ -377,7 +362,6 @@
             <Icon name="bluetooth" size="s" />
             {labels.ble}
           </span>
-          <StatusDot status={transportStatus(bleConnected, s.bleStatus)} label={transportWord(bleConnected, s.bleStatus)} size="s" />
           {#if bleConnected && s.bleSessionKind === 'dfu-bootloader'}
             <Badge size="s" tone="info" title={labels.bootloaderTitle}>{labels.bootloader}</Badge>
           {/if}
@@ -584,7 +568,7 @@
   }
   /* Filled cards as in Campus (graphite on ink in the dark theme, mist on
      white in the light one). Neutral for every card: the state lives in the
-     StatusDot and the button, not in a tinted background. */
+     button, not in a tinted background. */
   .badge {
     padding: var(--cui-space-3);
     border-radius: var(--cui-radius-lg);
