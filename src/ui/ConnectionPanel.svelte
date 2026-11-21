@@ -529,6 +529,7 @@
     padding: var(--cui-space-2) var(--cui-space-3);
     border-radius: var(--cui-radius-lg);
     background-color: var(--cui-surface-subtle);
+    color: var(--cui-text-default);
   }
   .device-card-head {
     display: flex;
@@ -568,11 +569,14 @@
   }
   /* Filled cards as in Campus (graphite on ink in the dark theme, mist on
      white in the light one). Neutral for every card: the state lives in the
-     button, not in a tinted background. */
+     button, not in a tinted background. The card paints its own text colour
+     from the same theme as its fill, so the transport name and its icon never
+     inherit a colour from outside the panel's theme (dark text on graphite). */
   .badge {
     padding: var(--cui-space-3);
     border-radius: var(--cui-radius-lg);
     background-color: var(--cui-surface-subtle);
+    color: var(--cui-text-default);
   }
   .badge-head {
     display: flex;
