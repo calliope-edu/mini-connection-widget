@@ -174,15 +174,15 @@ index 39d7da6871f850ac8eedd516a381740ebff55550..32ca22bf5daa921e19d118ab9a317acf
              return undefined;
          const bytes = new Uint8Array(result.buffer, 2, length);
 -        return new TextDecoder().decode(bytes);
-+        // Patched by @calliope-edu/mini-connection-widget: decode as
-+        // ISO-8859-1 (Latin-1) so every byte 0..255 maps one-for-one to a
-+        // code unit. UTF-8 decoding (the upstream default) replaces 0xFF
-+        // and other byte ≥ 0x80 with the replacement char U+FFFD, which
-+        // destroys the SFD in incoming Blocks frames and makes the
-+        // BlocksFrameParser blind. Callers that want printable text can
-+        // still read via String.fromCharCode roundtrip — only display of
-+        // non-ASCII UTF-8 firmware logs changes (rare).
-+        return new TextDecoder("iso-8859-1").decode(bytes);
++        // Patched by @calliope-edu/mini-connection-widget: one code unit
++        // per byte (Latin-1), so every byte 0..255 survives as charCode.
++        // Not TextDecoder("iso-8859-1"): the Encoding Standard maps that
++        // label to windows-1252, which turns 0x80-0x9F into other code
++        // points (0x80 -> U+20AC) and dropped Blocks and ML data frames.
++        // UTF-8 (the upstream default) is no better: it replaces 0xFF,
++        // the SFD of every Blocks frame, with U+FFFD. A DAP serial read
++        // carries at most 62 bytes, so spreading them is safe.
++        return String.fromCharCode(...bytes);
      }
      async write(data) {
 -        const encoded = new TextEncoder().encode(data);
@@ -476,15 +476,15 @@ index 50c5a21add13678ef49e1857b380bfaad2b0e82d..a62de8b9ba71964b6ce840299a9e32de
              return undefined;
          const bytes = new Uint8Array(result.buffer, 2, length);
 -        return new TextDecoder().decode(bytes);
-+        // Patched by @calliope-edu/mini-connection-widget: decode as
-+        // ISO-8859-1 (Latin-1) so every byte 0..255 maps one-for-one to a
-+        // code unit. UTF-8 decoding (the upstream default) replaces 0xFF
-+        // and other byte ≥ 0x80 with the replacement char U+FFFD, which
-+        // destroys the SFD in incoming Blocks frames and makes the
-+        // BlocksFrameParser blind. Callers that want printable text can
-+        // still read via String.fromCharCode roundtrip — only display of
-+        // non-ASCII UTF-8 firmware logs changes (rare).
-+        return new TextDecoder("iso-8859-1").decode(bytes);
++        // Patched by @calliope-edu/mini-connection-widget: one code unit
++        // per byte (Latin-1), so every byte 0..255 survives as charCode.
++        // Not TextDecoder("iso-8859-1"): the Encoding Standard maps that
++        // label to windows-1252, which turns 0x80-0x9F into other code
++        // points (0x80 -> U+20AC) and dropped Blocks and ML data frames.
++        // UTF-8 (the upstream default) is no better: it replaces 0xFF,
++        // the SFD of every Blocks frame, with U+FFFD. A DAP serial read
++        // carries at most 62 bytes, so spreading them is safe.
++        return String.fromCharCode(...bytes);
      }
      async write(data) {
 -        const encoded = new TextEncoder().encode(data);

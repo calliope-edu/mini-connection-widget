@@ -6,7 +6,7 @@ settings:
 
 patchedDependencies:
   '@microbit/microbit-connection@1.0.0-beta.1':
-    hash: 93b1318c660131471ae96f5a74877b6216f54995c9d843f26aeb5ed231bb5da9
+    hash: 3a3e1b01d7b3448faecf48d5d65f9a94e8d2261f2c912c26b1b14f4411d84f5d
     path: patches/@microbit__microbit-connection@1.0.0-beta.1.patch
 
 importers:
@@ -43,7 +43,7 @@ importers:
         version: 7.0.0-microbit.4(@capacitor/core@7.6.2)
       '@microbit/microbit-connection':
         specifier: 1.0.0-beta.1
-        version: 1.0.0-beta.1(patch_hash=93b1318c660131471ae96f5a74877b6216f54995c9d843f26aeb5ed231bb5da9)(@capacitor-community/bluetooth-le@7.3.2(@capacitor/core@7.6.2))(@capacitor/core@7.6.2)(@capacitor/filesystem@7.1.8(@capacitor/core@7.6.2))(@microbit/capacitor-community-nordic-dfu@7.0.0-microbit.4(@capacitor/core@7.6.2))(tslib@2.8.1)
+        version: 1.0.0-beta.1(patch_hash=3a3e1b01d7b3448faecf48d5d65f9a94e8d2261f2c912c26b1b14f4411d84f5d)(@capacitor-community/bluetooth-le@7.3.2(@capacitor/core@7.6.2))(@capacitor/core@7.6.2)(@capacitor/filesystem@7.1.8(@capacitor/core@7.6.2))(@microbit/capacitor-community-nordic-dfu@7.0.0-microbit.4(@capacitor/core@7.6.2))(tslib@2.8.1)
       svelte:
         specifier: ^5.41.0
         version: 5.55.7
@@ -339,7 +339,7 @@ snapshots:
       react-dom: 19.3.1(react@19.3.1)
       tslib: 2.8.1
 
-  '@microbit/microbit-connection@1.0.0-beta.1(patch_hash=93b1318c660131471ae96f5a74877b6216f54995c9d843f26aeb5ed231bb5da9)(@capacitor-community/bluetooth-le@7.3.2(@capacitor/core@7.6.2))(@capacitor/core@7.6.2)(@capacitor/filesystem@7.1.8(@capacitor/core@7.6.2))(@microbit/capacitor-community-nordic-dfu@7.0.0-microbit.4(@capacitor/core@7.6.2))(tslib@2.8.1)':
+  '@microbit/microbit-connection@1.0.0-beta.1(patch_hash=3a3e1b01d7b3448faecf48d5d65f9a94e8d2261f2c912c26b1b14f4411d84f5d)(@capacitor-community/bluetooth-le@7.3.2(@capacitor/core@7.6.2))(@capacitor/core@7.6.2)(@capacitor/filesystem@7.1.8(@capacitor/core@7.6.2))(@microbit/capacitor-community-nordic-dfu@7.0.0-microbit.4(@capacitor/core@7.6.2))(tslib@2.8.1)':
     dependencies:
       '@capacitor-community/bluetooth-le': 7.3.2(@capacitor/core@7.6.2)
       '@capacitor/core': 7.6.2
