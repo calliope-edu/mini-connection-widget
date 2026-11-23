@@ -44,15 +44,17 @@ local checkout (`link:`), or a vendored copy. With pnpm:
 // app/package.json
 {
   "dependencies": {
-    // Pin an exact commit. calliope-campus and Teachable both do this; a
-    // superrepo overlay can rewrite it to workspace:* for local widget work.
+    // Pin a release tag (or a commit on calliope-main). A build workflow
+    // replaces both pins with its channel's state through calliope-ui's
+    // resolve-calliope-deps action (see Branches and releases); a superrepo
+    // overlay can rewrite it to workspace:* for local widget work.
     "@calliope-edu/mini-connection-widget":
-      "github:calliope-edu/mini-connection-widget#<full-sha>",
-    // The Svelte UI is built from calliope-ui. Pin the sha this repo's
-    // package.json names under devDependencies (or a newer one): the peer
-    // range is `*`, since pnpm only accepts semver ranges there.
+      "github:calliope-edu/mini-connection-widget#v0.3.0",
+    // The Svelte UI is built from calliope-ui: a release within the
+    // peerDependencies range (>=0.1.0 <1.0.0), or a commit on its
+    // calliope-main from v0.1.0 on.
     "@calliope-edu/ui":
-      "github:calliope-edu/calliope-ui#fe0bde5e7ad6b64805af8a015c0c13be48dc1cb3",
+      "github:calliope-edu/calliope-ui#v0.1.0",
     "@capacitor-community/bluetooth-le": "^7.3.0",
     "@capacitor/core": "^7.4.4",
     "@capacitor/filesystem": "^7.1.6",
@@ -86,7 +88,7 @@ import '@calliope-edu/ui/styles.css'; // brings tokens.css with it
 ```
 
 Without the tokens the components render unstyled (no colours, no spacing).
-The host's calliope-ui must be at least the sha pinned here: the widget uses
+The host's calliope-ui must be within the peerDependencies range: the widget uses
 library variants (the pill switch, the bar buttons) whose tokens only newer
 `tokens.css` files carry, and an older one leaves those parts without colour.
 Load `styles.css`, not only `tokens.css`: the toolbar marks its bar with
@@ -395,6 +397,47 @@ patch):
    code by hand.
 3. `pnpm patch-commit <path>` regenerates the patch file.
 4. Resume from step 4 above.
+
+## Branches and releases
+
+The widget follows the scheme of the Calliope editors (plan:
+`docs/design/2026-editor-channels.md` in calliope-campus) with two channels:
+
+- **dev**: every commit on `calliope-main`, the only long-lived branch. Work
+  branches off `calliope-main` and merges back into it. Dev builds of the
+  editors and campus-dev take its newest commit.
+- **live**: release tags `vX.Y.Z` (SemVer). Live builds of the editors take
+  the newest tag within the major version they pin; a Campus release sets the
+  newest tag. calliope-ui's `resolve-calliope-deps` action does both.
+
+A release is cut by the release workflow (`.github/workflows/release.yml`),
+never by hand: it runs the tests and the type check of the newest commit on
+`calliope-main` against the newest calliope-ui release within the pinned
+major, sets `version` in `package.json`, commits it as
+`chore(release): vX.Y.Z`, tags it and publishes a GitHub release with
+generated notes and the calliope-ui release it was tested against.
+
+```sh
+gh workflow run release.yml -R calliope-edu/mini-connection-widget -f bump=minor   # or patch, major, X.Y.Z
+```
+
+Bump `major` for breaking changes (a removed or renamed export, store field,
+component prop or label key), `minor` for new features, `patch` for fixes.
+While the major is 0 every release counts as compatible. Release order across
+the repos: calliope-ui → widget → editors → Campus, so release calliope-ui
+first when the widget needs one of its changes.
+
+**calliope-ui.** `peerDependencies` states the calliope-ui releases the
+widget works with (`>=0.1.0 <1.0.0`); the pin under `devDependencies` only
+serves local development. CI (`.github/workflows/ci.yml`) runs `pnpm test` and
+`pnpm check` three times: with the pinned calliope-ui, with the newest
+calliope-ui release within the pinned major (must pass), and with the newest
+commit on calliope-ui's `calliope-main` (only warns). The unit tests render
+the UI against stand-ins (`test/ui-stub/`); `pnpm check` (svelte-check)
+type-checks `src/` against the real library, so a component, prop or icon the
+widget uses that calliope-ui dropped or renamed fails there. When calliope-ui
+releases a new major, CI warns; move the pin and the peer range up once the
+checks pass with it.
 
 ## Roadmap
 
