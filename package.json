@@ -1,6 +1,6 @@
 {
   "name": "@calliope-edu/mini-connection-widget",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "High-level Calliope mini connection orchestration on top of @microbit/microbit-connection — simultaneous USB+BLE tracking, smart picker recovery, stale-bond detection, automatic flash routing, and a framework-agnostic store, plus Svelte UI components built on @calliope-edu/ui.",
   "type": "module",
   "license": "MIT",
