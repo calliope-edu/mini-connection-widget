@@ -415,7 +415,8 @@ never by hand: it runs the tests and the type check of the newest commit on
 `calliope-main` against the newest calliope-ui release within the pinned
 major, sets `version` in `package.json`, commits it as
 `chore(release): vX.Y.Z`, tags it and publishes a GitHub release with
-generated notes and the calliope-ui release it was tested against.
+generated notes and the calliope-ui release it was tested against. Its last
+step rebuilds the apps' live builds on their newest tags and their dev builds.
 
 ```sh
 gh workflow run release.yml -R calliope-edu/mini-connection-widget -f bump=minor   # or patch, major, X.Y.Z
@@ -426,6 +427,12 @@ component prop or label key), `minor` for new features, `patch` for fixes.
 While the major is 0 every release counts as compatible. Release order across
 the repos: calliope-ui → widget → editors → Campus, so release calliope-ui
 first when the widget needs one of its changes.
+
+**Rebuilds.** Every push to `calliope-main` rebuilds the dev builds of the
+apps that use the widget (`.github/workflows/dispatch-builds.yml`), a release
+also their live builds. Both run calliope-ui's `dispatch-calliope-builds`
+action; the list of apps and the GitHub App it needs are described in
+[its README](https://github.com/calliope-edu/calliope-ui/tree/calliope-main/.github/actions/dispatch-calliope-builds).
 
 **calliope-ui.** `peerDependencies` states the calliope-ui releases the
 widget works with (`>=0.1.0 <1.0.0`); the pin under `devDependencies` only

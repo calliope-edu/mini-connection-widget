@@ -96,3 +96,12 @@ jobs:
         run: |
           gh release create "v${VERSION}" --title "v${VERSION}" --generate-notes --verify-tag \
             --notes "Tested against @calliope-edu/ui ${UI_TAG} (${UI_COMMIT:0:7})."
+
+      # The apps' live builds take the new tag, their dev builds the release commit. The push
+      # above is made with the workflow token, so dispatch-builds.yml does not run for it.
+      - name: Rebuild the apps
+        uses: calliope-edu/calliope-ui/.github/actions/dispatch-calliope-builds@calliope-main
+        with:
+          channels: dev live
+          app-id: ${{ vars.CALLIOPE_BUILDS_APP_ID }}
+          private-key: ${{ secrets.CALLIOPE_BUILDS_APP_KEY }}

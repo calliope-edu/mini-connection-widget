@@ -13,6 +13,9 @@
   README.md, "Branches and releases".
 - Release order: calliope-ui, then the widget. A widget change that needs a new calliope-ui
   component or prop waits for a calliope-ui release; CI checks the widget against the newest one.
+- Every push to `calliope-main` and every release rebuilds the apps that use the widget
+  (`.github/workflows/dispatch-builds.yml`, the release's last step). The list of apps is
+  calliope-ui's `.github/actions/dispatch-calliope-builds/builds.json`, shared with calliope-ui.
 
 ## calliope-ui
 

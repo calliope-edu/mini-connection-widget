@@ -1,0 +1,30 @@
+name: Dispatch builds
+
+# Every push to calliope-main rebuilds the dev builds of the apps that use the widget (the
+# editors' build-dev branches, campus-dev), so they run its newest commit without a commit of
+# their own. A release rebuilds the live builds as well, from release.yml (its push is made with
+# the workflow token and starts no workflow). The action and the list of apps live in
+# calliope-ui (.github/actions/dispatch-calliope-builds, with the setup of the GitHub App).
+#
+# By hand: gh workflow run dispatch-builds.yml -R calliope-edu/mini-connection-widget -f channels="dev live"
+
+on:
+  push:
+    branches: [calliope-main]
+  workflow_dispatch:
+    inputs:
+      channels:
+        description: Which builds to start
+        type: choice
+        options: [dev, live, dev live]
+        default: dev
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: calliope-edu/calliope-ui/.github/actions/dispatch-calliope-builds@calliope-main
+        with:
+          channels: ${{ inputs.channels || 'dev' }}
+          app-id: ${{ vars.CALLIOPE_BUILDS_APP_ID }}
+          private-key: ${{ secrets.CALLIOPE_BUILDS_APP_KEY }}
