@@ -1,0 +1,98 @@
+name: Release
+
+# Cuts a release from the newest commit on calliope-main: runs the checks against the newest
+# calliope-ui release within the pinned major, sets the version in package.json, commits it,
+# tags it vX.Y.Z and publishes a GitHub release that names the calliope-ui release it was tested
+# against. Live builds of the editors take the newest such tag within the major they pin
+# (calliope-ui's resolve-calliope-deps action). Release order: calliope-ui, then the widget.
+#
+#   gh workflow run release.yml -R calliope-edu/mini-connection-widget -f bump=minor
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'patch (fixes), minor (new features), major (breaking changes), or an explicit X.Y.Z'
+        required: true
+        default: minor
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Only from calliope-main
+        if: github.ref != 'refs/heads/calliope-main'
+        run: |
+          echo "::error::Releases are cut from calliope-main, not ${GITHUB_REF}"
+          exit 1
+
+      - uses: actions/checkout@v4
+        with:
+          ref: calliope-main
+          fetch-depth: 0
+
+      - id: calliope
+        uses: calliope-edu/calliope-ui/.github/actions/resolve-calliope-deps@calliope-main
+        with:
+          channel: live
+          packages: '@calliope-edu/ui'
+
+      # pnpm version from the packageManager field in package.json.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      # The resolver rewrote the calliope-ui pin, so the lockfile is out of date on purpose.
+      - run: pnpm install --no-frozen-lockfile
+
+      - name: Test
+        run: pnpm test
+
+      - name: Type check against calliope-ui ${{ steps.calliope.outputs.ui-tag }}
+        run: pnpm check
+
+      - name: Newer calliope-ui major
+        env:
+          TESTED: ${{ steps.calliope.outputs.ui-tag }}
+        run: node scripts/newer-major.mjs "$TESTED"
+
+      # The release commit keeps the pin of package.json as it is on calliope-main; only the
+      # version changes.
+      - name: Undo the resolved pin
+        run: git checkout -- package.json pnpm-lock.yaml
+
+      - name: Version
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: echo "version=$(node scripts/release-version.mjs "$BUMP" --write)" >> "$GITHUB_OUTPUT"
+
+      - name: Commit, tag and push
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -am "chore(release): v${VERSION}"
+          git tag -a "v${VERSION}" -m "v${VERSION}"
+          git push --atomic origin HEAD:refs/heads/calliope-main "refs/tags/v${VERSION}"
+
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          UI_TAG: ${{ steps.calliope.outputs.ui-tag }}
+          UI_COMMIT: ${{ steps.calliope.outputs.ui-commit }}
+        run: |
+          gh release create "v${VERSION}" --title "v${VERSION}" --generate-notes --verify-tag \
+            --notes "Tested against @calliope-edu/ui ${UI_TAG} (${UI_COMMIT:0:7})."

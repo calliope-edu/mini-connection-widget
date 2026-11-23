@@ -1,0 +1,74 @@
+name: CI
+
+# Every push to calliope-main and every pull request. Two jobs:
+# - test: the pinned calliope-ui from the lockfile (what a local checkout installs).
+# - calliope-ui: the newest calliope-ui release within the major the widget pins (live) and the
+#   newest commit on calliope-ui's calliope-main (dev), set by calliope-ui's shared
+#   resolve-calliope-deps action. live must pass: it is what the next widget release is tested
+#   against and what peerDependencies promise. dev only warns early about a change coming in
+#   calliope-ui; it does not block.
+#
+# The unit tests render the UI against stand-ins for calliope-ui (test/ui-stub/); `pnpm check`
+# (svelte-check) type-checks src/ against the real library: a component, prop or icon name the
+# widget uses that calliope-ui no longer has fails there.
+
+on:
+  push:
+    branches: [calliope-main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # pnpm version comes from package.json "packageManager"; the lockfile
+      # (patchedDependencies hash) is written by pnpm 10, which pnpm 9 rejects.
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Runs the TypeScript unit suite directly via node --experimental-transform-types
+      # (see package.json "test"): ble-state, connection-errors, blocks-frame, helpers,
+      # program-type, hex-inspect, log-parser, the UI labels (Svelte components rendered
+      # server-side) and the release version script.
+      - run: pnpm test
+      - name: Type check against the pinned calliope-ui
+        run: pnpm check
+
+  calliope-ui:
+    name: calliope-ui (${{ matrix.channel }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        channel: [live, dev]
+    continue-on-error: ${{ matrix.channel == 'dev' }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: calliope
+        uses: calliope-edu/calliope-ui/.github/actions/resolve-calliope-deps@calliope-main
+        with:
+          channel: ${{ matrix.channel }}
+          packages: '@calliope-edu/ui'
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      # The resolver rewrote the pin, so the lockfile is out of date on purpose.
+      - run: pnpm install --no-frozen-lockfile
+      - run: pnpm test
+      - name: Type check against calliope-ui ${{ steps.calliope.outputs.ui-tag || steps.calliope.outputs.ui-commit }}
+        run: pnpm check
+      - name: Newer calliope-ui major
+        if: matrix.channel == 'live'
+        env:
+          TESTED: ${{ steps.calliope.outputs.ui-tag }}
+        run: node scripts/newer-major.mjs "$TESTED"

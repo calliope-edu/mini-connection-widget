@@ -24,10 +24,11 @@
     "patches"
   ],
   "scripts": {
-    "test": "node --experimental-transform-types --import ./test/register-hooks.mjs --test test/*.test.ts"
+    "test": "node --experimental-transform-types --import ./test/register-hooks.mjs --test test/*.test.ts scripts/*.test.ts",
+    "check": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings"
   },
   "peerDependencies": {
-    "@calliope-edu/ui": "*",
+    "@calliope-edu/ui": ">=0.1.0 <1.0.0",
     "@microbit/makecode-embed": "*",
     "@microbit/microbit-connection": "1.0.0-beta.1",
     "svelte": "^5.0.0"
@@ -38,13 +39,14 @@
     "@microbit/makecode-embed": { "optional": true }
   },
   "devDependencies": {
-    "@calliope-edu/ui": "github:calliope-edu/calliope-ui#fe0bde5e7ad6b64805af8a015c0c13be48dc1cb3",
+    "@calliope-edu/ui": "github:calliope-edu/calliope-ui#v0.1.0",
     "@capacitor-community/bluetooth-le": "^7.3.0",
     "@capacitor/core": "^7.4.4",
     "@capacitor/filesystem": "^7.1.6",
     "@microbit/capacitor-community-nordic-dfu": "v7.0.0-microbit.4",
     "@microbit/microbit-connection": "1.0.0-beta.1",
     "svelte": "^5.41.0",
+    "svelte-check": "^4.7.7",
     "typescript": "^5.6.0"
   },
   "publishConfig": {

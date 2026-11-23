@@ -27,8 +27,8 @@ importers:
         version: 1.4.0
     devDependencies:
       '@calliope-edu/ui':
-        specifier: github:calliope-edu/calliope-ui#fe0bde5e7ad6b64805af8a015c0c13be48dc1cb3
-        version: https://codeload.github.com/calliope-edu/calliope-ui/tar.gz/fe0bde5e7ad6b64805af8a015c0c13be48dc1cb3(@internationalized/date@3.12.4)(svelte@5.55.7)
+        specifier: github:calliope-edu/calliope-ui#v0.1.0
+        version: https://codeload.github.com/calliope-edu/calliope-ui/tar.gz/88182e09e92c07637e530cf6ddd2b8eca50d946f(@internationalized/date@3.12.4)(svelte@5.55.7)
       '@capacitor-community/bluetooth-le':
         specifier: ^7.3.0
         version: 7.3.2(@capacitor/core@7.6.2)
@@ -47,15 +47,18 @@ importers:
       svelte:
         specifier: ^5.41.0
         version: 5.55.7
+      svelte-check:
+        specifier: ^4.7.7
+        version: 4.7.8(svelte@5.55.7)(typescript@5.9.3)
       typescript:
         specifier: ^5.6.0
         version: 5.9.3
 
 packages:
 
-  '@calliope-edu/ui@https://codeload.github.com/calliope-edu/calliope-ui/tar.gz/fe0bde5e7ad6b64805af8a015c0c13be48dc1cb3':
-    resolution: {tarball: https://codeload.github.com/calliope-edu/calliope-ui/tar.gz/fe0bde5e7ad6b64805af8a015c0c13be48dc1cb3}
-    version: 0.0.1
+  '@calliope-edu/ui@https://codeload.github.com/calliope-edu/calliope-ui/tar.gz/88182e09e92c07637e530cf6ddd2b8eca50d946f':
+    resolution: {tarball: https://codeload.github.com/calliope-edu/calliope-ui/tar.gz/88182e09e92c07637e530cf6ddd2b8eca50d946f}
+    version: 0.1.0
     engines: {node: '>=22', pnpm: '>=10'}
     peerDependencies:
       svelte: ^5.0.0
@@ -135,6 +138,10 @@ packages:
     peerDependencies:
       acorn: ^8.9.0
 
+  '@sveltejs/load-config@0.2.3':
+    resolution: {integrity: sha512-VT3qmUb8pRV2QrZjd8iAmtg8lf4W0TIjZbvXtz5MKei/q96teWZgGJyyidJzOjzZzvdq616eSRVeMYIQChUTAQ==}
+    engines: {node: '>= 18.0.0'}
+
   '@swc/helpers@0.5.24':
     resolution: {integrity: sha512-6tcXo4kA8HgGO7AVmawB57RYi/piBPYVHVcO6dXjX+SZw8GoHmi262sp4v2Ha2kNP9Cx84qei27yT+fjS1lxgg==}
 
@@ -173,6 +180,10 @@ packages:
       '@internationalized/date': ^3.8.1
       svelte: ^5.33.0
 
+  chokidar@4.0.3:
+    resolution: {integrity: sha512-Qgzu8kfBvo+cA4962jnP1KkS6Dop5NS6g7R5LFYJr4b8Ub94PPQXUksCw9PvXoeXPRRddRNC5C1JQUR2SMGtnA==}
+    engines: {node: '>= 14.16.0'}
+
   clsx@2.1.1:
     resolution: {integrity: sha512-eYm0QWBtUrBWZWG0d386OGAw16Z995PiOVo2B7bjWSbHedGl5e0ZWaq65kOGgUSNesEIDkB9ISbTg/JK9dhCZA==}
     engines: {node: '>=6'}
@@ -195,6 +206,15 @@ packages:
       '@typescript-eslint/types':
         optional: true
 
+  fdir@6.5.0:
+    resolution: {integrity: sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==}
+    engines: {node: '>=12.0.0'}
+    peerDependencies:
+      picomatch: ^3 || ^4
+    peerDependenciesMeta:
+      picomatch:
+        optional: true
+
   inline-style-parser@0.2.7:
     resolution: {integrity: sha512-Nb2ctOyNR8DqQoR0OwRG95uNWIC0C1lCgf5Naz5H6Ji72KZ8OcFZLz2P5sNgwlyoJ8Yif11oMuYs5pBQa86csA==}
 
@@ -211,9 +231,16 @@ packages:
   magic-string@0.30.21:
     resolution: {integrity: sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ==}
 
+  mri@1.2.0:
+    resolution: {integrity: sha512-tzzskb3bG8LvYGFF/mDTpq3jpI6Q9wc3LEmBaghu+DdCssd1FakN7Bc0hVNmEyGq1bq3RgfkCb3cmQLpNPOroA==}
+    engines: {node: '>=4'}
+
   nrf-intel-hex@1.4.0:
     resolution: {integrity: sha512-q3+GGRIpe0VvCjUP1zaqW5rk6IpCZzhD0lu7Sguo1bgWwFcA9kZRjsaKUb0jBQMnefyOl5o0BBGAxvqMqYx8Sg==}
     engines: {node: '>=6.0.0'}
+
+  picocolors@1.1.1:
+    resolution: {integrity: sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==}
 
   react-dom@19.3.1:
     resolution: {integrity: sha512-Y0bARz53lhEC1NMCASs0/j+faB/zqt3R8hpvg1e8+61ZVJ4UL0UdC4cBbXfZMcIuhrfgeILTLe+ZeBCavQPtKQ==}
@@ -224,6 +251,10 @@ packages:
     resolution: {integrity: sha512-QNhWdt7nrgVWWQG58QuGsAR3jv3Hbe4mb4vz7w2csnHavciZJgda1CPNaldF6eVxv90ud3jUXpKlHL69gO38yw==}
     engines: {node: '>=0.10.0'}
 
+  readdirp@4.1.2:
+    resolution: {integrity: sha512-GDhwkLfywWL2s6vEjyhri+eXmfH6j1L7JE27WhqLeYzoh/A3DBaYGEj2H/HFZCn/kMfim73FXxEJTw06WtxQwg==}
+    engines: {node: '>= 14.18.0'}
+
   runed@0.35.1:
     resolution: {integrity: sha512-2F4Q/FZzbeJTFdIS/PuOoPRSm92sA2LhzTnv6FXhCoENb3huf5+fDuNOg1LNvGOouy3u/225qxmuJvcV3IZK5Q==}
     peerDependencies:
@@ -233,11 +264,23 @@ packages:
       '@sveltejs/kit':
         optional: true
 
+  sade@1.8.1:
+    resolution: {integrity: sha512-xal3CZX1Xlo/k4ApwCFrHVACi9fBqJ7V+mwhBsuf/1IOKbBy098Fex+Wa/5QMubw09pSZ/u8EY8PWgevJsXp1A==}
+    engines: {node: '>=6'}
+
   scheduler@0.28.0:
     resolution: {integrity: sha512-juorfCmIkIw8tT+p5BXSm6PJjQF/ycEYmKyzURCIt/RaZIhL+PulbQ9Yu2z1HdOJDdqDTlxA1+xKBmHXJsczAw==}
 
   style-to-object@1.0.14:
     resolution: {integrity: sha512-LIN7rULI0jBscWQYaSswptyderlarFkjQ+t79nzty8tcIAceVomEVlLzH5VP4Cmsv6MtKhs7qaAiwlcp+Mgaxw==}
+
+  svelte-check@4.7.8:
+    resolution: {integrity: sha512-laZ49GFHZ3b0z2PWinJWL0syehc/PTR8aHaUaTiBkWJ+4Y38nhxjmXsSz7CbGa3VdKopViVbrBH3bGNqIAI0bQ==}
+    engines: {node: '>= 18.0.0'}
+    hasBin: true
+    peerDependencies:
+      svelte: ^4.0.0 || ^5.0.0-next.0
+      typescript: ^5.0.0 || ^6.0.0
 
   svelte-sonner@1.2.3:
     resolution: {integrity: sha512-SjQaDI/k6L/ordD2w84XOkGv3kaZwyGRsJzR+lHW097/aJCaydvp63VblMTFsrakm58BxRjUSySK/BWH9jdY1Q==}
@@ -270,7 +313,7 @@ packages:
 
 snapshots:
 
-  '@calliope-edu/ui@https://codeload.github.com/calliope-edu/calliope-ui/tar.gz/fe0bde5e7ad6b64805af8a015c0c13be48dc1cb3(@internationalized/date@3.12.4)(svelte@5.55.7)':
+  '@calliope-edu/ui@https://codeload.github.com/calliope-edu/calliope-ui/tar.gz/88182e09e92c07637e530cf6ddd2b8eca50d946f(@internationalized/date@3.12.4)(svelte@5.55.7)':
     dependencies:
       bits-ui: 2.21.0(@internationalized/date@3.12.4)(svelte@5.55.7)
       svelte: 5.55.7
@@ -360,6 +403,8 @@ snapshots:
     dependencies:
       acorn: 8.16.0
 
+  '@sveltejs/load-config@0.2.3': {}
+
   '@swc/helpers@0.5.24': {}
 
   '@types/estree@1.0.9': {}
@@ -391,6 +436,10 @@ snapshots:
     transitivePeerDependencies:
       - '@sveltejs/kit'
 
+  chokidar@4.0.3:
+    dependencies:
+      readdirp: 4.1.2
+
   clsx@2.1.1: {}
 
   dequal@2.0.3: {}
@@ -402,6 +451,8 @@ snapshots:
   esrap@2.2.9:
     dependencies:
       '@jridgewell/sourcemap-codec': 1.5.5
+
+  fdir@6.5.0: {}
 
   inline-style-parser@0.2.7: {}
 
@@ -417,7 +468,11 @@ snapshots:
     dependencies:
       '@jridgewell/sourcemap-codec': 1.5.5
 
+  mri@1.2.0: {}
+
   nrf-intel-hex@1.4.0: {}
+
+  picocolors@1.1.1: {}
 
   react-dom@19.3.1(react@19.3.1):
     dependencies:
@@ -426,6 +481,8 @@ snapshots:
 
   react@19.3.1: {}
 
+  readdirp@4.1.2: {}
+
   runed@0.35.1(svelte@5.55.7):
     dependencies:
       dequal: 2.0.3
@@ -433,11 +490,28 @@ snapshots:
       lz-string: 1.5.0
       svelte: 5.55.7
 
+  sade@1.8.1:
+    dependencies:
+      mri: 1.2.0
+
   scheduler@0.28.0: {}
 
   style-to-object@1.0.14:
     dependencies:
       inline-style-parser: 0.2.7
+
+  svelte-check@4.7.8(svelte@5.55.7)(typescript@5.9.3):
+    dependencies:
+      '@jridgewell/trace-mapping': 0.3.31
+      '@sveltejs/load-config': 0.2.3
+      chokidar: 4.0.3
+      fdir: 6.5.0
+      picocolors: 1.1.1
+      sade: 1.8.1
+      svelte: 5.55.7
+      typescript: 5.9.3
+    transitivePeerDependencies:
+      - picomatch
 
   svelte-sonner@1.2.3(svelte@5.55.7):
     dependencies:
